@@ -30,11 +30,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: latest
-          # golangci-lint's prebuilt binaries lag the Go release and refuse to
-          # lint a module targeting a newer Go than the binary was built with.
-          # Compiling it with the runner's Go (from go.mod) sidesteps that.
-          install-mode: goinstall
+      # golangci-lint's prebuilt binaries lag the Go release and refuse to lint a
+      # module targeting a newer Go than they were built with. Installing v2 from
+      # source with the runner's Go sidesteps that (and guarantees the v2 config
+      # schema via the /v2/ module path).
+      - name: install golangci-lint v2
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+      - name: lint
+        run: golangci-lint run ./...
