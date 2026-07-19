@@ -18,3 +18,15 @@ func resolveIdentity(cmd *cobra.Command) []string {
 	}
 	return nil
 }
+
+// identityRequested reports whether --identity or $CAIRN_IDENTITY was
+// explicitly supplied, as opposed to left at its default. Unlike
+// resolveIdentity, it distinguishes "explicitly passed" from "absent" —
+// commands that don't support identity scoping (e.g. status) use this to
+// reject an explicit request instead of silently ignoring it.
+func identityRequested(cmd *cobra.Command) bool {
+	if cmd.Flags().Changed("identity") {
+		return true
+	}
+	return strings.TrimSpace(os.Getenv("CAIRN_IDENTITY")) != ""
+}
