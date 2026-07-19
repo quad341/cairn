@@ -1,0 +1,10 @@
+# The SQLite index is a rebuildable materialized view over the md frontmatter.
+# Bodies are the source of truth; the index is disposable — never committed.
+index/*.sqlite
+index/*.sqlite-*
+index/*.db
+index/*.db-*
+
+# Editor / OS noise
+*.swp
+.DS_Store

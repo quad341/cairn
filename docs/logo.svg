@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 268" width="240" height="268" role="img" aria-label="cairn logo">
+  <title>cairn</title>
+  <style>
+    .stone  { stroke: rgba(60,55,45,.28); stroke-width: 1.3; }
+    .ground { stroke: #c7c0b3; stroke-width: 2.2; stroke-dasharray: 2 10; stroke-linecap: round; opacity: .8; }
+    .shadow { fill: rgba(40,40,45,.08); }
+    .word   { fill: #8a8272; font: 600 34px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing: 3px; }
+    @media (prefers-color-scheme: dark) {
+      .stone  { stroke: rgba(255,255,255,.22); }
+      .ground { stroke: #6a6458; }
+      .shadow { fill: rgba(0,0,0,.32); }
+      .word   { fill: #cfc7b7; }
+    }
+  </style>
+
+  <!-- trail-marker horizon -->
+  <line class="ground" x1="34" y1="206" x2="206" y2="206"/>
+  <!-- grounding shadow -->
+  <ellipse class="shadow" cx="120" cy="205" rx="58" ry="6"/>
+
+  <!-- stacked stones, bottom -> top, slight offsets + tilt for a natural pile (light limestone) -->
+  <ellipse class="stone" cx="120" cy="192" rx="60" ry="18" fill="#dcd6ca" transform="rotate(-3 120 192)"/>
+  <ellipse class="stone" cx="116" cy="162" rx="50" ry="16" fill="#cbc4b5" transform="rotate(4 116 162)"/>
+  <ellipse class="stone" cx="123" cy="135" rx="41" ry="15" fill="#e6e1d6" transform="rotate(-2 123 135)"/>
+  <ellipse class="stone" cx="117" cy="111" rx="31" ry="13" fill="#d2ccbe" transform="rotate(5 117 111)"/>
+  <ellipse class="stone" cx="121" cy="90"  rx="22" ry="11" fill="#e0dacf" transform="rotate(-3 121 90)"/>
+  <ellipse class="stone" cx="120" cy="73"  rx="13" ry="8"  fill="#cdc6b8" transform="rotate(3 120 73)"/>
+
+  <!-- wordmark -->
+  <text class="word" x="120" y="250" text-anchor="middle">cairn</text>
+</svg>
