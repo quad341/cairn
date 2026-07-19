@@ -1,5 +1,14 @@
 # cairn
 
+<p align="center">
+  <img src="docs/cairn.png" alt="a stone cairn on a misty ridge at dawn" width="420">
+</p>
+
+[![CI](https://github.com/quad341/cairn/actions/workflows/ci.yml/badge.svg)](https://github.com/quad341/cairn/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/quad341/cairn)](https://goreportcard.com/report/github.com/quad341/cairn)
+[![Go Reference](https://pkg.go.dev/badge/github.com/quad341/cairn.svg)](https://pkg.go.dev/github.com/quad341/cairn)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > A cairn is the stack of stones a traveler leaves to mark the trail — so whoever
 > comes next doesn't lose the path or have to re-find it from scratch.
 
