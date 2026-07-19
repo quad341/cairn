@@ -148,7 +148,9 @@ func Find(store, id string) (*Entry, error) {
 
 // Visible returns entries an identity may see: every scope-tag on the entry
 // must be satisfied by the identity (a subset match). Global (untagged)
-// entries are visible to all.
+// entries are visible to all. When multiple visible entries share a
+// non-empty topic_key, only the most specific one is returned — CSS-style
+// shadowing (DESIGN.md §3).
 func Visible(store string, identity []string) ([]*Entry, error) {
 	entries, err := IterEntries(store)
 	if err != nil {
@@ -171,5 +173,43 @@ func Visible(store string, identity []string) ([]*Entry, error) {
 			out = append(out, e)
 		}
 	}
-	return out, nil
+	return shadow(out), nil
+}
+
+// shadow resolves topic_key conflicts by specificity: the entry with the most
+// scope tags wins (CSS-style, DESIGN.md §3). Ties break on most-recent
+// VerifiedAt, then most-recent CreatedAt, then lowest ID, so resolution is
+// always deterministic regardless of which timestamp fields are populated.
+// Entries without a topic_key never shadow one another.
+func shadow(candidates []*Entry) []*Entry {
+	winner := make(map[string]*Entry, len(candidates))
+	for _, e := range candidates {
+		if e.TopicKey == "" {
+			continue
+		}
+		if cur, ok := winner[e.TopicKey]; !ok || moreSpecific(e, cur) {
+			winner[e.TopicKey] = e
+		}
+	}
+	out := make([]*Entry, 0, len(candidates))
+	for _, e := range candidates {
+		if e.TopicKey == "" || winner[e.TopicKey] == e {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// moreSpecific reports whether a should win over b for a shared topic_key.
+func moreSpecific(a, b *Entry) bool {
+	if len(a.Scope) != len(b.Scope) {
+		return len(a.Scope) > len(b.Scope)
+	}
+	if a.VerifiedAt != b.VerifiedAt {
+		return a.VerifiedAt > b.VerifiedAt // ISO-8601 strings sort lexically = chronologically
+	}
+	if a.CreatedAt != b.CreatedAt {
+		return a.CreatedAt > b.CreatedAt
+	}
+	return a.ID < b.ID
 }
