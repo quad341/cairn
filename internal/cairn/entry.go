@@ -213,3 +213,75 @@ func moreSpecific(a, b *Entry) bool {
 	}
 	return a.ID < b.ID
 }
+
+// ShadowMap reports, store-wide with no identity in scope, which entries are
+// shadowed and by what. Visible()'s shadow() cannot answer this: its
+// tag-count specificity proxy is only sound over a single identity's
+// pre-filtered candidate list, and applying it to the whole store produces
+// false positives for entries whose scopes are incomparable (see
+// TestShadowMapIncomparableScopesNeverShadow).
+//
+// X is shadowed by Y iff they share a non-empty TopicKey, Y's Scope is a
+// (non-strict) superset of X's Scope, and moreSpecific(Y, X) is true. The
+// superset condition is what makes the claim identity-free: every identity
+// that can see Y can also see X (X.Scope ⊆ Y.Scope), and moreSpecific(Y, X)
+// then holds for all of them — so "X shadowed by Y" means X loses to Y
+// whenever Y is in view, not that X is unreachable outright. Entries with
+// incomparable scopes never shadow each other, even on an equal-tag-count
+// tie, because no such "Y always wins where both are visible" claim holds
+// for them.
+//
+// When more than one entry qualifies as a shadower of X, the single most
+// specific qualifying shadower is reported (same moreSpecific reduction
+// shadow() uses to pick winners) — a deliberate v1 scope limit, not an
+// exhaustive list. The returned map is keyed by the shadowed entry's ID.
+func ShadowMap(entries []*Entry) map[string]*Entry {
+	byTopic := make(map[string][]*Entry)
+	for _, e := range entries {
+		if e.TopicKey == "" {
+			continue
+		}
+		byTopic[e.TopicKey] = append(byTopic[e.TopicKey], e)
+	}
+
+	out := make(map[string]*Entry)
+	for _, group := range byTopic {
+		if len(group) < 2 {
+			continue // a topic_key held by only one entry can't be shadowed
+		}
+		for _, x := range group {
+			var best *Entry
+			for _, y := range group {
+				if y == x || !scopeSuperset(y.Scope, x.Scope) {
+					continue
+				}
+				if !moreSpecific(y, x) {
+					continue
+				}
+				if best == nil || moreSpecific(y, best) {
+					best = y
+				}
+			}
+			if best != nil {
+				out[x.ID] = best
+			}
+		}
+	}
+	return out
+}
+
+// scopeSuperset reports whether every tag in sub also appears in super —
+// i.e. super is a (non-strict) superset of sub, as sets. An empty sub is
+// vacuously a subset of anything, including an empty super.
+func scopeSuperset(super, sub []string) bool {
+	set := make(map[string]struct{}, len(super))
+	for _, t := range super {
+		set[t] = struct{}{}
+	}
+	for _, t := range sub {
+		if _, ok := set[t]; !ok {
+			return false
+		}
+	}
+	return true
+}

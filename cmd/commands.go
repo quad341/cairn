@@ -39,10 +39,15 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		shadowedBy := cairn.ShadowMap(entries)
 		flags := map[string]string{cairn.Fresh: "OK ", cairn.Stale: "!! ", cairn.Unknown: "?? "}
 		for _, e := range entries {
 			st, detail := cairn.Check(cmd.Context(), e)
-			fmt.Printf("%s%-38s %-8s %s\n", flags[st], e.ID, st, detail)
+			line := fmt.Sprintf("%s%-38s %-8s %s", flags[st], e.ID, st, detail)
+			if by, ok := shadowedBy[e.ID]; ok {
+				line += fmt.Sprintf("  [SHADOWED BY %s]", by.ID)
+			}
+			fmt.Println(line)
 		}
 		return nil
 	},
