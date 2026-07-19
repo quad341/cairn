@@ -34,3 +34,7 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+          # golangci-lint's prebuilt binaries lag the Go release and refuse to
+          # lint a module targeting a newer Go than the binary was built with.
+          # Compiling it with the runner's Go (from go.mod) sidesteps that.
+          install-mode: goinstall
