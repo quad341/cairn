@@ -35,5 +35,7 @@ func Execute() {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&storeFlag, "store", "",
-		"store repo path (default: $CAIRN_STORE or the bundled default)")
+		"store repo path (default: $CAIRN_STORE or the current directory)")
+	rootCmd.PersistentFlags().StringSlice("identity", nil,
+		"scope tags for recall, e.g. --identity rig:web,role:reviewer (or $CAIRN_IDENTITY)")
 }

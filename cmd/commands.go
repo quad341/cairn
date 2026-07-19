@@ -12,7 +12,6 @@ import (
 
 func init() {
 	rootCmd.AddCommand(reindexCmd, mapCmd, statusCmd, freshnessCmd, verifyCmd)
-	mapCmd.Flags().StringSlice("identity", nil, "scope tags, e.g. --identity rig:web,role:reviewer")
 }
 
 var reindexCmd = &cobra.Command{
@@ -93,7 +92,7 @@ var mapCmd = &cobra.Command{
 	Use:   "map",
 	Short: "Bounded topic map for an identity (the always-in-context payload)",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		identity, _ := cmd.Flags().GetStringSlice("identity")
+		identity := resolveIdentity(cmd)
 		rows, err := cairn.Visible(storePath(), identity)
 		if err != nil {
 			return err
