@@ -16,7 +16,7 @@ func TestPrime(t *testing.T) {
 	out, err := Prime(dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 	assert.Contains(t, out, "alpha/thing", "an alpha-scoped agent should see the alpha topic")
-	assert.Contains(t, out, "cairn remember", "prime should include the capture hint")
+	assert.Contains(t, out, "hand-author", "prime should still nudge agents to capture what they learn")
 
 	bare, err := Prime(dir, nil)
 	require.NoError(t, err)

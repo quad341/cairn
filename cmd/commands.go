@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/quad341/cairn/internal/cairn"
@@ -11,7 +12,7 @@ import (
 )
 
 func init() {
-	rootCmd.AddCommand(reindexCmd, mapCmd, statusCmd, freshnessCmd, verifyCmd)
+	rootCmd.AddCommand(reindexCmd, mapCmd, statusCmd, freshnessCmd, verifyCmd, getCmd)
 }
 
 var reindexCmd = &cobra.Command{
@@ -61,6 +62,35 @@ var freshnessCmd = &cobra.Command{
 		}
 		st, detail := cairn.Check(cmd.Context(), e)
 		fmt.Printf("%s: %s — %s\n", args[0], st, detail)
+		return nil
+	},
+}
+
+var getCmd = &cobra.Command{
+	Use:   "get <id>",
+	Short: "Pull an entry's full body + freshness (direct by-id lookup, bypasses scope)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		e, err := cairn.Find(storePath(), args[0])
+		if errors.Is(err, cairn.ErrNotFound) {
+			return fmt.Errorf("no entry %q", args[0])
+		}
+		if err != nil {
+			return err
+		}
+		st, detail := cairn.Check(cmd.Context(), e)
+		topic := e.TopicKey
+		if topic == "" {
+			topic = "(untopiced)"
+		}
+		scope := "global"
+		if len(e.Scope) > 0 {
+			scope = strings.Join(e.Scope, " ")
+		}
+		fmt.Printf("%s: %s\n", e.ID, e.Title)
+		fmt.Printf("topic: %s  scope: %s\n", topic, scope)
+		fmt.Printf("freshness: %s — %s\n\n", st, detail)
+		fmt.Print(e.Body)
 		return nil
 	},
 }
