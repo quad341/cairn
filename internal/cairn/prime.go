@@ -44,7 +44,8 @@ func Prime(store string, identity []string) (string, error) {
 		}
 		b.WriteString("\nEntries can go stale — `cairn get` reports freshness; treat a stale entry as a lead, not truth.\n")
 	}
-	b.WriteString("Capture what you learn: `cairn remember --topic <slug> \"<one-liner>\"`\n")
+	b.WriteString("Capture what you learn: hand-author a `+++`-fenced markdown entry under the right scope dir\n" +
+		"(DESIGN.md §2, §6-§7) — no `remember` command yet.\n")
 	return b.String(), nil
 }
 
