@@ -250,24 +250,31 @@ func ShadowMap(entries []*Entry) map[string]*Entry {
 			continue // a topic_key held by only one entry can't be shadowed
 		}
 		for _, x := range group {
-			var best *Entry
-			for _, y := range group {
-				if y == x || !scopeSuperset(y.Scope, x.Scope) {
-					continue
-				}
-				if !moreSpecific(y, x) {
-					continue
-				}
-				if best == nil || moreSpecific(y, best) {
-					best = y
-				}
-			}
-			if best != nil {
+			if best := bestShadower(x, group); best != nil {
 				out[x.ID] = best
 			}
 		}
 	}
 	return out
+}
+
+// bestShadower returns the single most-specific entry in group that shadows
+// x (see ShadowMap's doc comment for the shadowing rule), or nil if none
+// qualifies.
+func bestShadower(x *Entry, group []*Entry) *Entry {
+	var best *Entry
+	for _, y := range group {
+		if y == x || !scopeSuperset(y.Scope, x.Scope) {
+			continue
+		}
+		if !moreSpecific(y, x) {
+			continue
+		}
+		if best == nil || moreSpecific(y, best) {
+			best = y
+		}
+	}
+	return best
 }
 
 // scopeSuperset reports whether every tag in sub also appears in super —
