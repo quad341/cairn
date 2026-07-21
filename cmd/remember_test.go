@@ -36,7 +36,8 @@ func runRemember(t *testing.T, extraArgs ...string) (string, error) {
 	t.Cleanup(func() { resetRememberFlags(t) })
 
 	store := t.TempDir()
-	gitInitStore(t, store)
+	gitInit(t, store)
+	stubGC(t)
 	args := append([]string{"remember", "--store", store}, extraArgs...)
 	rootCmd.SetArgs(args)
 	rootCmd.SetOut(&bytes.Buffer{})
@@ -44,17 +45,21 @@ func runRemember(t *testing.T, extraArgs ...string) (string, error) {
 	return store, rootCmd.Execute()
 }
 
-// gitInitStore makes dir a git repo suitable for CommitDirect: same setup as
-// internal/cairn/freshness_test.go's gitInit (commit.gpgsign=false so a test
-// commit never blocks on a signing key), duplicated locally since that helper
-// is unexported in a different package.
-func gitInitStore(t *testing.T, dir string) {
+// gitInit turns dir into a git repo with a resolvable HEAD -- an empty
+// initial commit, not just `git init`, since a shared-tier remember call's
+// review branch is created via `git worktree add -b branch wt HEAD`, which
+// needs HEAD to already resolve before Create ever writes the entry's first
+// file. Same setup as internal/cairn/freshness_test.go's gitInit
+// (commit.gpgsign=false so a test commit never blocks on a signing key),
+// duplicated locally since that helper is unexported in a different package.
+func gitInit(t *testing.T, dir string) {
 	t.Helper()
 	for _, args := range [][]string{
 		{"init", "-q"},
 		{"config", "user.email", "t@example.com"},
 		{"config", "user.name", "t"},
 		{"config", "commit.gpgsign", "false"},
+		{"commit", "-q", "--allow-empty", "-m", "init"},
 	} {
 		out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
 		require.NoErrorf(t, err, "git %v: %s", args, out)
@@ -68,6 +73,23 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 	out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
 	require.NoErrorf(t, err, "git %v: %s", args, out)
 	return string(out)
+}
+
+// stubGC shadows the real gc binary on PATH with a stub that always
+// succeeds, and pins GC_RIG to a fixed value, so a shared-tier remember
+// call's reviewer-mail step resolves and "sends" deterministically without
+// ever reaching a real fleet mail system: this test binary may itself be
+// running inside a real gc rig, where GC_RIG is already set and a real gc
+// is already on PATH.
+func stubGC(t *testing.T) {
+	t.Helper()
+	t.Setenv("GC_RIG", "test-rig")
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "gc")
+	//nolint:gosec // must be executable to stand in for the gc binary on PATH
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o700))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func resetRememberFlags(t *testing.T) {
@@ -88,18 +110,18 @@ func resetRememberFlags(t *testing.T) {
 }
 
 // assertNoFilesWritten requires that a rejected remember call wrote nothing
-// under store, ignoring the .git directory that gitInitStore itself creates.
+// under store, ignoring the .git directory that gitInit itself creates.
 func assertNoFilesWritten(t *testing.T, store string) {
 	t.Helper()
 	entries, err := os.ReadDir(store)
 	require.NoError(t, err)
-	var names []string
+	var written []string
 	for _, e := range entries {
 		if e.Name() != ".git" {
-			names = append(names, e.Name())
+			written = append(written, e.Name())
 		}
 	}
-	assert.Empty(t, names, "a rejected remember call must not write anything under the store")
+	assert.Empty(t, written, "a rejected remember call must not write anything under the store")
 }
 
 // requireSingleEntry requires exactly one file under dir and reads it back
@@ -262,13 +284,14 @@ func TestRememberPrivateTierCommitsDirectlyAndReportsSHA(t *testing.T) {
 	assert.Equal(t, head, lines[1])
 
 	log := strings.TrimSpace(gitOutput(t, store, "log", "--oneline"))
-	assert.Len(t, strings.Split(log, "\n"), 1, "exactly one commit must exist in the store")
+	assert.Len(t, strings.Split(log, "\n"), 2, "exactly one new commit must land on top of gitInit's initial commit")
 }
 
 // TestRememberNonPrivateTierDoesNotCommit covers the other side of the same
 // wiring: a shared-tier (rig:/role:) remember call writes the entry but must
-// not commit it -- that tier's DESIGN.md §7 flow is propose-on-a-branch +
-// review (crn-419.4), not implemented by this bead.
+// not commit it to the store's own branch -- that tier's DESIGN.md §7 flow is
+// propose-on-a-review-branch (crn-419.4's requestReview), never a direct
+// commit.
 func TestRememberNonPrivateTierDoesNotCommit(t *testing.T) {
 	var store string
 	var runErr error
@@ -280,10 +303,11 @@ func TestRememberNonPrivateTierDoesNotCommit(t *testing.T) {
 	requireSingleEntry(t, filepath.Join(store, "rig", "web"))
 
 	status := gitOutput(t, store, "status", "--porcelain")
-	assert.Contains(t, status, "??", "a shared-tier entry must be left untracked, not auto-committed")
+	assert.Contains(t, status, "??", "a shared-tier entry must be left untracked on the store's own branch, not auto-committed")
 
-	lines := strings.Fields(strings.TrimSpace(stdout))
-	assert.Len(t, lines, 1, "a non-private-tier remember must print only the entry id, no commit SHA")
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.Len(t, lines, 3, "a non-private-tier remember must print the entry id, the review branch, and the mailed reviewer -- no commit SHA")
+	assert.NotContains(t, lines[0], "/", "the first line must be the bare entry id, not a branch or reviewer address")
 }
 
 func TestRememberRegisteredOnRootCmd(t *testing.T) {

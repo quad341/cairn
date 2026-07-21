@@ -18,6 +18,8 @@ func init() {
 	// single process's argv, but a footgun for tests re-executing rootCmd).
 	rememberCmd.Flags().String("scope", "",
 		"scope tags for the entry, e.g. --scope rig:web,role:reviewer (default: private -- the agent:<id> tag from the resolved identity)")
+	rememberCmd.Flags().String("reviewer", "",
+		"reviewer to mail for a shared-tier (rig/role/global) entry (default: $CAIRN_REVIEWER, else a per-tier computed default)")
 }
 
 var rememberCmd = &cobra.Command{
@@ -56,8 +58,9 @@ var rememberCmd = &cobra.Command{
 				return fmt.Errorf("commit entry: %w", err)
 			}
 			fmt.Printf("%s\n", sha)
+			return nil
 		}
-		return nil
+		return requestReview(cmd, e, scope)
 	},
 }
 
