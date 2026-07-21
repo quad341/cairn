@@ -107,8 +107,7 @@ func TestRememberRequiresExactlyOneBodyArg(t *testing.T) {
 }
 
 func TestRememberValidInputReachesNotImplemented(t *testing.T) {
-	t.Setenv("CAIRN_IDENTITY", "")
-	store, err := runRemember(t, "--topic", "valid-topic", "a body")
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test", "a body")
 	require.ErrorIs(t, err, errRememberNotImplemented)
 	assertNoFilesWritten(t, store)
 }
@@ -121,11 +120,28 @@ func TestRememberDefaultScopeUsesResolvedIdentity(t *testing.T) {
 }
 
 func TestRememberDefaultScopeValidatesResolvedIdentity(t *testing.T) {
-	t.Setenv("CAIRN_IDENTITY", "../evil")
+	t.Setenv("CAIRN_IDENTITY", "agent:../evil")
 	store, err := runRemember(t, "--topic", "valid-topic", "a body")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "scope tag", "an unsafe identity-derived scope tag must be rejected, not silently used")
 	assertNoFilesWritten(t, store)
+}
+
+func TestRememberDefaultScopeRequiresAgentTag(t *testing.T) {
+	cases := map[string]string{
+		"no identity at all":             "",
+		"identity without an agent: tag": "rig:alpha role:reviewer",
+	}
+	for name, identity := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CAIRN_IDENTITY", identity)
+			store, err := runRemember(t, "--topic", "valid-topic", "a body")
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, errRememberNotImplemented,
+				"an identity that can't resolve to a single private tag must not silently proceed")
+			assertNoFilesWritten(t, store)
+		})
+	}
 }
 
 func TestRememberExplicitScopeOverridesIdentity(t *testing.T) {
@@ -139,4 +155,28 @@ func TestRememberRegisteredOnRootCmd(t *testing.T) {
 	found, _, err := rootCmd.Find([]string{"remember"})
 	require.NoError(t, err)
 	assert.Same(t, rememberCmd, found)
+}
+
+// TestDefaultScopeCollapsesToSingleAgentTag proves the actual defect: a
+// multi-tag identity spanning rig/role/agent must collapse to exactly the
+// agent:<id> tag, not pass through as the full tag set (which doesn't map to
+// any single DESIGN.md §2 scope directory).
+func TestDefaultScopeCollapsesToSingleAgentTag(t *testing.T) {
+	scope, err := defaultScope([]string{"rig:alpha", "role:reviewer", "agent:bot"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"agent:bot"}, scope)
+}
+
+func TestDefaultScopeErrorsWithoutAgentTag(t *testing.T) {
+	cases := map[string][]string{
+		"no agent: tag present": {"rig:alpha", "role:reviewer"},
+		"empty identity":        nil,
+	}
+	for name, identity := range cases {
+		t.Run(name, func(t *testing.T) {
+			scope, err := defaultScope(identity)
+			require.Error(t, err)
+			assert.Nil(t, scope)
+		})
+	}
 }
