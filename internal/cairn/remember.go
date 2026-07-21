@@ -52,16 +52,45 @@ func randomSuffix() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// maxCreateAttempts bounds the ID-collision retry in Create.
+const maxCreateAttempts = 5
+
 // Create places a brand-new entry in the store: it derives the file's
 // location from e.Scope (the DESIGN.md §2 tiers) and e.ID, creates the
 // scope-tier directory if needed -- WriteBack does not -- and writes it.
+// Unlike WriteBack, Create never overwrites an existing file: several
+// entries may deliberately share one topic_key (see NewEntry), so a
+// same-topic_key, same-scope suffix collision isn't a contrived scenario
+// over a long-lived store. On collision it regenerates e.ID and retries,
+// rather than silently destroying whatever entry is already at that path.
 func (e *Entry) Create(store string) error {
 	dir := scopeDir(store, e.Scope)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	e.BodyPath = filepath.Join(dir, e.ID+".md")
-	return e.WriteBack()
+	for attempt := 0; ; attempt++ {
+		e.BodyPath = filepath.Join(dir, e.ID+".md")
+		content, err := e.marshal()
+		if err != nil {
+			return err
+		}
+		f, err := os.OpenFile(e.BodyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			_, werr := f.Write(content)
+			if cerr := f.Close(); werr == nil {
+				werr = cerr
+			}
+			return werr
+		}
+		if !os.IsExist(err) || attempt >= maxCreateAttempts-1 {
+			return err
+		}
+		suffix, err := randomSuffix()
+		if err != nil {
+			return err
+		}
+		e.ID = e.TopicKey + "-" + suffix
+	}
 }
 
 // scopeDir maps scope tags to their DESIGN.md §2 directory. An empty scope

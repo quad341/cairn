@@ -1,6 +1,7 @@
 package cairn
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -123,4 +124,29 @@ func TestEntryCreateMakesParentDirs(t *testing.T) {
 
 	_, err = ParseEntry(e.BodyPath)
 	require.NoError(t, err)
+}
+
+func TestEntryCreateRetriesOnIDCollision(t *testing.T) {
+	e, err := NewEntry("shared-topic", []string{"agent:bot"}, "body", "agent:bot")
+	require.NoError(t, err)
+	firstID := e.ID
+
+	store := t.TempDir()
+	dir := scopeDir(store, e.Scope)
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	collisionPath := filepath.Join(dir, firstID+".md")
+	require.NoError(t, os.WriteFile(collisionPath, []byte("sentinel: pre-existing entry, must not be overwritten"), 0o600))
+
+	require.NoError(t, e.Create(store))
+
+	assert.NotEqual(t, firstID, e.ID, "Create must regenerate the ID on collision rather than overwrite the existing file")
+	assert.NotEqual(t, collisionPath, e.BodyPath)
+
+	untouched, err := os.ReadFile(collisionPath)
+	require.NoError(t, err)
+	assert.Equal(t, "sentinel: pre-existing entry, must not be overwritten", string(untouched))
+
+	got, err := ParseEntry(e.BodyPath)
+	require.NoError(t, err)
+	assert.Equal(t, e.ID, got.ID)
 }
