@@ -9,6 +9,9 @@ index/*.db-*
 *.swp
 .DS_Store
 
+# make build output
+/cairn
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
