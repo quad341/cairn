@@ -190,3 +190,91 @@ func TestVisibleUntopicedNeverShadow(t *testing.T) {
 	}
 	assert.True(t, ids["u1"] && ids["u2"] && ids["u3"], "entries without a topic_key must never shadow one another")
 }
+
+// parseFixture parses a fixture markdown const into an *Entry, independent of
+// IterEntries' scope-dir layout — ShadowMap takes an entry slice directly.
+func parseFixture(t *testing.T, content string) *Entry {
+	t.Helper()
+	e, err := ParseEntry(writeFile(t, t.TempDir(), "e.md", content))
+	require.NoError(t, err)
+	return e
+}
+
+const (
+	incomparableRig  = "+++\nid = \"i1\"\ntitle = \"i1\"\ntopic_key = \"inc\"\nscope = [\"rig:alpha\"]\n+++\nx\n"
+	incomparableRole = "+++\nid = \"i2\"\ntitle = \"i2\"\ntopic_key = \"inc\"\nscope = [\"role:builder\"]\n+++\nx\n"
+
+	chainOneTag    = "+++\nid = \"ch1\"\ntitle = \"ch1\"\ntopic_key = \"chain\"\nscope = [\"rig:alpha\"]\n+++\nx\n"
+	chainTwoTags   = "+++\nid = \"ch2\"\ntitle = \"ch2\"\ntopic_key = \"chain\"\nscope = [\"rig:alpha\", \"role:builder\"]\n+++\nx\n"
+	chainThreeTags = "+++\nid = \"ch3\"\ntitle = \"ch3\"\ntopic_key = \"chain\"\nscope = [\"rig:alpha\", \"role:builder\", \"agent:x\"]\n+++\nx\n"
+
+	globalShared = "+++\nid = \"gs\"\ntitle = \"gs\"\ntopic_key = \"glob\"\nscope = []\n+++\nx\n"
+	scopedShared = "+++\nid = \"rs\"\ntitle = \"rs\"\ntopic_key = \"glob\"\nscope = [\"rig:alpha\"]\n+++\nx\n"
+)
+
+func TestShadowMapSuperset(t *testing.T) {
+	s1 := parseFixture(t, lessSpecificShared)
+	s2 := parseFixture(t, moreSpecificShared)
+
+	sm := ShadowMap([]*Entry{s1, s2})
+
+	require.Contains(t, sm, "s1", "the 1-tag entry must be shadowed")
+	assert.Equal(t, "s2", sm["s1"].ID, "the 1-tag entry must be shadowed by the 2-tag superset entry")
+	assert.NotContains(t, sm, "s2", "the more specific entry must not appear as shadowed")
+}
+
+func TestShadowMapIncomparableScopesNeverShadow(t *testing.T) {
+	i1 := parseFixture(t, incomparableRig)
+	i2 := parseFixture(t, incomparableRole)
+
+	sm := ShadowMap([]*Entry{i1, i2})
+
+	assert.NotContains(t, sm, "i1", "neither-subset-nor-superset scopes must never shadow, even on an equal-tag-count tie")
+	assert.NotContains(t, sm, "i2", "neither-subset-nor-superset scopes must never shadow, even on an equal-tag-count tie")
+}
+
+func TestShadowMapTiebreakOnEqualScope(t *testing.T) {
+	v1 := parseFixture(t, earlyVerifiedShared)
+	v2 := parseFixture(t, lateVerifiedShared)
+
+	sm := ShadowMap([]*Entry{v1, v2})
+
+	require.Contains(t, sm, "v1", "the earlier-verified entry must be shadowed")
+	assert.Equal(t, "v2", sm["v1"].ID, "the earlier-verified entry must be shadowed by the later-verified one")
+	assert.NotContains(t, sm, "v2", "the later-verified (winning) entry must not appear as shadowed")
+}
+
+func TestShadowMapChainReportsMostSpecific(t *testing.T) {
+	ch1 := parseFixture(t, chainOneTag)
+	ch2 := parseFixture(t, chainTwoTags)
+	ch3 := parseFixture(t, chainThreeTags)
+
+	sm := ShadowMap([]*Entry{ch1, ch2, ch3})
+
+	require.Contains(t, sm, "ch1")
+	assert.Equal(t, "ch3", sm["ch1"].ID, "the 1-tag entry must be shadowed by the most specific entry in the chain, not its nearest neighbor")
+	require.Contains(t, sm, "ch2")
+	assert.Equal(t, "ch3", sm["ch2"].ID, "the 2-tag entry must be shadowed by the most specific entry in the chain")
+	assert.NotContains(t, sm, "ch3", "the most specific entry in the chain must not appear as shadowed")
+}
+
+func TestShadowMapUntopicedNeverShadow(t *testing.T) {
+	u1 := parseFixture(t, untopiced1)
+	u2 := parseFixture(t, untopiced2)
+	u3 := parseFixture(t, untopiced3)
+
+	sm := ShadowMap([]*Entry{u1, u2, u3})
+
+	assert.Empty(t, sm, "entries without a topic_key must never appear in the shadow map")
+}
+
+func TestShadowMapGlobalShadowedByScoped(t *testing.T) {
+	g := parseFixture(t, globalShared)
+	r := parseFixture(t, scopedShared)
+
+	sm := ShadowMap([]*Entry{g, r})
+
+	require.Contains(t, sm, "gs", "the global (empty-scope) entry must be shadowed by the scoped one")
+	assert.Equal(t, "rs", sm["gs"].ID)
+	assert.NotContains(t, sm, "rs", "the scoped entry must not appear as shadowed by the global one")
+}
