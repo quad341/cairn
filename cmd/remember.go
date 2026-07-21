@@ -20,16 +20,11 @@ func init() {
 		"scope tags for the entry, e.g. --scope rig:web,role:reviewer (default: private -- the agent:<id> tag from the resolved identity)")
 }
 
-// errRememberNotImplemented is returned once topic_key and scope pass
-// validation: entry construction and write-back are a follow-up bead
-// (crn-419.2); this scaffold only wires the command and the input guard.
-var errRememberNotImplemented = errors.New("remember: writing entries is not implemented yet")
-
 var rememberCmd = &cobra.Command{
 	Use:   "remember <body>",
 	Short: "Write a new knowledge entry to the store (curation-tier routing)",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, _ []string) error {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		topic, _ := cmd.Flags().GetString("topic")
 		if err := cairn.ValidatePathSegment(topic); err != nil {
 			return fmt.Errorf("invalid --topic: %w", err)
@@ -45,7 +40,16 @@ var rememberCmd = &cobra.Command{
 			}
 		}
 
-		return errRememberNotImplemented
+		createdBy := strings.Join(resolveIdentity(cmd), " ")
+		e, err := cairn.NewEntry(topic, scope, args[0], createdBy)
+		if err != nil {
+			return fmt.Errorf("construct entry: %w", err)
+		}
+		if err := e.Create(storePath()); err != nil {
+			return fmt.Errorf("write entry: %w", err)
+		}
+		fmt.Printf("%s\n", e.ID)
+		return nil
 	},
 }
 
