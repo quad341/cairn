@@ -3,8 +3,10 @@ package cmd
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/quad341/cairn/internal/cairn"
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -58,6 +60,19 @@ func assertNoFilesWritten(t *testing.T, store string) {
 	assert.Empty(t, entries, "a rejected remember call must not write anything under the store")
 }
 
+// requireSingleEntry requires exactly one file under dir and reads it back
+// through cairn.ParseEntry -- the same round-trip AC#3 requires of the
+// written file.
+func requireSingleEntry(t *testing.T, dir string) *cairn.Entry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "expected exactly one file written under %s", dir)
+	e, err := cairn.ParseEntry(filepath.Join(dir, entries[0].Name()))
+	require.NoError(t, err)
+	return e
+}
+
 func TestRememberRejectsAttackTopics(t *testing.T) {
 	attacks := map[string]string{
 		"path traversal": "../../etc/passwd",
@@ -106,17 +121,21 @@ func TestRememberRequiresExactlyOneBodyArg(t *testing.T) {
 	assertNoFilesWritten(t, store)
 }
 
-func TestRememberValidInputReachesNotImplemented(t *testing.T) {
+func TestRememberValidInputWritesEntry(t *testing.T) {
 	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test", "a body")
-	require.ErrorIs(t, err, errRememberNotImplemented)
-	assertNoFilesWritten(t, store)
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Equal(t, "valid-topic", e.TopicKey)
+	assert.Equal(t, []string{"agent:test"}, e.Scope)
+	assert.Equal(t, "a body", e.Body)
 }
 
 func TestRememberDefaultScopeUsesResolvedIdentity(t *testing.T) {
 	t.Setenv("CAIRN_IDENTITY", "rig:alpha agent:bot")
 	store, err := runRemember(t, "--topic", "valid-topic", "a body")
-	require.ErrorIs(t, err, errRememberNotImplemented, "a valid identity-derived scope must pass validation")
-	assertNoFilesWritten(t, store)
+	require.NoError(t, err, "a valid identity-derived scope must pass validation")
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "bot"))
+	assert.Equal(t, []string{"agent:bot"}, e.Scope, "default scope must collapse to the agent: tag, not the full identity")
 }
 
 func TestRememberDefaultScopeValidatesResolvedIdentity(t *testing.T) {
@@ -136,9 +155,7 @@ func TestRememberDefaultScopeRequiresAgentTag(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv("CAIRN_IDENTITY", identity)
 			store, err := runRemember(t, "--topic", "valid-topic", "a body")
-			require.Error(t, err)
-			assert.NotErrorIs(t, err, errRememberNotImplemented,
-				"an identity that can't resolve to a single private tag must not silently proceed")
+			require.Error(t, err, "an identity that can't resolve to a single private tag must not silently proceed")
 			assertNoFilesWritten(t, store)
 		})
 	}
@@ -147,8 +164,36 @@ func TestRememberDefaultScopeRequiresAgentTag(t *testing.T) {
 func TestRememberExplicitScopeOverridesIdentity(t *testing.T) {
 	t.Setenv("CAIRN_IDENTITY", "rig:alpha")
 	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "role:reviewer,agent:bot", "a body")
-	require.ErrorIs(t, err, errRememberNotImplemented)
-	assertNoFilesWritten(t, store)
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "role", "reviewer"))
+	assert.Equal(t, []string{"role:reviewer", "agent:bot"}, e.Scope,
+		"an explicit --scope must override the identity-derived default, not merge with it")
+}
+
+// TestRememberWritesUnderEachScopeTier covers AC#2: a single-tag scope for
+// each of rig:/role:/agent: lands under that tier's own directory (the
+// global/ tier -- an empty scope -- has no reachable path through this CLI,
+// since rememberScope always defaults to a single agent: tag when --scope is
+// omitted; it's covered directly at the cairn.NewEntry/Create level instead,
+// see internal/cairn/remember_test.go).
+func TestRememberWritesUnderEachScopeTier(t *testing.T) {
+	cases := []struct {
+		tag        string
+		tierDir    string
+		subdirName string
+	}{
+		{"rig:web", "rig", "web"},
+		{"role:reviewer", "role", "reviewer"},
+		{"agent:bot", "agent", "bot"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tag, func(t *testing.T) {
+			store, err := runRemember(t, "--topic", "valid-topic", "--scope", tc.tag, "a body")
+			require.NoError(t, err)
+			e := requireSingleEntry(t, filepath.Join(store, tc.tierDir, tc.subdirName))
+			assert.Equal(t, []string{tc.tag}, e.Scope)
+		})
+	}
 }
 
 func TestRememberRegisteredOnRootCmd(t *testing.T) {

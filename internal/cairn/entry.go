@@ -89,14 +89,24 @@ func ParseEntry(path string) (*Entry, error) {
 
 // WriteBack re-serializes the frontmatter (+++), preserving the body.
 func (e *Entry) WriteBack() error {
+	content, err := e.marshal()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(e.BodyPath, content, 0o600)
+}
+
+// marshal renders the +++-fenced TOML frontmatter followed by the body --
+// the on-disk format shared by WriteBack and Create.
+func (e *Entry) marshal() ([]byte, error) {
 	var sb strings.Builder
 	sb.WriteString(fence + "\n")
 	if err := toml.NewEncoder(&sb).Encode(e); err != nil {
-		return err
+		return nil, err
 	}
 	sb.WriteString(fence + "\n\n")
 	sb.WriteString(strings.TrimLeft(e.Body, "\n"))
-	return os.WriteFile(e.BodyPath, []byte(sb.String()), 0o600)
+	return []byte(sb.String()), nil
 }
 
 // IterEntries walks the scope dirs and returns all entries, sorted by id.
