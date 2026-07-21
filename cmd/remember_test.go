@@ -3,7 +3,9 @@ package cmd
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/quad341/cairn/internal/cairn"
@@ -23,17 +25,49 @@ import (
 // stringSliceValue.Set treats a repeat call as an append, not a replace.
 // Returns the temp store dir passed via --store, so callers can assert zero
 // filesystem writes.
+//
+// The store is git-initialized before the command runs: a private-tier
+// (agent/) remember now commits straight to the store's current branch
+// (crn-419.3), so a plain non-git t.TempDir() would fail that step even on
+// otherwise-valid input.
 func runRemember(t *testing.T, extraArgs ...string) (string, error) {
 	t.Helper()
 	resetRememberFlags(t)
 	t.Cleanup(func() { resetRememberFlags(t) })
 
 	store := t.TempDir()
+	gitInitStore(t, store)
 	args := append([]string{"remember", "--store", store}, extraArgs...)
 	rootCmd.SetArgs(args)
 	rootCmd.SetOut(&bytes.Buffer{})
 	rootCmd.SetErr(&bytes.Buffer{})
 	return store, rootCmd.Execute()
+}
+
+// gitInitStore makes dir a git repo suitable for CommitDirect: same setup as
+// internal/cairn/freshness_test.go's gitInit (commit.gpgsign=false so a test
+// commit never blocks on a signing key), duplicated locally since that helper
+// is unexported in a different package.
+func gitInitStore(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "user.name", "t"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+		require.NoErrorf(t, err, "git %v: %s", args, out)
+	}
+}
+
+// gitOutput runs git -C dir args... and returns combined stdout+stderr,
+// failing the test on a non-zero exit.
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	require.NoErrorf(t, err, "git %v: %s", args, out)
+	return string(out)
 }
 
 func resetRememberFlags(t *testing.T) {
@@ -53,11 +87,19 @@ func resetRememberFlags(t *testing.T) {
 	idf.Changed = false
 }
 
+// assertNoFilesWritten requires that a rejected remember call wrote nothing
+// under store, ignoring the .git directory that gitInitStore itself creates.
 func assertNoFilesWritten(t *testing.T, store string) {
 	t.Helper()
 	entries, err := os.ReadDir(store)
 	require.NoError(t, err)
-	assert.Empty(t, entries, "a rejected remember call must not write anything under the store")
+	var names []string
+	for _, e := range entries {
+		if e.Name() != ".git" {
+			names = append(names, e.Name())
+		}
+	}
+	assert.Empty(t, names, "a rejected remember call must not write anything under the store")
 }
 
 // requireSingleEntry requires exactly one file under dir and reads it back
@@ -194,6 +236,54 @@ func TestRememberWritesUnderEachScopeTier(t *testing.T) {
 			assert.Equal(t, []string{tc.tag}, e.Scope)
 		})
 	}
+}
+
+// TestRememberPrivateTierCommitsDirectlyAndReportsSHA covers crn-419.3's CLI
+// wiring: a private-tier (agent/) remember call must commit the entry to the
+// store's current branch and print the resulting SHA as a second line, after
+// the entry id. The underlying CommitDirect logic (exactly one new commit,
+// containing only the entry file, no branch created) is already exhaustively
+// covered at the internal/cairn level -- this only proves RunE actually calls
+// it and reports what it returns.
+func TestRememberPrivateTierCommitsDirectlyAndReportsSHA(t *testing.T) {
+	var store string
+	var runErr error
+	stdout := captureStdout(t, func() {
+		store, runErr = runRemember(t, "--topic", "valid-topic", "--scope", "agent:test", "a body")
+	})
+	require.NoError(t, runErr)
+
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	head := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
+
+	lines := strings.Fields(strings.TrimSpace(stdout))
+	require.Len(t, lines, 2, "a private-tier remember must print the entry id then the commit SHA")
+	assert.Equal(t, e.ID, lines[0])
+	assert.Equal(t, head, lines[1])
+
+	log := strings.TrimSpace(gitOutput(t, store, "log", "--oneline"))
+	assert.Len(t, strings.Split(log, "\n"), 1, "exactly one commit must exist in the store")
+}
+
+// TestRememberNonPrivateTierDoesNotCommit covers the other side of the same
+// wiring: a shared-tier (rig:/role:) remember call writes the entry but must
+// not commit it -- that tier's DESIGN.md §7 flow is propose-on-a-branch +
+// review (crn-419.4), not implemented by this bead.
+func TestRememberNonPrivateTierDoesNotCommit(t *testing.T) {
+	var store string
+	var runErr error
+	stdout := captureStdout(t, func() {
+		store, runErr = runRemember(t, "--topic", "valid-topic", "--scope", "rig:web", "a body")
+	})
+	require.NoError(t, runErr)
+
+	requireSingleEntry(t, filepath.Join(store, "rig", "web"))
+
+	status := gitOutput(t, store, "status", "--porcelain")
+	assert.Contains(t, status, "??", "a shared-tier entry must be left untracked, not auto-committed")
+
+	lines := strings.Fields(strings.TrimSpace(stdout))
+	assert.Len(t, lines, 1, "a non-private-tier remember must print only the entry id, no commit SHA")
 }
 
 func TestRememberRegisteredOnRootCmd(t *testing.T) {

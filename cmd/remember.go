@@ -49,6 +49,14 @@ var rememberCmd = &cobra.Command{
 			return fmt.Errorf("write entry: %w", err)
 		}
 		fmt.Printf("%s\n", e.ID)
+
+		if cairn.IsPrivateScope(e.Scope) {
+			sha, err := e.CommitDirect(cmd.Context(), storePath())
+			if err != nil {
+				return fmt.Errorf("commit entry: %w", err)
+			}
+			fmt.Printf("%s\n", sha)
+		}
 		return nil
 	},
 }

@@ -150,3 +150,95 @@ func TestEntryCreateRetriesOnIDCollision(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, e.ID, got.ID)
 }
+
+func TestIsPrivateScope(t *testing.T) {
+	cases := []struct {
+		name  string
+		scope []string
+		want  bool
+	}{
+		{"empty scope is not private", nil, false},
+		{"rig tag is not private", []string{"rig:web"}, false},
+		{"role tag is not private", []string{"role:reviewer"}, false},
+		{"agent tag is private", []string{"agent:bot"}, true},
+		{"rig beats agent -- not private", []string{"agent:bot", "rig:web"}, false},
+		{"role beats agent -- not private", []string{"agent:bot", "role:reviewer"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, IsPrivateScope(tc.scope))
+		})
+	}
+}
+
+// TestCommitDirectCommitsOnlyTheEntryFile covers AC1-3 of crn-419.3: exactly
+// one new commit lands on the store's current branch, it contains only the
+// new entry file, no branch is created, and the reported SHA matches the
+// store's new HEAD.
+func TestCommitDirectCommitsOnlyTheEntryFile(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	seedSHA, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	seedSHA = strings.TrimSpace(seedSHA)
+	branchBefore, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+
+	e, err := NewEntry("build-flags", []string{"agent:bot"}, "prefer feature flags over env vars", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	sha, err := e.CommitDirect(ctx, store)
+	require.NoError(t, err)
+	assert.NotEmpty(t, sha)
+
+	head, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(head), sha, "the returned SHA must be the store's new HEAD")
+
+	parent, err := gitRun(ctx, store, "rev-parse", "HEAD~1")
+	require.NoError(t, err)
+	assert.Equal(t, seedSHA, strings.TrimSpace(parent), "exactly one new commit must land on top of the prior HEAD")
+
+	rel, err := filepath.Rel(store, e.BodyPath)
+	require.NoError(t, err)
+	changed, err := gitRun(ctx, store, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, []string{rel}, strings.Fields(changed), "the commit must contain only the new entry file")
+
+	branchAfter, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(branchBefore), strings.TrimSpace(branchAfter), "CommitDirect must not switch branches")
+	allBranches, err := gitRun(ctx, store, "branch", "--list")
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(allBranches), "\n"), 1, "CommitDirect must not create a new branch")
+
+	status, err := gitRun(ctx, store, "status", "--porcelain")
+	require.NoError(t, err)
+	assert.Empty(t, strings.TrimSpace(status), "working tree must be clean after a successful commit")
+}
+
+// TestCommitDirectFailureLeavesEntryUncommittedAndReportsError covers AC4:
+// a git failure surfaces as a clear error (naming the git step that failed),
+// and the already-written entry file is left on disk exactly as Create wrote
+// it -- reported as uncommitted, not silently rolled back or lost.
+func TestCommitDirectFailureLeavesEntryUncommittedAndReportsError(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir() // deliberately not a git repo
+
+	e, err := NewEntry("build-flags", []string{"agent:bot"}, "body", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	_, err = e.CommitDirect(ctx, store)
+	require.Error(t, err, "a git failure must be surfaced, not swallowed")
+	assert.Contains(t, err.Error(), "git add", "the error should make clear which git step failed")
+
+	got, perr := ParseEntry(e.BodyPath)
+	require.NoError(t, perr, "the written entry file must survive a commit failure, not be rolled back or silently lost")
+	assert.Equal(t, e.ID, got.ID)
+}
