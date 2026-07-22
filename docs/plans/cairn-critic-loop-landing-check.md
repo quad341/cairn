@@ -93,7 +93,7 @@ wording or `mol-witness-patrol`'s literal `--oneline`-subject wording.
 [[steps]]
 id = "landing-check"
 title = "Verify a critic-loop-filed bead's fix landed on origin/main before closing"
-description = """
+description = '''
 Before closing any bead this loop filed (step 4), verify its fix is actually
 on origin/main. This rig squash-merges: git merge-base --is-ancestor never
 succeeds (a branch commit is never an ancestor of the squashed result), and a
@@ -117,7 +117,7 @@ that ever to exist):
     gc mail send mayor "landing-check: $ID not yet landed" "Critic-loop wanted to close $ID but its fix isn't on origin/main yet — left open, needs follow-up."
     echo "$ID not landed — left open, escalated"
   fi
-"""
+'''
 ```
 
 This satisfies the remaining acceptance criteria directly: not-yet-landed never
