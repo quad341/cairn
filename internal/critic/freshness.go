@@ -60,7 +60,7 @@ func checkFreshnessNoAnchor(ctx context.Context, store, n string) Result {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("seed fixture: %v", err))
 	}
 
-	loaded, err := cairn.Find(store, e.ID)
+	loaded, err := cairn.Find(ctx, store, e.ID)
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("Find: %v", err))
 	}
@@ -88,7 +88,7 @@ func checkFreshnessNeverVerified(ctx context.Context, store, n, repo string) Res
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("seed fixture: %v", err))
 	}
 
-	loaded, err := cairn.Find(store, e.ID)
+	loaded, err := cairn.Find(ctx, store, e.ID)
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("Find: %v", err))
 	}
@@ -124,7 +124,7 @@ func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Re
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("seed fixture: %v", err))
 	}
 
-	loaded, err := cairn.Find(store, e.ID)
+	loaded, err := cairn.Find(ctx, store, e.ID)
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("Find: %v", err))
 	}

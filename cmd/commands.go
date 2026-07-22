@@ -58,7 +58,7 @@ var freshnessCmd = &cobra.Command{
 	Short: "Freshness of one entry",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		e, err := cairn.Find(storePath(), args[0])
+		e, err := cairn.Find(cmd.Context(), storePath(), args[0])
 		if errors.Is(err, cairn.ErrNotFound) {
 			return fmt.Errorf("no entry %q", args[0])
 		}
@@ -76,7 +76,7 @@ var getCmd = &cobra.Command{
 	Short: "Pull an entry's full body + freshness (direct by-id lookup, bypasses scope)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		e, err := cairn.Find(storePath(), args[0])
+		e, err := cairn.Find(cmd.Context(), storePath(), args[0])
 		if errors.Is(err, cairn.ErrNotFound) {
 			return fmt.Errorf("no entry %q", args[0])
 		}
@@ -105,7 +105,7 @@ var verifyCmd = &cobra.Command{
 	Short: "Recompute + write back an entry's anchor fingerprint (mark verified)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		e, err := cairn.Find(storePath(), args[0])
+		e, err := cairn.Find(cmd.Context(), storePath(), args[0])
 		if errors.Is(err, cairn.ErrNotFound) {
 			return fmt.Errorf("no entry %q", args[0])
 		}

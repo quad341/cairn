@@ -3,6 +3,8 @@
 package cairn
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -142,18 +144,65 @@ func IterEntries(store string) ([]*Entry, error) {
 	return out, nil
 }
 
-// Find returns the entry with the given id, or ErrNotFound.
-func Find(store, id string) (*Entry, error) {
-	entries, err := IterEntries(store)
+// Find returns the entry with the given id, or ErrNotFound. It resolves via
+// the index (one point query) rather than IterEntries' walk-plus-scan, so a
+// lookup costs one SQL query and one file read regardless of store size
+// (crn-6az.6.1.3). On a hit it increments the index's hit_count (FR-4); a
+// miss has no side effect.
+func Find(ctx context.Context, store, id string) (*Entry, error) {
+	if err := ensureFresh(ctx, store); err != nil {
+		return nil, err
+	}
+	db, err := openDB(store)
 	if err != nil {
 		return nil, err
 	}
-	for _, e := range entries {
-		if e.ID == id {
-			return e, nil
+	defer func() { _ = db.Close() }()
+
+	bodyPath, err := findBodyPath(ctx, db, id)
+	if errors.Is(err, ErrNotFound) {
+		// ensureFresh's git-HEAD staleness check can't see a body written
+		// since the last commit -- on a non-git store, or one whose HEAD
+		// hasn't moved, it treats an already-built index as fresh forever
+		// (crn-6az.6.1.2). Rather than weaken that self-heal's "don't
+		// reindex needlessly" contract for every caller, force one reindex
+		// here before concluding id genuinely doesn't exist, so an entry
+		// created since the last reindex is never reported missing.
+		if _, rerr := Reindex(ctx, store); rerr != nil {
+			return nil, rerr
 		}
+		bodyPath, err = findBodyPath(ctx, db, id)
 	}
-	return nil, ErrNotFound
+	if err != nil {
+		return nil, err
+	}
+
+	e, err := ParseEntry(bodyPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// hit_count is index-only state (crn-6az.6.1.1): the freshly-parsed body's
+	// value is stale-by-construction, so it's always overwritten with the
+	// authoritative post-increment count rather than trusted from the file.
+	err = db.QueryRowContext(ctx,
+		`UPDATE entries SET hit_count = hit_count + 1 WHERE id = ? RETURNING hit_count`, id,
+	).Scan(&e.HitCount)
+	if err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
+// findBodyPath is Find's point lookup, factored out so Find can retry it
+// once after a forced reindex without duplicating the query.
+func findBodyPath(ctx context.Context, db *sql.DB, id string) (string, error) {
+	var bodyPath string
+	err := db.QueryRowContext(ctx, `SELECT body_path FROM entries WHERE id = ?`, id).Scan(&bodyPath)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return bodyPath, err
 }
 
 // Visible returns entries an identity may see: every scope-tag on the entry

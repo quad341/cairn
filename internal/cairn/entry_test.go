@@ -1,6 +1,7 @@
 package cairn
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -277,4 +278,80 @@ func TestShadowMapGlobalShadowedByScoped(t *testing.T) {
 	require.Contains(t, sm, "gs", "the global (empty-scope) entry must be shadowed by the scoped one")
 	assert.Equal(t, "rs", sm["gs"].ID)
 	assert.NotContains(t, sm, "rs", "the scoped entry must not appear as shadowed by the global one")
+}
+
+func TestFindReturnsErrNotFoundForUnknownID(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+
+	_, err := Find(ctx, store, "does-not-exist")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFindIncrementsHitCount(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
+
+	e, err := Find(ctx, store, "a")
+	require.NoError(t, err)
+	assert.Equal(t, 1, e.HitCount, "the returned entry must carry the authoritative post-increment count")
+
+	e, err = Find(ctx, store, "a")
+	require.NoError(t, err)
+	assert.Equal(t, 2, e.HitCount)
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var hitCount int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT hit_count FROM entries WHERE id = 'a'").Scan(&hitCount))
+	assert.Equal(t, 2, hitCount, "the index's own counter must match what Find returned")
+}
+
+func TestFindUsesIndexPointLookupNotWalk(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
+
+	_, err := Find(ctx, store, "a")
+	require.NoError(t, err, "this builds the index")
+
+	// A genuinely malformed entry (unterminated frontmatter) added after
+	// indexing would break a walk-based lookup: IterEntries propagates any
+	// ParseEntry error that isn't errNotEntry.
+	writeFile(t, store, "global/bad.md", "+++\nid = \"bad\nno closing fence\n")
+	_, err = IterEntries(store)
+	require.Error(t, err, "sanity check: the malformed sibling file must break a walk")
+
+	// Find resolves "a" via the already-built index rather than re-walking --
+	// a non-git store's index is trusted fresh once built (crn-6az.6.1.2) --
+	// so the malformed sibling is never parsed.
+	e, err := Find(ctx, store, "a")
+	require.NoError(t, err)
+	assert.Equal(t, "a", e.ID)
+}
+
+func TestFindAfterSequentialCreateOnNonGitStore(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+
+	e1, err := NewEntry("dbg-topic-1", nil, "body 1", "tester")
+	require.NoError(t, err)
+	require.NoError(t, e1.Create(store))
+
+	_, err = Find(ctx, store, e1.ID)
+	require.NoError(t, err, "first Find must succeed")
+
+	e2, err := NewEntry("dbg-topic-2", nil, "body 2", "tester")
+	require.NoError(t, err)
+	require.NoError(t, e2.Create(store))
+
+	// Entry.Create is a pure filesystem write -- no git commit, no reindex --
+	// so without Find's retry-on-miss, ensureFresh would treat the index
+	// built by the first Find above as fresh forever on this non-git store
+	// (crn-6az.6.1.2), falsely reporting this second entry not found.
+	_, err = Find(ctx, store, e2.ID)
+	require.NoError(t, err, "second Find must succeed even though the store's index predates this entry")
 }
