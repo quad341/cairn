@@ -15,7 +15,18 @@ import (
 )
 
 // runRemember executes "cairn remember" (plus extraArgs) against the shared
-// rootCmd. rootCmd/rememberCmd are package-level singletons, so pflag state
+// rootCmd, stubbing gc to always succeed (stubGC). See runRememberWithGC for
+// the full mechanics; this is the always-succeeding common case nearly every
+// test in this file wants.
+func runRemember(t *testing.T, extraArgs ...string) (string, error) {
+	t.Helper()
+	return runRememberWithGC(t, stubGC, extraArgs...)
+}
+
+// runRememberWithGC is runRemember parameterized on the gc stub, so a test
+// can exercise a shared-tier remember call's reviewer-mail failure path
+// (stubGCFail, crn-419.4 AC4) instead of always wiring up the succeeding
+// one. rootCmd/rememberCmd are package-level singletons, so pflag state
 // otherwise leaks across tests in this binary: resetRememberFlags clears
 // --topic/--scope (this file's own flags) and the inherited --identity flag
 // before and after every call. --identity is a StringSlice; commands_test.go's
@@ -30,14 +41,14 @@ import (
 // (agent/) remember now commits straight to the store's current branch
 // (crn-419.3), so a plain non-git t.TempDir() would fail that step even on
 // otherwise-valid input.
-func runRemember(t *testing.T, extraArgs ...string) (string, error) {
+func runRememberWithGC(t *testing.T, stub func(*testing.T), extraArgs ...string) (string, error) {
 	t.Helper()
 	resetRememberFlags(t)
 	t.Cleanup(func() { resetRememberFlags(t) })
 
 	store := t.TempDir()
 	gitInit(t, store)
-	stubGC(t)
+	stub(t)
 	args := append([]string{"remember", "--store", store}, extraArgs...)
 	rootCmd.SetArgs(args)
 	rootCmd.SetOut(&bytes.Buffer{})
@@ -83,12 +94,33 @@ func gitOutput(t *testing.T, dir string, args ...string) string {
 // is already on PATH.
 func stubGC(t *testing.T) {
 	t.Helper()
+	writeStubGC(t, "#!/bin/sh\nexit 0\n")
+}
+
+// stubGCFail is stubGC's mirror image: the stubbed gc binary always fails
+// (exit 1), so a shared-tier remember call's reviewer-mail step
+// (requestReview's sendReviewMail) fails deterministically -- after the
+// entry has already been committed to its review branch, since
+// CommitToReviewBranch runs first. Covers crn-419.4 AC4 (crn-kbf): that
+// failure must not roll back the already-durable review-branch commit, and
+// must be reported clearly.
+func stubGCFail(t *testing.T) {
+	t.Helper()
+	writeStubGC(t, "#!/bin/sh\nexit 1\n")
+}
+
+// writeStubGC shadows the real gc binary on PATH with a stub running script,
+// and pins GC_RIG to a fixed value so tier-default reviewer resolution
+// (defaultReviewer) is deterministic regardless of the real environment this
+// test binary happens to run in.
+func writeStubGC(t *testing.T, script string) {
+	t.Helper()
 	t.Setenv("GC_RIG", "test-rig")
 
 	dir := t.TempDir()
-	script := filepath.Join(dir, "gc")
+	path := filepath.Join(dir, "gc")
 	//nolint:gosec // must be executable to stand in for the gc binary on PATH
-	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte(script), 0o700))
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
@@ -308,6 +340,43 @@ func TestRememberNonPrivateTierDoesNotCommit(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	require.Len(t, lines, 3, "a non-private-tier remember must print the entry id, the review branch, and the mailed reviewer -- no commit SHA")
 	assert.NotContains(t, lines[0], "/", "the first line must be the bare entry id, not a branch or reviewer address")
+}
+
+// TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsError covers
+// crn-419.4 AC4 (crn-kbf): a shared-tier remember call whose reviewer-mail
+// step fails must not roll back the review-branch commit -- the entry is
+// already durably committed to remember/<id> by the time mail could fail
+// (CommitToReviewBranch runs before sendReviewMail in requestReview, and
+// there is no rollback logic for a later step's failure, by design -- see
+// cmd/reviewer.go). The returned error must name both the branch and the
+// mail failure, so an operator isn't left guessing whether the entry landed
+// anywhere. Mirrors internal/cairn's
+// TestCommitDirectFailureLeavesEntryUncommittedAndReportsError one commit
+// earlier in this stack (crn-419.3): force the failure, then assert the
+// already-durable state survives it and is reported.
+func TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsError(t *testing.T) {
+	var store string
+	var runErr error
+	stdout := captureStdout(t, func() {
+		store, runErr = runRememberWithGC(t, stubGCFail, "--topic", "valid-topic", "--scope", "rig:web", "a body")
+	})
+	require.Error(t, runErr, "a failed reviewer-mail step must surface as a command error (and thus a non-zero process exit via cmd/root.go), not be swallowed")
+
+	e := requireSingleEntry(t, filepath.Join(store, "rig", "web"))
+	branch := "remember/" + e.ID
+
+	assert.Contains(t, runErr.Error(), branch, "the error must name the review branch the entry already landed on")
+	assert.Contains(t, runErr.Error(), "mail", "the error must make clear the mail step is what failed")
+
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.Len(t, lines, 2, "the id and review-branch lines print before the mail step fails; no third 'mailed reviewer' line follows")
+	assert.Equal(t, e.ID, lines[0])
+	assert.Equal(t, "review branch: "+branch, lines[1])
+
+	// gitOutput's own require.NoErrorf is the assertion here: if the review
+	// branch didn't survive the mail failure, "rev-parse --verify" fails and
+	// the test fails with git's own error text.
+	gitOutput(t, store, "rev-parse", "--verify", branch)
 }
 
 func TestRememberRegisteredOnRootCmd(t *testing.T) {

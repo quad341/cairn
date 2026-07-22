@@ -80,16 +80,24 @@ func defaultReviewer(tier, value string) (string, error) {
 }
 
 // validateReviewerAddress rejects an explicit --reviewer/$CAIRN_REVIEWER
-// override that is empty or carries a control/null byte, rather than
-// silently passing a garbage recipient through to `gc mail send`. It
-// deliberately does not reuse cairn.ValidatePathSegment: a real reviewer
-// address contains a slash (e.g. "myrig/architect"), which that validator
-// rejects outright. An unset override is not a misconfiguration -- that
-// path never reaches this function.
+// override that is empty, starts with '-', or carries a control/null byte,
+// rather than silently passing a garbage recipient through to `gc mail
+// send`. The leading-'-' check exists because sendReviewMail passes reviewer
+// as a bare positional argument with no `--` separator guard (unlike this
+// package's git call sites, which always guard a positional pathspec with
+// `--`) -- rejecting it here keeps a malformed override from being misread
+// as a flag by `gc mail send`'s own argument parser. It deliberately does
+// not reuse cairn.ValidatePathSegment: a real reviewer address contains a
+// slash (e.g. "myrig/architect"), which that validator rejects outright. An
+// unset override is not a misconfiguration -- that path never reaches this
+// function.
 func validateReviewerAddress(addr string) (string, error) {
 	trimmed := strings.TrimSpace(addr)
 	if trimmed == "" {
 		return "", errors.New("reviewer address must not be empty")
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return "", errors.New("reviewer address must not start with '-' (would be misread as a flag by gc mail send)")
 	}
 	for _, r := range trimmed {
 		if r < 0x20 || r == 0x7f {
