@@ -90,7 +90,7 @@ func TestVisible(t *testing.T) {
 	writeFile(t, dir, "role/investigator/x.md", crossEntry)
 
 	seen := func(identity []string) map[string]bool {
-		vs, err := Visible(dir, identity)
+		vs, err := Visible(t.Context(), dir, identity)
 		require.NoError(t, err)
 		m := map[string]bool{}
 		for _, e := range vs {
@@ -132,7 +132,7 @@ func TestVisibleShadowsBySpecificity(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/s1.md", lessSpecificShared)
 	writeFile(t, dir, "role/investigator/s2.md", moreSpecificShared)
 
-	vs, err := Visible(dir, []string{"rig:alpha", "role:investigator"})
+	vs, err := Visible(t.Context(), dir, []string{"rig:alpha", "role:investigator"})
 	require.NoError(t, err)
 
 	ids := map[string]bool{}
@@ -148,7 +148,7 @@ func TestVisibleShadowTiebreakVerifiedAt(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/v1.md", earlyVerifiedShared)
 	writeFile(t, dir, "rig/alpha/v2.md", lateVerifiedShared)
 
-	vs, err := Visible(dir, []string{"rig:alpha"})
+	vs, err := Visible(t.Context(), dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 
 	ids := map[string]bool{}
@@ -164,7 +164,7 @@ func TestVisibleShadowTiebreakID(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/c2.md", tiebreakHighID)
 	writeFile(t, dir, "rig/alpha/c1.md", tiebreakLowID)
 
-	vs, err := Visible(dir, []string{"rig:alpha"})
+	vs, err := Visible(t.Context(), dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 
 	ids := map[string]bool{}
@@ -181,7 +181,7 @@ func TestVisibleUntopicedNeverShadow(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/u2.md", untopiced2)
 	writeFile(t, dir, "rig/alpha/u3.md", untopiced3)
 
-	vs, err := Visible(dir, []string{"rig:alpha"})
+	vs, err := Visible(t.Context(), dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 
 	ids := map[string]bool{}
@@ -277,4 +277,55 @@ func TestShadowMapGlobalShadowedByScoped(t *testing.T) {
 	require.Contains(t, sm, "gs", "the global (empty-scope) entry must be shadowed by the scoped one")
 	assert.Equal(t, "rs", sm["gs"].ID)
 	assert.NotContains(t, sm, "rs", "the scoped entry must not appear as shadowed by the global one")
+}
+
+func TestVisibleNeverReadsBodiesAfterIndexBuilt(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	vs, err := Visible(t.Context(), dir, nil)
+	require.NoError(t, err)
+	require.Len(t, vs, 1)
+	assert.Equal(t, "g", vs[0].ID)
+
+	// Added after the index already exists, on a store with no git HEAD to
+	// diff against -- ensureFresh treats an already-indexed, non-git store as
+	// forever fresh (see indexStale), so this file is never walked. Confirm
+	// it really would break a body walk if it were, so the assertion below
+	// is a real proof rather than a vacuous one.
+	writeFile(t, dir, "global/broken.md", "+++\nid = \"broken\"\nno closing fence\n")
+	_, walkErr := IterEntries(dir)
+	require.Error(t, walkErr, "sanity check: the malformed sibling must actually break a body walk")
+
+	vs2, err := Visible(t.Context(), dir, nil)
+	require.NoError(t, err, "Visible must never re-walk bodies to satisfy a query")
+	require.Len(t, vs2, 1)
+	assert.Equal(t, "g", vs2[0].ID)
+}
+
+func TestVisibleNeverTouchesHitCount(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	_, err := Visible(t.Context(), dir, nil)
+	require.NoError(t, err)
+
+	// Simulate a prior Find/Get having bumped hit_count independently of the
+	// body (crn-6az.6.1.1, see reindexTx's comment) -- exactly the index-only
+	// state Visible must leave alone, since it only ever issues SELECTs.
+	db, err := openDB(dir)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `UPDATE entries SET hit_count = 7 WHERE id = 'g'`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = Visible(t.Context(), dir, nil)
+	require.NoError(t, err)
+
+	db, err = openDB(dir)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	var got int
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT hit_count FROM entries WHERE id = 'g'`).Scan(&got))
+	assert.Equal(t, 7, got, "Visible must never touch hit_count")
 }

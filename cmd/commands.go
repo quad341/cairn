@@ -131,7 +131,7 @@ var mapCmd = &cobra.Command{
 	Short: "Bounded topic map for an identity (the always-in-context payload)",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		identity := resolveIdentity(cmd)
-		rows, err := cairn.Visible(storePath(), identity)
+		rows, err := cairn.Visible(cmd.Context(), storePath(), identity)
 		if err != nil {
 			return err
 		}

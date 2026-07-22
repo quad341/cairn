@@ -1,6 +1,7 @@
 package critic
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/quad341/cairn/internal/cairn"
@@ -16,24 +17,24 @@ const scopePrecedenceScenarioID = "scope-precedence-shadow-and-shadowmap"
 // exact-superset test (used by `cairn status`), because a tag-count-only
 // proxy is unsound store-wide when two entries have an equal or
 // incomparable tag count with neither a superset of the other.
-func RunScopePrecedenceScenario(store string) Result {
+func RunScopePrecedenceScenario(ctx context.Context, store string) Result {
 	n, err := nonce()
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("nonce: %v", err))
 	}
-	if r := checkShadowWinsBySpecificity(store, n); r.Verdict != Pass {
+	if r := checkShadowWinsBySpecificity(ctx, store, n); r.Verdict != Pass {
 		return r
 	}
-	if r := checkShadowTiebreak(store, n); r.Verdict != Pass {
+	if r := checkShadowTiebreak(ctx, store, n); r.Verdict != Pass {
 		return r
 	}
-	return checkShadowMapSupersetSemantics(store, n)
+	return checkShadowMapSupersetSemantics(ctx, store, n)
 }
 
 // checkShadowWinsBySpecificity seeds 3 entries sharing one topic key at
 // increasing scope-tag count and asserts Visible() returns exactly the
 // most specific one.
-func checkShadowWinsBySpecificity(store, n string) Result {
+func checkShadowWinsBySpecificity(ctx context.Context, store, n string) Result {
 	topic := "critic-scope-" + n
 	rig := "rig:critic-" + n
 
@@ -50,13 +51,13 @@ func checkShadowWinsBySpecificity(store, n string) Result {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build rig+role entry: %v", err))
 	}
 
-	cleanup, err := seedEntries(store, []*cairn.Entry{global, rigOnly, rigAndRole})
+	cleanup, err := seedEntries(ctx, store, []*cairn.Entry{global, rigOnly, rigAndRole})
 	defer cleanup()
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("seed fixtures: %v", err))
 	}
 
-	visible, err := cairn.Visible(store, []string{rig, "role:builder"})
+	visible, err := cairn.Visible(ctx, store, []string{rig, "role:builder"})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("Visible: %v", err))
 	}
@@ -73,7 +74,7 @@ func checkShadowWinsBySpecificity(store, n string) Result {
 // scope-tag count (so specificity alone can't decide) but different
 // VerifiedAt, and asserts Visible() returns the later-verified one — the
 // first link in shadow()'s documented tiebreak chain.
-func checkShadowTiebreak(store, n string) Result {
+func checkShadowTiebreak(ctx context.Context, store, n string) Result {
 	topic := "critic-scope-tiebreak-" + n
 	rig := "rig:critic-" + n
 
@@ -88,13 +89,13 @@ func checkShadowTiebreak(store, n string) Result {
 	}
 	newer.VerifiedAt = "2026-01-01"
 
-	cleanup, err := seedEntries(store, []*cairn.Entry{older, newer})
+	cleanup, err := seedEntries(ctx, store, []*cairn.Entry{older, newer})
 	defer cleanup()
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("seed fixtures: %v", err))
 	}
 
-	visible, err := cairn.Visible(store, []string{rig})
+	visible, err := cairn.Visible(ctx, store, []string{rig})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("Visible: %v", err))
 	}
@@ -113,7 +114,7 @@ func checkShadowTiebreak(store, n string) Result {
 // ShadowMap() never shadows the incomparable pair but does shadow the
 // superset pair — entry.go's own documented edge case for why ShadowMap()
 // cannot reuse shadow()'s tag-count proxy store-wide.
-func checkShadowMapSupersetSemantics(store, n string) Result {
+func checkShadowMapSupersetSemantics(ctx context.Context, store, n string) Result {
 	incTopic := "critic-scope-inc-" + n
 	a, err := cairn.NewEntry(incTopic, []string{"rig:critic-" + n}, "a body", "critic")
 	if err != nil {
@@ -135,7 +136,7 @@ func checkShadowMapSupersetSemantics(store, n string) Result {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build superset rig+role: %v", err))
 	}
 
-	cleanup, err := seedEntries(store, []*cairn.Entry{a, b, rigOnly, rigRole})
+	cleanup, err := seedEntries(ctx, store, []*cairn.Entry{a, b, rigOnly, rigRole})
 	defer cleanup()
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("seed fixtures: %v", err))

@@ -10,7 +10,7 @@ import (
 
 func TestRunRecallScenarioPasses(t *testing.T) {
 	store := t.TempDir()
-	r := RunRecallScenario(store)
+	r := RunRecallScenario(t.Context(), store)
 	require.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 	assert.Equal(t, DimensionRecall, r.Dimension)
 	assert.Equal(t, recallScenarioID, r.ScenarioID)
@@ -19,15 +19,15 @@ func TestRunRecallScenarioPasses(t *testing.T) {
 
 func TestRunRecallScenarioIsRepeatable(t *testing.T) {
 	store := t.TempDir()
-	r1 := RunRecallScenario(store)
+	r1 := RunRecallScenario(t.Context(), store)
 	require.Equal(t, Pass, r1.Verdict, "detail: %s", r1.Detail)
-	r2 := RunRecallScenario(store)
+	r2 := RunRecallScenario(t.Context(), store)
 	require.Equal(t, Pass, r2.Verdict, "detail: %s", r2.Detail)
 }
 
 func TestRunRecallScenarioCleansUpAfterItself(t *testing.T) {
 	store := t.TempDir()
-	r := RunRecallScenario(store)
+	r := RunRecallScenario(t.Context(), store)
 	require.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 
 	entries, err := cairn.IterEntries(store)
