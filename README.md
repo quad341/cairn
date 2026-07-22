@@ -5,8 +5,7 @@
 </p>
 
 [![CI](https://github.com/quad341/cairn/actions/workflows/ci.yml/badge.svg)](https://github.com/quad341/cairn/actions/workflows/ci.yml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/quad341/cairn)](https://goreportcard.com/report/github.com/quad341/cairn)
-[![Go Reference](https://pkg.go.dev/badge/github.com/quad341/cairn.svg)](https://pkg.go.dev/github.com/quad341/cairn)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/quad341/cairn)](go.mod)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > A cairn is the stack of stones a traveler leaves to mark the trail — so whoever
