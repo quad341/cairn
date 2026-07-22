@@ -13,18 +13,18 @@ func TestPrime(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/r.md",
 		"+++\nid = \"r\"\ntitle = \"r\"\ntopic_key = \"alpha/thing\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
 
-	out, err := Prime(dir, []string{"rig:alpha"})
+	out, err := Prime(t.Context(), dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 	assert.Contains(t, out, "alpha/thing", "an alpha-scoped agent should see the alpha topic")
 	assert.Contains(t, out, "hand-author", "prime should still nudge agents to capture what they learn")
 
-	bare, err := Prime(dir, nil)
+	bare, err := Prime(t.Context(), dir, nil)
 	require.NoError(t, err)
 	assert.NotContains(t, bare, "alpha/thing", "a bare identity should not see the alpha topic")
 }
 
 func TestPrimeEmpty(t *testing.T) {
-	out, err := Prime(t.TempDir(), nil)
+	out, err := Prime(t.Context(), t.TempDir(), nil)
 	require.NoError(t, err)
 	assert.Contains(t, out, "No cached knowledge")
 }

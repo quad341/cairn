@@ -5,9 +5,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/quad341/cairn/internal/cairn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -127,4 +130,72 @@ func TestStatusNoAnnotationWithoutShadow(t *testing.T) {
 
 	assert.NotContains(t, out, "SHADOWED BY",
 		"entries with no shadow relationship must never be annotated")
+}
+
+// runMap executes "cairn map" (plus any extra args) against the shared
+// rootCmd, mirroring runStatus above (including the same --identity
+// Changed-bit reset, since rootCmd is a package-level singleton).
+func runMap(t *testing.T, dir string, extraArgs ...string) error {
+	t.Helper()
+	f := rootCmd.PersistentFlags().Lookup("identity")
+	require.NotNil(t, f)
+	f.Changed = false
+	t.Cleanup(func() { f.Changed = false })
+
+	args := append([]string{"map", "--store", dir}, extraArgs...)
+	rootCmd.SetArgs(args)
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	return rootCmd.Execute()
+}
+
+var (
+	// mapLineRE matches mapCmd's "  %s  (%d)\n" per-topic line format.
+	mapLineRE = regexp.MustCompile(`(?m)^  (\S+)  \((\d+)\)$`)
+	// primeLineRE matches Prime's "  %-44s %d\n" per-topic line format. \s+
+	// absorbs the %-44s padding regardless of its exact width.
+	primeLineRE = regexp.MustCompile(`(?m)^  (\S+)\s+(\d+)$`)
+)
+
+// topicCounts parses a map/prime rendering's per-topic lines into a plain
+// topic->count map using re (which accounts for the two commands'
+// different column formatting), so the two surfaces' shared underlying
+// computation can be compared for exact agreement independent of
+// presentation.
+func topicCounts(t *testing.T, out string, re *regexp.Regexp) map[string]int {
+	t.Helper()
+	counts := map[string]int{}
+	for _, m := range re.FindAllStringSubmatch(out, -1) {
+		n, err := strconv.Atoi(m[2])
+		require.NoError(t, err)
+		counts[m[1]] = n
+	}
+	return counts
+}
+
+// TestMapAndPrimeAgreeOnTopicCounts guards the specificity-shadowing
+// semantics Visible implements (crn-6az.6.1.4): map and prime independently
+// recompute topic->count from the same Visible() result, so a shadowed
+// entry must vanish from both tallies identically, not just one, and
+// neither surface may double-count the topic key it shares with its
+// shadower.
+func TestMapAndPrimeAgreeOnTopicCounts(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "rig/alpha/less-specific.md", shadowedByScoped)
+	seedEntry(t, dir, "role/investigator/more-specific.md", shadowsScoped)
+	seedEntry(t, dir, "global/unrelated-a.md", unrelatedTopicA)
+	seedEntry(t, dir, "global/unrelated-b.md", unrelatedTopicB)
+
+	var mapErr error
+	mapOut := captureStdout(t, func() {
+		mapErr = runMap(t, dir, "--identity", "rig:alpha,role:investigator")
+	})
+	require.NoError(t, mapErr)
+
+	primeOut, err := cairn.Prime(t.Context(), dir, []string{"rig:alpha", "role:investigator"})
+	require.NoError(t, err)
+
+	want := map[string]int{"shared": 1, "topic-a": 1, "topic-b": 1}
+	assert.Equal(t, want, topicCounts(t, mapOut, mapLineRE), "map's topic counts")
+	assert.Equal(t, want, topicCounts(t, primeOut, primeLineRE), "prime's topic counts")
 }

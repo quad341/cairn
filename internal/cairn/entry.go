@@ -209,30 +209,76 @@ func findBodyPath(ctx context.Context, db *sql.DB, id string) (string, error) {
 // must be satisfied by the identity (a subset match). Global (untagged)
 // entries are visible to all. When multiple visible entries share a
 // non-empty topic_key, only the most specific one is returned — CSS-style
-// shadowing (DESIGN.md §3).
-func Visible(store string, identity []string) ([]*Entry, error) {
-	entries, err := IterEntries(store)
+// shadowing (DESIGN.md §3). Reads the SQL index rather than entry bodies (via
+// ensureFresh's self-heal), so it never reads a body file and never touches
+// hit_count.
+func Visible(ctx context.Context, store string, identity []string) ([]*Entry, error) {
+	if err := ensureFresh(ctx, store); err != nil {
+		return nil, err
+	}
+	db, err := openDB(store)
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = db.Close() }()
+
+	tags, err := scopeTags(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := db.QueryContext(ctx, `SELECT id, topic_key, verified_at, created_at FROM entries`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
 	idset := make(map[string]struct{}, len(identity))
 	for _, t := range identity {
 		idset[t] = struct{}{}
 	}
+
 	var out []*Entry
-	for _, e := range entries {
-		ok := true
+	for rows.Next() {
+		e := &Entry{}
+		if err := rows.Scan(&e.ID, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		e.Scope = tags[e.ID]
+		visible := true
 		for _, tag := range e.Scope {
 			if _, has := idset[tag]; !has {
-				ok = false
+				visible = false
 				break
 			}
 		}
-		if ok {
+		if visible {
 			out = append(out, e)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return shadow(out), nil
+}
+
+// scopeTags loads every entry's scope tags from the index, keyed by entry id.
+func scopeTags(ctx context.Context, db *sql.DB) (map[string][]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT entry_id, tag FROM entry_tags`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	tags := make(map[string][]string)
+	for rows.Next() {
+		var id, tag string
+		if err := rows.Scan(&id, &tag); err != nil {
+			return nil, err
+		}
+		tags[id] = append(tags[id], tag)
+	}
+	return tags, rows.Err()
 }
 
 // shadow resolves topic_key conflicts by specificity: the entry with the most
