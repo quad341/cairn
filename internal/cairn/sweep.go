@@ -24,15 +24,13 @@ type SweepFinding struct {
 // fingerprint, and it can safely re-observe the same drifted entry on every
 // sweep cycle without erasing the drift signal.
 //
-// For files-type anchors, Sweep independently confirms every configured
-// path resolves to a tracked object at the anchor repo's HEAD before
-// trusting Check's verdict. Check (via ComputeFingerprint's git ls-files
-// fallback) currently derives a stable-but-meaningless fingerprint for an
-// untracked path instead of failing (crn-6az.8.2, open) — once that bogus
-// value is stamped by a verify call, Check reports Fresh forever after,
-// which is worse than the honest Unknown this sweep exists to surface. An
-// anchor that fails this sanity check is reported Unknown here regardless
-// of what Check itself says; Sweep does not otherwise second-guess Check.
+// For files-type anchors, Sweep independently names every configured path
+// that fails to resolve to a tracked object at the anchor repo's HEAD.
+// ComputeFingerprint itself now refuses to fabricate a fingerprint for such
+// a path (crn-6az.8.2, fixed) and Check already reports Unknown on its own,
+// so this no longer changes the verdict — it exists purely to enrich the
+// detail with the specific untracked path(s), which Check's generic "not
+// verifiable" message can't name and which the eventual bd bead body needs.
 func Sweep(ctx context.Context, store string) ([]SweepFinding, error) {
 	entries, err := IterEntries(store)
 	if err != nil {
@@ -45,10 +43,10 @@ func Sweep(ctx context.Context, store string) ([]SweepFinding, error) {
 			continue
 		}
 		status, detail := Check(ctx, e)
-		if e.Anchor.Type == "files" && status != Unknown {
+		if e.Anchor.Type == "files" {
 			if bad := untrackedPaths(ctx, e.Anchor); len(bad) > 0 {
 				detail = fmt.Sprintf(
-					"anchor path(s) not tracked at HEAD in %s: %s (overrides cairn's %s verdict: %s — crn-6az.8.2)",
+					"anchor path(s) not tracked at HEAD in %s: %s (Check reported %s: %s)",
 					e.Anchor.Repo, strings.Join(bad, ", "), status, detail,
 				)
 				status = Unknown
