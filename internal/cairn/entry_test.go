@@ -278,3 +278,88 @@ func TestShadowMapGlobalShadowedByScoped(t *testing.T) {
 	assert.Equal(t, "rs", sm["gs"].ID)
 	assert.NotContains(t, sm, "rs", "the scoped entry must not appear as shadowed by the global one")
 }
+
+func TestStatusNeverReadsBodiesAfterIndexBuilt(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	entries, err := Status(t.Context(), dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "g", entries[0].ID)
+
+	// Added after the index already exists, on a store with no git HEAD to
+	// diff against -- ensureFresh treats an already-indexed, non-git store as
+	// forever fresh (see indexStale), so this file is never walked. Confirm
+	// it really would break a body walk if it were, so the assertion below
+	// is a real proof rather than a vacuous one.
+	writeFile(t, dir, "global/broken.md", "+++\nid = \"broken\"\nno closing fence\n")
+	_, walkErr := IterEntries(dir)
+	require.Error(t, walkErr, "sanity check: the malformed sibling must actually break a body walk")
+
+	entries2, err := Status(t.Context(), dir)
+	require.NoError(t, err, "Status must never re-walk bodies to satisfy a query")
+	require.Len(t, entries2, 1)
+	assert.Equal(t, "g", entries2[0].ID)
+}
+
+func TestStatusNeverTouchesHitCount(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	_, err := Status(t.Context(), dir)
+	require.NoError(t, err)
+
+	db, err := openDB(dir)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `UPDATE entries SET hit_count = 7 WHERE id = 'g'`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = Status(t.Context(), dir)
+	require.NoError(t, err)
+
+	db, err = openDB(dir)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	var got int
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT hit_count FROM entries WHERE id = 'g'`).Scan(&got))
+	assert.Equal(t, 7, got, "Status must never touch hit_count")
+}
+
+func TestStatusPopulatesAnchorAndScopeFields(t *testing.T) {
+	dir := t.TempDir()
+	body := "+++\n" +
+		"id = \"a\"\n" +
+		"title = \"A\"\n" +
+		"topic_key = \"t/a\"\n" +
+		"scope = [\"rig:alpha\", \"role:investigator\"]\n" +
+		"verified_at = \"2026-07-01\"\n" +
+		"created_at = \"2026-01-01T00:00:00Z\"\n" +
+		"\n" +
+		"[anchor]\n" +
+		"type = \"files\"\n" +
+		"repo = \"/some/repo\"\n" +
+		"paths = [\"a.go\", \"b.go\"]\n" +
+		"spec = \"main\"\n" +
+		"fingerprint = \"abc123\"\n" +
+		"+++\n" +
+		"body\n"
+	writeFile(t, dir, "role/investigator/a.md", body)
+
+	entries, err := Status(t.Context(), dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	e := entries[0]
+	assert.Equal(t, "a", e.ID)
+	assert.Equal(t, "t/a", e.TopicKey)
+	assert.ElementsMatch(t, []string{"rig:alpha", "role:investigator"}, e.Scope)
+	assert.Equal(t, "2026-07-01", e.VerifiedAt)
+	assert.Equal(t, "2026-01-01T00:00:00Z", e.CreatedAt)
+	assert.Equal(t, "files", e.Anchor.Type)
+	assert.Equal(t, "/some/repo", e.Anchor.Repo)
+	assert.Equal(t, []string{"a.go", "b.go"}, e.Anchor.Paths)
+	assert.Equal(t, "main", e.Anchor.Spec)
+	assert.Equal(t, "abc123", e.Anchor.Fingerprint)
+}
