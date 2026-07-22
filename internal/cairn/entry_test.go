@@ -3,6 +3,7 @@ package cairn
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -73,6 +74,221 @@ func TestWriteBackRoundTrip(t *testing.T) {
 	assert.Equal(t, "2026-07-19", e2.VerifiedAt)
 	assert.Equal(t, e.ID, e2.ID)
 	assert.Equal(t, e.Body, e2.Body)
+}
+
+const writeBackFixtureUnverified = `+++
+id = "wb/unverified"
+title = "Unverified"
+summary = "s"
+type = "reference"
+topic_key = "wb/unverified"
+scope = []
+
+[anchor]
+type = "files"
+repo = "/tmp/x"
+paths = ["a.go"]
++++
+
+body text
+`
+
+// TestWriteBackFirstVerifyInsertsAndPreservesRest covers crn-6az.5.1's core
+// claim: a first-ever verify (neither verified_at nor fingerprint present
+// yet) must insert both fields -- verified_at immediately before [anchor],
+// fingerprint inside the anchor table -- while every other original line,
+// including an empty `scope = []`, survives verbatim. A value-equality
+// round-trip check (TestWriteBackRoundTrip) can't tell "surgically patched"
+// from "fully re-encoded"; only a byte-level comparison against the original
+// text can.
+func TestWriteBackFirstVerifyInsertsAndPreservesRest(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureUnverified)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+	require.Empty(t, e.VerifiedAt, "fixture must start unverified")
+	require.Empty(t, e.Anchor.Fingerprint, "fixture must start unverified")
+
+	e.VerifiedAt = "2026-07-19"
+	e.Anchor.Fingerprint = "abc123"
+	require.NoError(t, e.WriteBack())
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+
+	beforeLines := strings.Split(string(before), "\n")
+	afterLines := strings.Split(string(after), "\n")
+	for _, l := range beforeLines {
+		if l == "" {
+			continue
+		}
+		assert.Contains(t, afterLines, l, "every original line must survive verbatim: %q", l)
+	}
+	assert.Contains(t, string(after), "scope = []", "empty scope must not be dropped or reformatted")
+
+	idx := func(lines []string, target string) int {
+		for i, l := range lines {
+			if l == target {
+				return i
+			}
+		}
+		return -1
+	}
+	anchorAt := idx(afterLines, "[anchor]")
+	vaAt := idx(afterLines, `verified_at = "2026-07-19"`)
+	require.NotEqual(t, -1, anchorAt)
+	require.NotEqual(t, -1, vaAt)
+	assert.Equal(t, anchorAt-1, vaAt, "verified_at must be inserted immediately before [anchor]")
+	assert.Contains(t, afterLines, `fingerprint = "abc123"`, "fingerprint must be inserted into the anchor table")
+
+	e2, err := ParseEntry(p)
+	require.NoError(t, err)
+	assert.Equal(t, "2026-07-19", e2.VerifiedAt)
+	assert.Equal(t, "abc123", e2.Anchor.Fingerprint)
+	assert.Equal(t, "body text\n", e2.Body)
+}
+
+const writeBackFixtureAlreadyVerified = `+++
+id = "wb/verified"
+title = "Verified"
+scope = []
+verified_at = "2026-01-01"
+
+[anchor]
+type = "files"
+repo = "/tmp/x"
+fingerprint = "oldfp000"
++++
+
+body text
+`
+
+// TestWriteBackSecondVerifyUpdatesInPlace covers a re-verify: both fields
+// already present must update in place with zero line-count delta, not grow
+// the file or reorder anything.
+func TestWriteBackSecondVerifyUpdatesInPlace(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureAlreadyVerified)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+	beforeLines := strings.Split(string(before), "\n")
+
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+	require.Equal(t, "2026-01-01", e.VerifiedAt)
+	require.Equal(t, "oldfp000", e.Anchor.Fingerprint)
+
+	e.VerifiedAt = "2026-07-19"
+	e.Anchor.Fingerprint = "newfp111"
+	require.NoError(t, e.WriteBack())
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	afterLines := strings.Split(string(after), "\n")
+
+	require.Equal(t, len(beforeLines), len(afterLines), "an in-place update must not change the line count")
+	for i := range beforeLines {
+		if strings.Contains(beforeLines[i], "verified_at") || strings.Contains(beforeLines[i], "fingerprint") {
+			continue
+		}
+		assert.Equal(t, beforeLines[i], afterLines[i], "line %d is unrelated to the patched fields and must be byte-identical", i)
+	}
+	assert.NotContains(t, string(after), "2026-01-01")
+	assert.NotContains(t, string(after), "oldfp000")
+	assert.Contains(t, string(after), `verified_at = "2026-07-19"`)
+	assert.Contains(t, string(after), `fingerprint = "newfp111"`)
+}
+
+const writeBackFixtureIndentedReplace = `+++
+id = "wb/indented-replace"
+title = "IndentedReplace"
+scope = []
+
+[anchor]
+    type = "files"
+    repo = "/tmp/x"
+    fingerprint = "oldfp"
++++
+
+body
+`
+
+// TestWriteBackPreservesAnchorIndentOnReplace covers replacing an existing,
+// non-default-indented fingerprint line: its own indentation must survive,
+// even though the codebase's own encoder never produces indented tables --
+// WriteBack patches whatever text is actually on disk, hand-edited or not.
+func TestWriteBackPreservesAnchorIndentOnReplace(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureIndentedReplace)
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+
+	e.VerifiedAt = "2026-07-19"
+	e.Anchor.Fingerprint = "newfp"
+	require.NoError(t, e.WriteBack())
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Contains(t, string(after), "    fingerprint = \"newfp\"", "the replaced line must keep its original 4-space indent")
+	assert.Contains(t, string(after), "    type = \"files\"", "sibling lines must stay untouched")
+	assert.Contains(t, string(after), "    repo = \"/tmp/x\"", "sibling lines must stay untouched")
+	assert.NotContains(t, string(after), "oldfp")
+}
+
+const writeBackFixtureIndentedAppend = `+++
+id = "wb/indented-append"
+title = "IndentedAppend"
+scope = []
+
+[anchor]
+    type = "files"
+    repo = "/tmp/x"
++++
+
+body
+`
+
+// TestWriteBackMatchesAnchorIndentOnAppend covers a first-ever verify inside
+// an anchor block whose existing keys are indented: the newly appended
+// fingerprint line must match that indentation, not default to none.
+func TestWriteBackMatchesAnchorIndentOnAppend(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureIndentedAppend)
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+	require.Empty(t, e.Anchor.Fingerprint)
+
+	e.VerifiedAt = "2026-07-19"
+	e.Anchor.Fingerprint = "newfp"
+	require.NoError(t, e.WriteBack())
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Contains(t, string(after), "    fingerprint = \"newfp\"", "an appended line must match the indentation of its sibling keys")
+}
+
+const writeBackFixtureNoAnchor = "+++\nid = \"wb/no-anchor\"\ntitle = \"NoAnchor\"\nscope = []\n+++\nbody\n"
+
+// TestWriteBackMissingAnchorTableErrorsWithoutWriting covers the one
+// hard-failure path: with no [anchor] table to patch into, WriteBack must
+// return an error naming the entry id and leave the file exactly as it was
+// -- never a partial write.
+func TestWriteBackMissingAnchorTableErrorsWithoutWriting(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureNoAnchor)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+
+	e.VerifiedAt = "2026-07-19"
+	e.Anchor.Fingerprint = "abc123"
+	err = e.WriteBack()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), e.ID, "the error must name the entry id")
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "a failed WriteBack must leave the file byte-identical -- no partial write")
 }
 
 const (
