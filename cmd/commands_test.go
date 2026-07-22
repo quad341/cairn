@@ -93,6 +93,12 @@ func TestStatusBareIsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestStatusRejectsStrayPositionalArgs(t *testing.T) {
+	err := runStatus(t, t.TempDir(), "extra")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extra")
+}
+
 const (
 	shadowedByScoped = "+++\nid = \"less-specific\"\ntitle = \"Less specific\"\ntopic_key = \"shared\"\nscope = [\"rig:alpha\"]\n+++\nbody\n"
 	shadowsScoped    = "+++\nid = \"more-specific\"\ntitle = \"More specific\"\ntopic_key = \"shared\"\nscope = [\"rig:alpha\", \"role:investigator\"]\n+++\nbody\n"
@@ -127,4 +133,23 @@ func TestStatusNoAnnotationWithoutShadow(t *testing.T) {
 
 	assert.NotContains(t, out, "SHADOWED BY",
 		"entries with no shadow relationship must never be annotated")
+}
+
+func TestReindexRejectsStrayPositionalArgs(t *testing.T) {
+	_, err := execRoot("reindex", "--store", t.TempDir(), "extra")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extra")
+}
+
+func TestMapRejectsStrayPositionalArgs(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+
+	// Mirrors crn-6az.3's own repro: a second --identity tag typed as a
+	// space-separated arg (instead of comma-joined into one flag value) used
+	// to be silently swallowed as a stray positional, narrowing the resolved
+	// identity to just the first tag with no indication anything was dropped.
+	_, err := execRoot("map", "--store", t.TempDir(), "--identity", "role:architect", "role:pm")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "role:pm")
 }
