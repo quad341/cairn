@@ -21,3 +21,14 @@
 ## Note on prior blocker
 
 This bead was previously blocked pending `scripts/rebase-resolve-lib.sh` (mayor escalation `gm-wisp-0qrv2gi`). Mayor has since confirmed (mail `gm-wisp-82azqz0`) this class of `hold:mayor` is fleet-wide stale, conditioned on the infra block being the bead's *sole* stated blocking reason — true here per crn-qz0m's own notes. The gate above is a full independent re-evaluation against the current `origin/main` tip, not a replay of the earlier PASS.
+
+## Re-evaluation 2026-07-22 (post-PR #27) — criterion 6 self-rebase
+
+PR #27 (`deploy/crn-qz0m-gate`) sat with GitHub-native auto-merge armed by the operator (`enabledAt` 2026-07-22T19:13:40Z, `mergeMethod: SQUASH`) but `mergeStateStatus: BEHIND` for several hours — found during the startup armed-PR staleness sweep. The branch's last merge-sync (`bb3fccf`) predated 3 more PRs landing on `origin/main` (`#24`, `#32`, `#33`).
+
+- `attempt_bounded_self_rebase(deploy/crn-qz0m-gate, main)` (sourced fresh from `scripts/rebase-resolve-lib.sh`): BEFORE_SHA=`bb3fccfb50107b6be7d2c386c7a04034268a80f1`, AFTER_SHA=`4163a054b2bec1604ac1068d7e5d9b8969539833`, exit 0 — clean, no conflicts (this bead's unique commits only touch `cmd/remember.go`/`cmd/remember_test.go`, no overlap with what landed). Rebased branch force-with-lease pushed to `origin/deploy/crn-qz0m-gate` by the tool itself.
+- Re-verified fresh on `4163a054`: `gofmt -l .` clean, `go vet ./...` clean, `go build ./...` clean, `go test ./... -race -count=1` all 4 packages ok, `golangci-lint run ./...` (cache cleaned) 0 issues.
+- Diff vs. current `origin/main` re-confirmed unchanged from the original review: exactly `cmd/remember.go` (+6/-2) and `cmd/remember_test.go` (+19/-13... net per this re-check) — same coherent single-theme change, no drift introduced by the rebase.
+- Post-push live check: PR #27 `headRefOid` matches `AFTER_SHA`, `autoMergeRequest` unchanged/still armed by `quad341`, `mergeStateStatus` moved from `BEHIND` to `BLOCKED` (now just waiting on required CI checks, not stale).
+
+## Verdict (re-evaluation): PASS. Auto-merge already armed by operator — not re-arming. Not merging by hand.
