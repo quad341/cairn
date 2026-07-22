@@ -3,15 +3,22 @@ package cairn
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	// modernc.org/sqlite registers a pure-Go SQLite driver ("sqlite") for database/sql.
 	_ "modernc.org/sqlite"
 )
 
-const schema = `
-CREATE TABLE entries (
+// entriesSchema covers a fresh index. entries and index_meta persist across
+// reindexes (Reindex upserts rather than drops entries, so index-only state
+// like hit_count survives a rebuild); entry_tags carries no such state and
+// is dropped and recreated wholesale each time.
+const entriesSchema = `
+CREATE TABLE IF NOT EXISTS entries (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
   summary TEXT,
@@ -19,19 +26,40 @@ CREATE TABLE entries (
   topic_key TEXT,
   body_path TEXT NOT NULL,
   anchor_type TEXT,
+  anchor_repo TEXT,
+  anchor_paths TEXT,
+  anchor_spec TEXT,
   anchor_fingerprint TEXT,
   verified_at TEXT,
   created_by TEXT,
+  created_at TEXT,
   hit_count INTEGER DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_entries_topic ON entries(topic_key);
+CREATE TABLE IF NOT EXISTS index_meta (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  indexed_at_commit TEXT
+);
+`
+
+const tagsSchema = `
 CREATE TABLE entry_tags (
   entry_id TEXT NOT NULL,
   tag TEXT NOT NULL,
   PRIMARY KEY (entry_id, tag)
 );
 CREATE INDEX idx_tags_tag ON entry_tags(tag);
-CREATE INDEX idx_entries_topic ON entries(topic_key);
 `
+
+// entriesMigrationCols are columns added to entries after its initial
+// release. entriesSchema's CREATE TABLE IF NOT EXISTS covers a fresh index;
+// these forward-migrate an index.sqlite built by an older binary version.
+var entriesMigrationCols = []struct{ name, def string }{
+	{"anchor_repo", "TEXT"},
+	{"anchor_paths", "TEXT"},
+	{"anchor_spec", "TEXT"},
+	{"created_at", "TEXT"},
+}
 
 // IndexPath is the rebuildable SQLite index (gitignored; not source of truth).
 func IndexPath(store string) string {
@@ -46,7 +74,7 @@ func openDB(store string) (*sql.DB, error) {
 	return sql.Open("sqlite", p)
 }
 
-// Reindex drops and rebuilds the index from the bodies. It returns the entry count.
+// Reindex rebuilds the index from the bodies. It returns the entry count.
 func Reindex(ctx context.Context, store string) (int, error) {
 	entries, err := IterEntries(store)
 	if err != nil {
@@ -58,10 +86,18 @@ func Reindex(ctx context.Context, store string) (int, error) {
 	}
 	defer func() { _ = db.Close() }()
 
-	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS entries; DROP TABLE IF EXISTS entry_tags;`); err != nil {
+	if _, err := db.ExecContext(ctx, entriesSchema); err != nil {
 		return 0, err
 	}
-	if _, err := db.ExecContext(ctx, schema); err != nil {
+	for _, col := range entriesMigrationCols {
+		if err := addColumnIfMissing(ctx, db, "entries", col.name, col.def); err != nil {
+			return 0, err
+		}
+	}
+	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS entry_tags;`); err != nil {
+		return 0, err
+	}
+	if _, err := db.ExecContext(ctx, tagsSchema); err != nil {
 		return 0, err
 	}
 
@@ -69,26 +105,90 @@ func Reindex(ctx context.Context, store string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	for _, e := range entries {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT OR REPLACE INTO entries
-			 (id,title,summary,type,topic_key,body_path,anchor_type,anchor_fingerprint,verified_at,created_by,hit_count)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-			e.ID, e.Title, e.Summary, e.Type, e.TopicKey, e.BodyPath,
-			e.Anchor.Type, e.Anchor.Fingerprint, e.VerifiedAt, e.CreatedBy, e.HitCount,
-		); err != nil {
-			_ = tx.Rollback()
-			return 0, err
-		}
-		for _, tag := range e.Scope {
-			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO entry_tags(entry_id,tag) VALUES (?,?)`, e.ID, tag); err != nil {
-				_ = tx.Rollback()
-				return 0, err
-			}
-		}
+	if err := reindexTx(ctx, tx, store, entries); err != nil {
+		_ = tx.Rollback()
+		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return len(entries), nil
+}
+
+// reindexTx does the per-entry upsert, drops entries whose source file is
+// gone, and stamps the index_meta watermark, all inside the caller's tx.
+func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) error {
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE current_ids (id TEXT PRIMARY KEY)`); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		anchorPaths, err := json.Marshal(e.Anchor.Paths)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO entries (
+				id, title, summary, type, topic_key, body_path,
+				anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
+				verified_at, created_by, created_at, hit_count
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(id) DO UPDATE SET
+				title=excluded.title, summary=excluded.summary, type=excluded.type,
+				topic_key=excluded.topic_key, body_path=excluded.body_path,
+				anchor_type=excluded.anchor_type, anchor_repo=excluded.anchor_repo,
+				anchor_paths=excluded.anchor_paths, anchor_spec=excluded.anchor_spec,
+				anchor_fingerprint=excluded.anchor_fingerprint,
+				verified_at=excluded.verified_at, created_by=excluded.created_by,
+				created_at=excluded.created_at`,
+			// hit_count is deliberately not in the UPDATE SET: the index tracks
+			// it independently of the body (crn-6az.6.1.1), so a reindex must
+			// not stamp a surviving row back to the body's stale seed value.
+			e.ID, e.Title, e.Summary, e.Type, e.TopicKey, e.BodyPath,
+			e.Anchor.Type, e.Anchor.Repo, string(anchorPaths), e.Anchor.Spec, e.Anchor.Fingerprint,
+			e.VerifiedAt, e.CreatedBy, e.CreatedAt, e.HitCount,
+		); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO current_ids(id) VALUES (?)`, e.ID); err != nil {
+			return err
+		}
+		for _, tag := range e.Scope {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO entry_tags(entry_id,tag) VALUES (?,?)`, e.ID, tag); err != nil {
+				return err
+			}
+		}
+	}
+	// entries no longer backed by a body (deleted/renamed) don't belong in a
+	// rebuilt index -- the ON CONFLICT upsert above only ever adds or
+	// refreshes rows, so without this they'd linger forever.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM entries WHERE id NOT IN (SELECT id FROM current_ids)`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE current_ids`); err != nil {
+		return err
+	}
+
+	// commit is "" if store isn't a git repo (yet), or has no commits.
+	commit, _ := git(ctx, store, "rev-parse", "HEAD")
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO index_meta (id, indexed_at_commit) VALUES (1, ?)
+		 ON CONFLICT(id) DO UPDATE SET indexed_at_commit = excluded.indexed_at_commit`,
+		commit,
+	)
+	return err
+}
+
+// addColumnIfMissing adds a column to an existing table, tolerating the case
+// where it's already present -- SQLite's ADD COLUMN has no IF NOT EXISTS
+// clause portable across the versions cairn might run against.
+func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, def string) error {
+	// table/column/def are always our own compile-time literals (entriesMigrationCols
+	// above), never user input, so building the DDL string is safe despite the shape
+	// gosec's G201 flags.
+	stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, def) //nolint:gosec
+	_, err := db.ExecContext(ctx, stmt)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	return nil
 }
