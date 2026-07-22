@@ -305,6 +305,15 @@ func Visible(store string, identity []string) ([]*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	return visibleFrom(entries, identity), nil
+}
+
+// visibleFrom applies Visible's subset-match + shadowing rule to an
+// already-loaded entry list. Factored out of Visible so callers that also
+// need the full unfiltered list (e.g. Prime's scope-mismatch diagnostic,
+// crn-ln1) can walk the store once via IterEntries and derive both from a
+// single pass, instead of Visible re-walking the store a second time.
+func visibleFrom(entries []*Entry, identity []string) []*Entry {
 	idset := make(map[string]struct{}, len(identity))
 	for _, t := range identity {
 		idset[t] = struct{}{}
@@ -322,7 +331,7 @@ func Visible(store string, identity []string) ([]*Entry, error) {
 			out = append(out, e)
 		}
 	}
-	return shadow(out), nil
+	return shadow(out)
 }
 
 // shadow resolves topic_key conflicts by specificity: the entry with the most
