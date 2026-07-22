@@ -125,11 +125,15 @@ hurts one agent; a bad global note poisons everyone.
 ## 8. CLI (v0)
 
 ```
-cairn reindex        # rebuild the SQLite index from the bodies
-cairn map            # bounded topic map for an identity (--identity rig:web,role:reviewer)
-cairn status         # freshness of every entry
-cairn freshness <id> # freshness of one entry
-cairn verify <id>    # recompute + write back an entry's anchor fingerprint
+cairn reindex         # rebuild the SQLite index from the bodies
+cairn map             # bounded topic map for an identity (--identity rig:web,role:reviewer)
+cairn status          # freshness of every entry
+cairn freshness <id>  # freshness of one entry
+cairn verify <id>     # recompute + write back an entry's anchor fingerprint
+cairn sweep           # freshness sweep across shared-tier entries (read-only, JSON output)
+cairn remember <body> # write a new entry to the store (curation-tier routing)
+cairn get <id>        # pull an entry's full body + freshness by id
+cairn prime           # emit the agent's scoped knowledge map + usage (SessionStart hook)
 ```
 
 ## 9. Roadmap
