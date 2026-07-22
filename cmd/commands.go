@@ -18,6 +18,7 @@ func init() {
 var reindexCmd = &cobra.Command{
 	Use:   "reindex",
 	Short: "Rebuild the SQLite index from the bodies (disposable materialized view)",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		n, err := cairn.Reindex(cmd.Context(), storePath())
 		if err != nil {
@@ -31,6 +32,7 @@ var reindexCmd = &cobra.Command{
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Freshness of every entry",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if identityRequested(cmd) {
 			return fmt.Errorf("status is unscoped and does not filter by identity; use 'cairn map' or 'cairn prime' for a scoped view")
@@ -129,6 +131,7 @@ var verifyCmd = &cobra.Command{
 var mapCmd = &cobra.Command{
 	Use:   "map",
 	Short: "Bounded topic map for an identity (the always-in-context payload)",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		identity := resolveIdentity(cmd)
 		rows, err := cairn.Visible(storePath(), identity)
