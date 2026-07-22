@@ -81,18 +81,25 @@ func entryTier(store string, e *Entry) string {
 }
 
 // untrackedPaths returns the subset of a's configured paths that do not
-// resolve to any tracked object at a.Repo's HEAD. It performs the same
-// existence check ComputeFingerprint's expand() does internally, but —
-// unlike expand() — treats "git ls-files found nothing" as a hard failure
-// rather than silently falling back to the literal path.
+// resolve to a tracked object at a.Repo's HEAD. It reuses expand() and
+// objectHash() directly — the same two calls ComputeFingerprint makes —
+// rather than re-deriving an equivalent check: an earlier version re-derived
+// this via a separate index-based `git ls-files` probe, which diverged from
+// objectHash's HEAD-tree-based `git rev-parse HEAD:p` resolution for a path
+// that is staged (`git add`ed) but not yet committed. `git ls-files` finds a
+// staged path in the index and reports it clean, but `git rev-parse HEAD:p`
+// cannot resolve it, so objectHash still fell back to the fabricated "?"
+// value — the exact crn-6az.8.2 failure mode this guardrail exists to catch,
+// reached through a different door than the never-added case (crn-8x4).
+// Calling objectHash here instead of reimplementing its resolution keeps the
+// two permanently in sync.
 func untrackedPaths(ctx context.Context, a Anchor) []string {
 	if a.Repo == "" {
 		return a.Paths
 	}
 	var bad []string
-	for _, p := range a.Paths {
-		out, ok := git(ctx, a.Repo, "ls-files", "--", p)
-		if !ok || strings.TrimSpace(out) == "" {
+	for _, p := range expand(ctx, a.Repo, a.Paths) {
+		if objectHash(ctx, a.Repo, p) == "?" {
 			bad = append(bad, p)
 		}
 	}

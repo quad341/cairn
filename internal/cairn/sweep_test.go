@@ -119,6 +119,44 @@ func TestSweepOverridesUntrackedAnchorToUnknown(t *testing.T) {
 	assert.Contains(t, f.Detail, "gone.txt", "the detail should name the untracked path for the eventual bd bead body")
 }
 
+// TestSweepOverridesStagedUncommittedAnchorToUnknown is the crn-8x4
+// regression test. A path that is staged (git add) but not yet committed is
+// tracked in the git index, so an index-based check (git ls-files) reports
+// it clean — but it is not resolvable at HEAD, so ComputeFingerprint's
+// objectHash still falls back to the fabricated "?" value: the crn-6az.8.2
+// failure mode, reached through a different door than the never-added case
+// TestSweepOverridesUntrackedAnchorToUnknown covers.
+func TestSweepOverridesStagedUncommittedAnchorToUnknown(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "staged.go"), []byte("package a\n"), 0o600))
+	gitAdd(t, repo, "staged.go") // staged, deliberately not committed
+
+	stagedAnchor := Anchor{Type: "files", Repo: repo, Paths: []string{"staged.go"}}
+	bogusFP := ComputeFingerprint(ctx, stagedAnchor)
+	require.NotEmpty(t, bogusFP, "crn-8x4: a staged-but-uncommitted path must still produce a non-empty (bogus) fingerprint for this regression test to be meaningful")
+
+	writeFile(t, dir, "global/staged.md", filesEntry("staged-1", repo, []string{"staged.go"}, bogusFP))
+
+	e, err := Find(dir, "staged-1")
+	require.NoError(t, err)
+	naiveStatus, _ := Check(ctx, e)
+	require.Equal(t, Fresh, naiveStatus,
+		"crn-8x4 baseline: Check alone must be fooled by the stamped bogus fingerprint for a staged-but-uncommitted path — "+
+			"if this fails, the scenario no longer reproduces the bug")
+
+	findings, err := Sweep(ctx, dir)
+	require.NoError(t, err)
+	f := findingFor(t, findings, "staged-1")
+	assert.Equal(t, Unknown, f.Status, "a staged-but-uncommitted anchor path must override Check's fabricated Fresh verdict, matching objectHash's HEAD-based resolution")
+	assert.Contains(t, f.Detail, "staged.go", "the detail should name the untracked-at-HEAD path")
+}
+
 // TestSweepTierScoping is acceptance criterion 5: global/rig/role are in
 // remit, agent/ private entries are not.
 func TestSweepTierScoping(t *testing.T) {
