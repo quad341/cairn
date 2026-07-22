@@ -77,7 +77,17 @@ func openDB(store string) (*sql.DB, error) {
 	// race gets a hard "database is locked" failure instead of waiting
 	// (crn-t250). busy_timeout is applied first by the driver regardless of
 	// DSN param order.
-	return sql.Open("sqlite", p+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	//
+	// txlock=immediate: the only db.BeginTx in this package is Reindex's
+	// write transaction, which never reads before its first write. Left on
+	// the driver default ("deferred"), that transaction's write lock is
+	// acquired lazily at its first write statement rather than at BEGIN;
+	// under concurrent Reindex calls that upgrade can itself return
+	// SQLITE_BUSY without honoring busy_timeout's retry loop, still
+	// surfacing a hard failure despite the pragma above (crn-j3k4).
+	// "immediate" acquires the write lock at BEGIN, where busy_timeout's
+	// retry does apply.
+	return sql.Open("sqlite", p+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
 }
 
 // Reindex rebuilds the index from the bodies. It returns the entry count.
@@ -100,15 +110,24 @@ func Reindex(ctx context.Context, store string) (int, error) {
 			return 0, err
 		}
 	}
-	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS entry_tags;`); err != nil {
-		return 0, err
-	}
-	if _, err := db.ExecContext(ctx, tagsSchema); err != nil {
-		return 0, err
-	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
+		return 0, err
+	}
+	// entry_tags carries no index-only state worth preserving across a
+	// rebuild (unlike entries -- see entriesSchema's comment), so it's
+	// dropped and recreated wholesale each reindex. Both statements run
+	// inside this tx rather than as separate autocommit statements, so two
+	// concurrent Reindex() calls fully serialize on SQLite's single-writer
+	// lock instead of interleaving their DROP/CREATE and one of them hitting
+	// "table entry_tags already exists" (crn-j3k4).
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS entry_tags;`); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, tagsSchema); err != nil {
+		_ = tx.Rollback()
 		return 0, err
 	}
 	if err := reindexTx(ctx, tx, store, entries); err != nil {

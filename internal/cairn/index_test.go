@@ -383,13 +383,12 @@ func TestIndexStalePropagatesGitInvocationError(t *testing.T) {
 // reliably produced a hard "database is locked" failure for the losing
 // caller, rather than the loser simply waiting its turn (crn-t250).
 //
-// This deliberately runs a single background reindexer, not several: Reindex
-// itself drops and recreates entry_tags via two non-transactional statements,
-// so concurrent Reindex-vs-Reindex calls can independently hit a "table
-// entry_tags already exists" error. That's a real, separately-reproduced
-// race, but it's a different failure mode with a different root cause than
-// what this bead fixes (see crn-t250 notes) -- it doesn't belong in this
-// test.
+// This deliberately runs a single background reindexer, not several:
+// concurrent Reindex-vs-Reindex calls exercise a separate, independently-
+// fixed race on entry_tags' schema statements (crn-j3k4, see
+// TestConcurrentReindexDoesNotRaceOnEntryTagsSchema below) -- a different
+// failure mode with a different root cause than what this test covers, so it
+// doesn't belong here.
 func TestConcurrentFindAndReindexDoNotHardFail(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
@@ -445,5 +444,69 @@ func TestConcurrentFindAndReindexDoNotHardFail(t *testing.T) {
 	if len(errs) > 0 {
 		t.Fatalf(`%d/%d concurrent Find/Reindex calls failed (want 0) -- first error: %v (openDB must set busy_timeout so a losing caller waits instead of hard-failing with "database is locked")`,
 			len(errs), finders*finderIterations+reindexerIterations, errs[0])
+	}
+}
+
+// TestConcurrentReindexDoesNotRaceOnEntryTagsSchema is the crn-j3k4
+// regression test: entry_tags' DROP TABLE IF EXISTS + CREATE TABLE used to
+// run as two independent autocommit statements, outside any transaction and
+// before reindexTx's own tx began. Two concurrent Reindex() calls could
+// interleave those statements -- e.g. both DROPs succeed (IF EXISTS), then
+// both CREATEs race -- and the loser hit a hard "table entry_tags already
+// exists" SQL logic error. This is a different failure mode than crn-t250's
+// SQLITE_BUSY: busy_timeout doesn't help a DDL race, only lock contention.
+//
+// The seed Reindex call below is deliberate: it ensures index.sqlite already
+// exists before the concurrent goroutines start, isolating this test to the
+// entry_tags DDL race this bead fixes. Racing concurrent Reindex calls
+// against a store where index.sqlite does not exist yet hits a separate,
+// still-open intermittent SQLITE_BUSY gap during first-time file/WAL
+// creation (crn-t42e) -- a different, narrower failure mode that doesn't
+// belong in this test either.
+func TestConcurrentReindexDoesNotRaceOnEntryTagsSchema(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	ids := []string{"a", "b", "c"}
+	for _, id := range ids {
+		body := "+++\nid = \"" + id + "\"\ntitle = \"" + id + "\"\n+++\nbody\n"
+		require.NoError(t, os.WriteFile(filepath.Join(store, "global", id+".md"), []byte(body), 0o600))
+	}
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	const (
+		reindexers = 4
+		iterations = 20
+	)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	record := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		errs = append(errs, err)
+		mu.Unlock()
+	}
+
+	wg.Add(reindexers)
+	for range reindexers {
+		go func() {
+			defer wg.Done()
+			for range iterations {
+				_, err := Reindex(ctx, store)
+				record(err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(errs) > 0 {
+		t.Fatalf(`%d/%d concurrent Reindex calls failed (want 0) -- first error: %v (entry_tags DROP+CREATE must run inside the same tx as the rest of Reindex so concurrent rebuilds serialize instead of racing on the DDL)`,
+			len(errs), reindexers*iterations, errs[0])
 	}
 }
