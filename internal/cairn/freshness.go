@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -17,17 +18,33 @@ const (
 	Unknown = "unknown"
 )
 
-func git(ctx context.Context, repo string, args ...string) (string, bool) {
+// git runs a git subcommand against repo and returns (output, found, err).
+// found is false only on a confirmed negative verdict from git itself (not a
+// repo, or a repo with no commits yet -- both exit non-zero). err is non-nil
+// only for a genuine invocation failure (context cancellation, git missing
+// from PATH, resource exhaustion preventing fork/exec, etc.); callers must
+// not treat that the same as a confirmed "not a git store" (crn-t250). ctx's
+// own error is checked first so a canceled/deadline-exceeded context is
+// always classified as an error, regardless of how the killed process's exit
+// status happens to come back from exec.
+func git(ctx context.Context, repo string, args ...string) (string, bool, error) {
 	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...).Output()
 	if err != nil {
-		return "", false
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", false, ctxErr
+		}
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return "", false, nil
+		}
+		return "", false, err
 	}
-	return strings.TrimSpace(string(out)), true
+	return strings.TrimSpace(string(out)), true, nil
 }
 
 // objectHash is the git object id of a path at HEAD (blob for files, tree for dirs).
 func objectHash(ctx context.Context, repo, path string) string {
-	if h, ok := git(ctx, repo, "rev-parse", "HEAD:"+path); ok {
+	if h, ok, _ := git(ctx, repo, "rev-parse", "HEAD:"+path); ok {
 		return h
 	}
 	return "?"
@@ -37,7 +54,7 @@ func objectHash(ctx context.Context, repo, path string) string {
 func expand(ctx context.Context, repo string, paths []string) []string {
 	set := map[string]struct{}{}
 	for _, p := range paths {
-		if out, ok := git(ctx, repo, "ls-files", "--", p); ok && strings.TrimSpace(out) != "" {
+		if out, ok, _ := git(ctx, repo, "ls-files", "--", p); ok && strings.TrimSpace(out) != "" {
 			for _, ln := range strings.Split(out, "\n") {
 				if strings.TrimSpace(ln) != "" {
 					set[ln] = struct{}{}

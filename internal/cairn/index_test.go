@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -95,7 +96,8 @@ func TestReindexStampsIndexMeta(t *testing.T) {
 	_, err := Reindex(ctx, store)
 	require.NoError(t, err)
 
-	wantCommit, ok := git(ctx, store, "rev-parse", "HEAD")
+	wantCommit, ok, err := git(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
 	require.True(t, ok)
 	require.NotEmpty(t, wantCommit)
 
@@ -311,7 +313,8 @@ func TestEnsureFreshReindexesOnHeadMismatch(t *testing.T) {
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM entries").Scan(&count))
 	assert.Equal(t, 2, count)
 
-	wantCommit, ok := git(ctx, store, "rev-parse", "HEAD")
+	wantCommit, ok, err := git(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
 	require.True(t, ok)
 	var gotCommit string
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT indexed_at_commit FROM index_meta WHERE id = 1").Scan(&gotCommit))
@@ -336,4 +339,111 @@ func TestEnsureFreshNoopOnNonGitStore(t *testing.T) {
 
 	require.NoError(t, ensureFreshWith(ctx, store, countingReindex))
 	assert.Equal(t, 0, calls, "non-git store has no HEAD to drift from; an already-built index must not be reindexed")
+}
+
+func TestOpenDBAppliesBusyTimeoutAndWALPragmas(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+
+	db, err := openDB(store)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var busyTimeout int
+	require.NoError(t, db.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busyTimeout))
+	assert.Equal(t, 5000, busyTimeout, "busy_timeout must be set so a losing concurrent caller waits instead of hard-failing (crn-t250)")
+
+	var journalMode string
+	require.NoError(t, db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journalMode))
+	assert.Equal(t, "wal", journalMode)
+}
+
+func TestIndexStalePropagatesGitInvocationError(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	t.Setenv("PATH", t.TempDir()) // git binary now unreachable
+
+	_, err = indexStale(ctx, store)
+	require.Error(t, err, `a git invocation failure must propagate as an error, not be silently reported as "not stale" (crn-t250)`)
+}
+
+// TestConcurrentFindAndReindexDoNotHardFail is the crn-gjmy-mandated
+// regression test: without openDB's busy_timeout/WAL pragmas, concurrent
+// Find (which both reads and writes hit_count) and Reindex (which opens its
+// own write transaction) racing against the one shared CAIRN_STORE index
+// reliably produced a hard "database is locked" failure for the losing
+// caller, rather than the loser simply waiting its turn (crn-t250).
+//
+// This deliberately runs a single background reindexer, not several: Reindex
+// itself drops and recreates entry_tags via two non-transactional statements,
+// so concurrent Reindex-vs-Reindex calls can independently hit a "table
+// entry_tags already exists" error. That's a real, separately-reproduced
+// race, but it's a different failure mode with a different root cause than
+// what this bead fixes (see crn-t250 notes) -- it doesn't belong in this
+// test.
+func TestConcurrentFindAndReindexDoNotHardFail(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	ids := []string{"a", "b", "c"}
+	for _, id := range ids {
+		body := "+++\nid = \"" + id + "\"\ntitle = \"" + id + "\"\n+++\nbody\n"
+		require.NoError(t, os.WriteFile(filepath.Join(store, "global", id+".md"), []byte(body), 0o600))
+	}
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	const (
+		finders             = 8
+		finderIterations    = 15
+		reindexerIterations = 20
+	)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	record := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		errs = append(errs, err)
+		mu.Unlock()
+	}
+
+	wg.Add(finders + 1)
+	for range finders {
+		go func() {
+			defer wg.Done()
+			for j := range finderIterations {
+				_, err := Find(ctx, store, ids[j%len(ids)])
+				record(err)
+			}
+		}()
+	}
+	go func() {
+		defer wg.Done()
+		for range reindexerIterations {
+			_, err := Reindex(ctx, store)
+			record(err)
+		}
+	}()
+	wg.Wait()
+
+	if len(errs) > 0 {
+		t.Fatalf(`%d/%d concurrent Find/Reindex calls failed (want 0) -- first error: %v (openDB must set busy_timeout so a losing caller waits instead of hard-failing with "database is locked")`,
+			len(errs), finders*finderIterations+reindexerIterations, errs[0])
+	}
 }

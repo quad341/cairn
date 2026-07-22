@@ -71,7 +71,13 @@ func openDB(store string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
 		return nil, err
 	}
-	return sql.Open("sqlite", p)
+	// busy_timeout+WAL: CAIRN_STORE defaults to one shared path across the
+	// whole agent fleet, so concurrent CLI invocations routinely race on
+	// ensureFresh's synchronous Reindex; without these, the loser of the
+	// race gets a hard "database is locked" failure instead of waiting
+	// (crn-t250). busy_timeout is applied first by the driver regardless of
+	// DSN param order.
+	return sql.Open("sqlite", p+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
 }
 
 // Reindex rebuilds the index from the bodies. It returns the entry count.
@@ -168,8 +174,12 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 		return err
 	}
 
-	// commit is "" if store isn't a git repo (yet), or has no commits.
-	commit, _ := git(ctx, store, "rev-parse", "HEAD")
+	// commit is "" if store isn't a git repo (yet), has no commits, or git
+	// couldn't be invoked -- reindexTx's own correctness doesn't depend on
+	// which; indexStale (not this stamp) is what must distinguish "confirmed
+	// non-git" from "invocation error" to avoid silently under-detecting
+	// staleness (crn-t250).
+	commit, _, _ := git(ctx, store, "rev-parse", "HEAD")
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO index_meta (id, indexed_at_commit) VALUES (1, ?)
 		 ON CONFLICT(id) DO UPDATE SET indexed_at_commit = excluded.indexed_at_commit`,
@@ -237,7 +247,10 @@ func indexStale(ctx context.Context, store string) (bool, error) {
 		return true, nil
 	}
 
-	head, ok := git(ctx, store, "rev-parse", "HEAD")
+	head, ok, err := git(ctx, store, "rev-parse", "HEAD")
+	if err != nil {
+		return false, err
+	}
 	if !ok {
 		return false, nil
 	}

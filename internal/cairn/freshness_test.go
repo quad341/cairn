@@ -1,6 +1,8 @@
 package cairn
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -78,4 +80,57 @@ func TestFileAnchorDrift(t *testing.T) {
 	st, _ = Check(ctx, e)
 	assert.Equal(t, Stale, st)
 	assert.NotEqual(t, fp1, ComputeFingerprint(ctx, a), "fingerprint should change after the source changed")
+}
+
+func TestGitConfirmedNonRepoIsNotAnError(t *testing.T) {
+	dir := t.TempDir() // not a git repo at all
+
+	_, ok, err := git(t.Context(), dir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestGitNoCommitsIsNotAnError(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir) // repo exists, but has zero commits
+
+	_, ok, err := git(t.Context(), dir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+// TestGitInvocationFailurePropagatesAsError guards crn-t250 finding #2: a
+// git invocation that fails for a reason other than a confirmed non-repo
+// verdict (here, the git binary being unreachable via PATH — the bug
+// report's own named example) must surface as an error, not be silently
+// folded into the same "not found" result as a real non-repo/no-commits
+// store.
+func TestGitInvocationFailurePropagatesAsError(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, dir, "init")
+
+	t.Setenv("PATH", t.TempDir()) // git binary now unreachable
+
+	_, ok, err := git(t.Context(), dir, "rev-parse", "HEAD")
+	require.Error(t, err)
+	assert.False(t, ok)
+	var exitErr *exec.ExitError
+	assert.False(t, errors.As(err, &exitErr), "a PATH lookup failure must not be misclassified as a confirmed git verdict")
+}
+
+func TestGitContextCanceledPropagatesAsError(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, dir, "init")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, ok, err := git(ctx, dir, "rev-parse", "HEAD")
+	require.Error(t, err)
+	assert.False(t, ok)
+	assert.ErrorIs(t, err, context.Canceled)
 }
