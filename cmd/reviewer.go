@@ -118,9 +118,17 @@ func sendReviewMail(ctx context.Context, reviewer string, e *cairn.Entry, branch
 		"New shared-tier cairn entry %s (topic %q, scope %s) is ready for review.\n\n"+
 			"Branch: %s\n\nMerge into the store's default branch when satisfied; this branch does not auto-merge.",
 		e.ID, e.TopicKey, strings.Join(e.Scope, " "), branch)
-	out, err := exec.CommandContext(ctx, "gc", "mail", "send", reviewer, "-s", subject, "-m", body).CombinedOutput()
+	return mailSend(ctx, reviewer, subject, body)
+}
+
+// mailSend shells out to `gc mail send` with subject/body -- the exec
+// plumbing shared by every reviewer notification this package sends: a
+// first review request (sendReviewMail) and a librarian's reactive
+// stale-branch reminder (branches.go's sendStaleBranchReminder) alike.
+func mailSend(ctx context.Context, to, subject, body string) error {
+	out, err := exec.CommandContext(ctx, "gc", "mail", "send", to, "-s", subject, "-m", body).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("gc mail send %s: %w: %s", reviewer, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("gc mail send %s: %w: %s", to, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
