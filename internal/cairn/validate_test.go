@@ -27,6 +27,27 @@ func TestValidatePathSegmentRejectsAttacks(t *testing.T) {
 	}
 }
 
+// TestValidatePathSegmentRejectsUnicodeDotTricks covers crn-419.5 AC1's
+// "unicode dot tricks" corpus entry directly against the validator: values
+// built from non-ASCII characters that read as multiple dots, or a literal
+// ".." hidden behind a zero-width character -- disguising a dot-based
+// traversal attempt from a checker that only understands ASCII '.'.
+func TestValidatePathSegmentRejectsUnicodeDotTricks(t *testing.T) {
+	cases := map[string]string{
+		"doubled fullwidth full stop (U+FF0E)":   "\uFF0E\uFF0E",
+		"doubled one-dot leader (U+2024)":        "\u2024\u2024",
+		"two-dot leader (U+2025)":                "\u2025",
+		"horizontal ellipsis (U+2026)":           "\u2026",
+		"doubled ideographic full stop (U+3002)": "\u3002\u3002",
+		"dot-dot split by a zero-width space":    "foo.\u200B.bar",
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, ValidatePathSegment(s), "%q must be rejected", s)
+		})
+	}
+}
+
 func TestValidatePathSegmentAcceptsSafeValues(t *testing.T) {
 	cases := map[string]string{
 		"simple word":  "alpha",

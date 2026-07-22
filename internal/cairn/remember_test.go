@@ -242,3 +242,120 @@ func TestCommitDirectFailureLeavesEntryUncommittedAndReportsError(t *testing.T) 
 	require.NoError(t, perr, "the written entry file must survive a commit failure, not be rolled back or silently lost")
 	assert.Equal(t, e.ID, got.ID)
 }
+
+// TestCommitToReviewBranchCreatesIsolatedBranchLeavingDefaultUntouched covers
+// crn-419.5 AC4 (the shared-tier branch-plus-mail path's git half) at the
+// internal/cairn level: CommitToReviewBranch had no dedicated unit test
+// before this, only indirect, incomplete exercise via cmd's CLI-level tests,
+// none of which capture the store's original branch/HEAD before the call to
+// actually prove it is left untouched -- they only observe the entry file's
+// own status afterward. Mirrors TestCommitDirectCommitsOnlyTheEntryFile
+// above, one tier over.
+func TestCommitToReviewBranchCreatesIsolatedBranchLeavingDefaultUntouched(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	branchBefore, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	headBefore = strings.TrimSpace(headBefore)
+
+	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	branch, err := e.CommitToReviewBranch(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, "remember/"+e.ID, branch)
+
+	branchAfter, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(branchBefore), strings.TrimSpace(branchAfter),
+		"CommitToReviewBranch must not switch the store's checked-out branch")
+
+	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, headBefore, strings.TrimSpace(headAfter), "the default branch's tip commit must be unchanged")
+
+	rel, err := filepath.Rel(store, e.BodyPath)
+	require.NoError(t, err)
+	changed, err := gitRun(ctx, store, "diff-tree", "--no-commit-id", "--name-only", "-r", branch)
+	require.NoError(t, err)
+	assert.Equal(t, []string{rel}, strings.Fields(changed), "the review commit must contain only the new entry file")
+
+	parent, err := gitRun(ctx, store, "rev-parse", branch+"~1")
+	require.NoError(t, err)
+	assert.Equal(t, headBefore, strings.TrimSpace(parent),
+		"the review branch must fork from the store's pre-existing HEAD, not carry unrelated history")
+
+	msg, err := gitRun(ctx, store, "log", "-1", "--format=%B", branch)
+	require.NoError(t, err)
+	assert.Contains(t, msg, e.ID)
+	assert.Contains(t, msg, "rig:web")
+
+	worktrees, err := gitRun(ctx, store, "worktree", "list")
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
+		"the scratch review worktree must be cleaned up, leaving only the store's own")
+
+	// --untracked-files=all: rig/ is an entirely-new, entirely-untracked
+	// directory, and plain --porcelain collapses that to a single "?? rig/"
+	// line rather than naming the file inside it.
+	status, err := gitRun(ctx, store, "status", "--porcelain", "--untracked-files=all")
+	require.NoError(t, err)
+	assert.Contains(t, status, "?? "+rel,
+		"the entry file Create wrote must remain untracked on the store's own branch -- only the review branch's isolated worktree copy was committed")
+}
+
+// TestCommitToReviewBranchFailureLeavesEntryWrittenButUncommittedAndReportsError
+// covers crn-419.5 AC5's git-error failure-injection requirement for the
+// shared-tier path -- the private-tier equivalent is
+// TestCommitDirectFailureLeavesEntryUncommittedAndReportsError above. A
+// branch already named exactly what CommitToReviewBranch is about to create
+// makes `git worktree add -b` fail deterministically, with no race or mock
+// needed: the entry Create already wrote must survive untouched, and the
+// store's own HEAD and worktree list must be unaffected by the failed
+// attempt.
+func TestCommitToReviewBranchFailureLeavesEntryWrittenButUncommittedAndReportsError(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+
+	e, err := NewEntry("build-flags", []string{"rig:web"}, "body", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	// Pre-create the exact branch name CommitToReviewBranch will try to
+	// create, so `git worktree add -b` fails deterministically on a branch
+	// that already exists.
+	_, err = gitRun(ctx, store, "branch", "remember/"+e.ID)
+	require.NoError(t, err)
+
+	_, err = e.CommitToReviewBranch(ctx, store)
+	require.Error(t, err, "a pre-existing branch name must surface as a clear error, not panic or silently continue")
+	assert.Contains(t, err.Error(), "remember/"+e.ID)
+	assert.Contains(t, err.Error(), "review branch")
+
+	got, perr := ParseEntry(e.BodyPath)
+	require.NoError(t, perr, "the entry Create already wrote must survive a review-branch failure, not be rolled back or corrupted")
+	assert.Equal(t, e.ID, got.ID)
+
+	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(headBefore), strings.TrimSpace(headAfter),
+		"a failed review-branch attempt must not move the store's own HEAD")
+
+	worktrees, err := gitRun(ctx, store, "worktree", "list")
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
+		"a failed worktree add must not leave a stray worktree registered")
+}
