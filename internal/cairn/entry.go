@@ -5,6 +5,7 @@ package cairn
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -396,4 +397,57 @@ func scopeSuperset(super, sub []string) bool {
 		}
 	}
 	return true
+}
+
+// Status returns every entry for the freshness/shadow report `cairn status`
+// prints, reading index columns only instead of walking + parsing every body
+// (crn-6az.6.1.5). Check only ever reads e.Anchor, and ShadowMap only ever
+// reads ID, TopicKey, Scope, VerifiedAt, and CreatedAt, so those are the only
+// fields populated here — Title, Summary, Type, CreatedBy, HitCount, Body,
+// and BodyPath are left zero-valued, mirroring the judgment call Visible
+// made in crn-6az.6.1.4.
+func Status(ctx context.Context, store string) ([]*Entry, error) {
+	if err := ensureFresh(ctx, store); err != nil {
+		return nil, err
+	}
+	db, err := openDB(store)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+
+	tags, err := scopeTags(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := db.QueryContext(ctx, `SELECT
+		id, topic_key, verified_at, created_at,
+		anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint
+		FROM entries ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []*Entry
+	for rows.Next() {
+		e := &Entry{}
+		var anchorPaths string
+		if err := rows.Scan(
+			&e.ID, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt,
+			&e.Anchor.Type, &e.Anchor.Repo, &anchorPaths, &e.Anchor.Spec, &e.Anchor.Fingerprint,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(anchorPaths), &e.Anchor.Paths); err != nil {
+			return nil, err
+		}
+		e.Scope = tags[e.ID]
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

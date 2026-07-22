@@ -35,7 +35,7 @@ var statusCmd = &cobra.Command{
 		if identityRequested(cmd) {
 			return fmt.Errorf("status is unscoped and does not filter by identity; use 'cairn map' or 'cairn prime' for a scoped view")
 		}
-		entries, err := cairn.IterEntries(storePath())
+		entries, err := cairn.Status(cmd.Context(), storePath())
 		if err != nil {
 			return err
 		}
