@@ -28,8 +28,10 @@ var rememberCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		topic, _ := cmd.Flags().GetString("topic")
-		if err := cairn.ValidatePathSegment(topic); err != nil {
-			return fmt.Errorf("invalid --topic: %w", err)
+		if topic != "" {
+			if err := cairn.ValidatePathSegment(topic); err != nil {
+				return fmt.Errorf("invalid --topic: %w", err)
+			}
 		}
 
 		scope, err := rememberScope(cmd)

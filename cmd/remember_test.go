@@ -175,7 +175,6 @@ func TestRememberRejectsAttackTopics(t *testing.T) {
 		"absolute path":  "/etc/passwd",
 		"leading dot":    ".hidden",
 		"embedded NUL":   "foo\x00bar",
-		"empty":          "",
 	}
 	for name, topic := range attacks {
 		t.Run(name, func(t *testing.T) {
@@ -204,11 +203,19 @@ func TestRememberRejectsAttackScopes(t *testing.T) {
 	}
 }
 
-func TestRememberRejectsMissingTopic(t *testing.T) {
-	store, err := runRemember(t, "a body")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--topic")
-	assertNoFilesWritten(t, store)
+func TestRememberAcceptsEmptyTopic(t *testing.T) {
+	cases := map[string][]string{
+		"omitted":        {"--scope", "agent:test", "a body"},
+		"explicit empty": {"--topic", "", "--scope", "agent:test", "a body"},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, err := runRemember(t, args...)
+			require.NoError(t, err, "--topic is documented as an optional freeform hint (DESIGN.md §6), not a required field")
+			e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+			assert.Equal(t, "", e.TopicKey)
+		})
+	}
 }
 
 func TestRememberRequiresExactlyOneBodyArg(t *testing.T) {
