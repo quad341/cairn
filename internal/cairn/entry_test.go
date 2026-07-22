@@ -75,6 +75,46 @@ func TestWriteBackRoundTrip(t *testing.T) {
 	assert.Equal(t, e.Body, e2.Body)
 }
 
+// TestWriteBackOmitsZeroHitCount covers crn-6az.5.2: hit_count must use
+// toml:"hit_count,omitzero", not omitempty -- BurntSushi/toml's omitempty
+// only special-cases Array/Slice/Map/String (len 0), Struct (all-zero), Bool
+// (false), and Ptr (nil), so it's a silent no-op for int fields. Asserted on
+// raw serialized bytes, not decoded round-trip equality: a value-equality
+// check can't distinguish "key absent" from "key present and zero".
+func TestWriteBackOmitsZeroHitCount(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", sampleEntry)
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+	require.Equal(t, 0, e.HitCount, "sampleEntry sets no hit_count, so it must decode to the zero value")
+
+	require.NoError(t, e.WriteBack())
+
+	raw, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "hit_count",
+		"a zero HitCount must not appear in the serialized frontmatter at all")
+}
+
+// TestWriteBackSerializesNonZeroHitCount confirms the omitzero switch didn't
+// disable serialization for the field entirely -- a populated HitCount must
+// still round-trip.
+func TestWriteBackSerializesNonZeroHitCount(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", sampleEntry)
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+
+	e.HitCount = 7
+	require.NoError(t, e.WriteBack())
+
+	raw, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "hit_count", "a non-zero HitCount must still be serialized")
+
+	e2, err := ParseEntry(p)
+	require.NoError(t, err)
+	assert.Equal(t, 7, e2.HitCount)
+}
+
 const (
 	globalEntry = "+++\nid = \"g\"\ntitle = \"g\"\nscope = []\n+++\nx\n"
 	alphaEntry  = "+++\nid = \"r\"\ntitle = \"r\"\nscope = [\"rig:alpha\"]\n+++\nx\n"

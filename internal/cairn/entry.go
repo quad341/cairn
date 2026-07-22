@@ -48,7 +48,7 @@ type Entry struct {
 	VerifiedAt string   `toml:"verified_at,omitempty"`
 	CreatedBy  string   `toml:"created_by,omitempty"`
 	CreatedAt  string   `toml:"created_at,omitempty"`
-	HitCount   int      `toml:"hit_count,omitempty"`
+	HitCount   int      `toml:"hit_count,omitzero"`
 
 	BodyPath string `toml:"-"`
 	Body     string `toml:"-"`
