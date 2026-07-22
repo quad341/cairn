@@ -1,6 +1,7 @@
 package cairn
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -210,4 +211,129 @@ CREATE TABLE entry_tags (entry_id TEXT, tag TEXT);
 	require.NoError(t, db.QueryRowContext(ctx,
 		"SELECT anchor_repo, anchor_paths, anchor_spec, created_at FROM entries WHERE id = 'a'",
 	).Scan(&repo, &paths, &spec, &createdAt))
+}
+
+func TestEnsureFreshDelegatesToReindex(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+
+	require.NoError(t, ensureFresh(ctx, store))
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM entries").Scan(&count))
+	assert.Equal(t, 1, count)
+}
+
+func TestEnsureFreshReindexesWhenIndexMissing(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+
+	calls := 0
+	countingReindex := func(ctx context.Context, store string) (int, error) {
+		calls++
+		return Reindex(ctx, store)
+	}
+
+	require.NoError(t, ensureFreshWith(ctx, store, countingReindex))
+	assert.Equal(t, 1, calls)
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM entries").Scan(&count))
+	assert.Equal(t, 1, count)
+}
+
+func TestEnsureFreshSkipsReindexWhenAlreadyFresh(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	calls := 0
+	countingReindex := func(ctx context.Context, store string) (int, error) {
+		calls++
+		return Reindex(ctx, store)
+	}
+
+	require.NoError(t, ensureFreshWith(ctx, store, countingReindex))
+	assert.Equal(t, 0, calls, "index already matched HEAD; ensureFresh must not reindex")
+}
+
+func TestEnsureFreshReindexesOnHeadMismatch(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "b.md"),
+		[]byte("+++\nid = \"b\"\ntitle = \"B\"\n+++\nbody\n"), 0o600))
+	gitCommitAll(t, store, "add b")
+
+	calls := 0
+	countingReindex := func(ctx context.Context, store string) (int, error) {
+		calls++
+		return Reindex(ctx, store)
+	}
+
+	require.NoError(t, ensureFreshWith(ctx, store, countingReindex))
+	assert.Equal(t, 1, calls)
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM entries").Scan(&count))
+	assert.Equal(t, 2, count)
+
+	wantCommit, ok := git(ctx, store, "rev-parse", "HEAD")
+	require.True(t, ok)
+	var gotCommit string
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT indexed_at_commit FROM index_meta WHERE id = 1").Scan(&gotCommit))
+	assert.Equal(t, wantCommit, gotCommit)
+}
+
+func TestEnsureFreshNoopOnNonGitStore(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	calls := 0
+	countingReindex := func(ctx context.Context, store string) (int, error) {
+		calls++
+		return Reindex(ctx, store)
+	}
+
+	require.NoError(t, ensureFreshWith(ctx, store, countingReindex))
+	assert.Equal(t, 0, calls, "non-git store has no HEAD to drift from; an already-built index must not be reindexed")
 }

@@ -192,3 +192,54 @@ func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, def stri
 	}
 	return nil
 }
+
+// ensureFresh self-heals the index for reads that depend on it: it compares
+// the store's current git HEAD against index_meta's watermark and
+// synchronously reindexes on any mismatch or unreadable watermark (including
+// "no index built yet"), so a body edit committed outside cairn's own write
+// path can never be served as fresh from a stale index (crn-6az.6.1.2). On a
+// store that isn't a git repo (or has no commits), there's no HEAD to
+// compare against; once an index exists there it's treated as fresh rather
+// than rebuilt on every call.
+func ensureFresh(ctx context.Context, store string) error {
+	return ensureFreshWith(ctx, store, Reindex)
+}
+
+// ensureFreshWith takes the reindex step as a parameter so tests can count
+// invocations of it directly, since ensureFresh's "no needless reindex"
+// contract can only be verified by call count, not by inspecting state.
+func ensureFreshWith(ctx context.Context, store string, reindex func(context.Context, string) (int, error)) error {
+	stale, err := indexStale(ctx, store)
+	if err != nil {
+		return err
+	}
+	if !stale {
+		return nil
+	}
+	_, err = reindex(ctx, store)
+	return err
+}
+
+func indexStale(ctx context.Context, store string) (bool, error) {
+	db, err := openDB(store)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = db.Close() }()
+
+	var indexed string
+	err = db.QueryRowContext(ctx, `SELECT indexed_at_commit FROM index_meta WHERE id = 1`).Scan(&indexed)
+	if err != nil {
+		// No watermark row -- a brand-new store (index.sqlite/index_meta don't
+		// exist yet) or a partially-built index left behind by an interrupted
+		// Reindex. Nothing to trust either way, so per NFR-3 ("stale never
+		// served as fresh") the safe default is stale.
+		return true, nil
+	}
+
+	head, ok := git(ctx, store, "rev-parse", "HEAD")
+	if !ok {
+		return false, nil
+	}
+	return indexed != head, nil
+}
