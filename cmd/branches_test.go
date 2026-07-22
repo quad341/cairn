@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func runStaleBranches(t *testing.T, store string, stub func(*testing.T), extraAr
 // across every test in this binary.
 func resetStaleBranchesFlags(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"notify-after", "escalate-after", "dry-run", "reviewer"} {
+	for _, name := range []string{"notify-after", "escalate-after", "dry-run", "reviewer", "state-file"} {
 		f := staleBranchesCmd.Flags().Lookup(name)
 		require.NotNil(t, f)
 		require.NoError(t, f.Value.Set(f.DefValue))
@@ -101,22 +102,22 @@ func TestStaleBranchesRejectsEscalateAfterNotGreaterThanNotifyAfter(t *testing.T
 }
 
 // TestStaleBranchesBucketsByAge covers the AC's core detection requirement:
-// three review branches at different ages resolve to fresh/notify/escalate
-// independently, and only the notify-status branch is actually mailed (a
-// mail send this test's stubGC always succeeds at) -- escalate gets its
-// reviewer resolved but is left un-notified, since a repeat reminder once a
-// branch is already escalate-eligible would just be redundant nagging.
+// review branches at different ages resolve to fresh/notify independently,
+// and the notify-status branch is actually mailed (a mail send this test's
+// stubGC always succeeds at). escalate is not reachable from a single pass
+// over fresh notify state -- see TestStaleBranchesFirstPassNeverEscalates
+// and TestStaleBranchesEscalatesOnlyAfterPriorNotify for that behavior
+// (crn-3l6).
 func TestStaleBranchesBucketsByAge(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
 	now := time.Now()
 	fresh := commitReviewBranchAt(t, store, "fresh-topic", nil, now)
 	notify := commitReviewBranchAt(t, store, "notify-topic", nil, now.Add(-90*time.Minute))
-	escalate := commitReviewBranchAt(t, store, "escalate-topic", nil, now.Add(-3*time.Hour))
 
 	findings, err := runStaleBranches(t, store, stubGC, "--notify-after", "1h", "--escalate-after", "2h")
 	require.NoError(t, err)
-	require.Len(t, findings, 3)
+	require.Len(t, findings, 2)
 
 	byID := map[string]StaleBranchFinding{}
 	for _, f := range findings {
@@ -134,12 +135,58 @@ func TestStaleBranchesBucketsByAge(t *testing.T) {
 	assert.Equal(t, "mayor", n.Reviewer, "global tier's default reviewer")
 	assert.True(t, n.Notified)
 	assert.Empty(t, n.Error)
+}
 
-	esc := byID[escalate.ID]
-	assert.Equal(t, "escalate", esc.Status)
-	assert.Equal(t, "mayor", esc.Reviewer, "reviewer must still be resolved and reported for an escalate branch")
-	assert.False(t, esc.Notified, "an escalate-status branch must not be mailed a redundant reminder")
-	assert.Empty(t, esc.Error)
+// TestStaleBranchesFirstPassNeverEscalates is crn-3l6's literal repro: a
+// review branch old enough to already be past --escalate-after the very
+// first time any sweep pass ever observes it must not be reported as
+// escalate -- there is no prior notify to retry-before-escalate against
+// yet, so it is downgraded to notify (and actually mailed) instead.
+func TestStaleBranchesFirstPassNeverEscalates(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	e := commitReviewBranchAt(t, store, "escalate-topic", nil, time.Now().Add(-3*time.Hour))
+
+	findings, err := runStaleBranches(t, store, stubGC, "--notify-after", "1h", "--escalate-after", "2h")
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+
+	f := findings[0]
+	assert.Equal(t, e.ID, f.EntryID)
+	assert.Equal(t, "notify", f.Status, "a branch's first-ever observed pass must never escalate, regardless of age")
+	assert.Equal(t, "mayor", f.Reviewer)
+	assert.True(t, f.Notified, "the downgraded notify must still actually mail a reminder")
+	assert.Empty(t, f.Error)
+}
+
+// TestStaleBranchesEscalatesOnlyAfterPriorNotify proves escalate is still
+// reachable, on a genuine second sweep pass that shares state with the
+// first -- crn-0yv.1 AC2's "second consecutive sweep pass" shape, and the
+// other half of crn-3l6's fix from TestStaleBranchesFirstPassNeverEscalates.
+func TestStaleBranchesEscalatesOnlyAfterPriorNotify(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	e := commitReviewBranchAt(t, store, "escalate-topic", nil, time.Now().Add(-3*time.Hour))
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+
+	first, err := runStaleBranches(t, store, stubGC,
+		"--notify-after", "1h", "--escalate-after", "2h", "--state-file", stateFile)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+	require.Equal(t, "notify", first[0].Status, "precondition: first pass must downgrade to notify, not escalate")
+	require.True(t, first[0].Notified)
+
+	second, err := runStaleBranches(t, store, stubGC,
+		"--notify-after", "1h", "--escalate-after", "2h", "--state-file", stateFile)
+	require.NoError(t, err)
+	require.Len(t, second, 1)
+
+	f := second[0]
+	assert.Equal(t, e.ID, f.EntryID)
+	assert.Equal(t, "escalate", f.Status, "a second pass with a prior notify already recorded for this exact tip must be allowed to escalate")
+	assert.Equal(t, "mayor", f.Reviewer)
+	assert.False(t, f.Notified, "an escalate-status branch must not be mailed a redundant reminder")
+	assert.Empty(t, f.Error)
 }
 
 // TestStaleBranchesDryRunDoesNotMail proves --dry-run computes and reports

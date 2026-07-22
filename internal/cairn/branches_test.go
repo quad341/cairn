@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +85,10 @@ func TestListReviewBranchesComputesAgeAndTier(t *testing.T) {
 	assert.Equal(t, "web", got.Value)
 	assert.Equal(t, 30*time.Hour, got.Age)
 	assert.Empty(t, got.Error)
+
+	wantSHA, err := exec.CommandContext(t.Context(), "git", "-C", store, "rev-parse", "remember/"+e.ID).Output()
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(string(wantSHA)), got.SHA, "SHA must be the branch's actual tip commit hash")
 }
 
 // TestListReviewBranchesExcludesMergedBranches covers the AC's "merged... is
@@ -167,6 +172,12 @@ func TestListReviewBranchesNewCommitResetsAge(t *testing.T) {
 	assert.Equal(t, time.Hour, branches[0].Age,
 		"a new commit on the review branch must reset its age to the new tip's timestamp, not the original commit's")
 	assert.Equal(t, "global", branches[0].Tier, "the changed-file tier must still resolve correctly after a follow-up commit")
+
+	wantSHA, err := exec.CommandContext(t.Context(), "git", "-C", wt, "rev-parse", "HEAD").Output()
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(string(wantSHA)), branches[0].SHA,
+		"SHA must reflect the new tip after a follow-up commit, not the original -- this is what lets a stale-branches "+
+			"consumer (cmd/branches.go evaluateBranch) tell a genuinely-unactioned branch apart from one just amended")
 }
 
 // TestListReviewBranchesExcludesDeletedBranches covers the AC's

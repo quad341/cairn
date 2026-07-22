@@ -33,7 +33,12 @@ type ReviewBranch struct {
 	Tier    string
 	Value   string
 	Age     time.Duration
-	Error   string
+	// SHA is the branch's current tip commit hash -- evaluateBranch
+	// (cmd/branches.go) keys its cross-pass notify state on Name+SHA, so a
+	// new commit (a different SHA) is indistinguishable from a never-before-
+	// seen branch, per crn-3l6.
+	SHA   string
+	Error string
 }
 
 // ListReviewBranches lists every remember/* branch in store not already
@@ -57,7 +62,7 @@ func ListReviewBranches(ctx context.Context, store string, now time.Time) ([]Rev
 	checkedOut = strings.TrimSpace(checkedOut)
 
 	refs, err := gitRun(ctx, store, "for-each-ref",
-		"--format=%(refname:short)%00%(committerdate:unix)",
+		"--format=%(refname:short)%00%(committerdate:unix)%00%(objectname)",
 		"refs/heads/"+reviewBranchPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("list review branches: %w", err)
@@ -68,7 +73,7 @@ func ListReviewBranches(ctx context.Context, store string, now time.Time) ([]Rev
 		if line == "" {
 			continue
 		}
-		name, commitAt, err := parseRefLine(line)
+		name, commitAt, sha, err := parseRefLine(line)
 		if err != nil {
 			return nil, fmt.Errorf("list review branches: %w", err)
 		}
@@ -77,6 +82,7 @@ func ListReviewBranches(ctx context.Context, store string, now time.Time) ([]Rev
 			Name:    name,
 			EntryID: strings.TrimPrefix(name, reviewBranchPrefix),
 			Age:     now.Sub(commitAt),
+			SHA:     sha,
 		}
 
 		merged, err := isMergedInto(ctx, store, name, checkedOut)
@@ -102,18 +108,18 @@ func ListReviewBranches(ctx context.Context, store string, now time.Time) ([]Rev
 	return branches, nil
 }
 
-// parseRefLine splits one NUL-joined "refname\0committerdate" line from
-// ListReviewBranches' for-each-ref call.
-func parseRefLine(line string) (name string, commitAt time.Time, err error) {
-	fields := strings.SplitN(line, "\x00", 2)
-	if len(fields) != 2 {
-		return "", time.Time{}, fmt.Errorf("unexpected for-each-ref output %q", line)
+// parseRefLine splits one NUL-joined "refname\0committerdate\0objectname"
+// line from ListReviewBranches' for-each-ref call.
+func parseRefLine(line string) (name string, commitAt time.Time, sha string, err error) {
+	fields := strings.SplitN(line, "\x00", 3)
+	if len(fields) != 3 {
+		return "", time.Time{}, "", fmt.Errorf("unexpected for-each-ref output %q", line)
 	}
 	sec, err := strconv.ParseInt(strings.TrimSpace(fields[1]), 10, 64)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("parse committer date for %s: %w", fields[0], err)
+		return "", time.Time{}, "", fmt.Errorf("parse committer date for %s: %w", fields[0], err)
 	}
-	return fields[0], time.Unix(sec, 0), nil
+	return fields[0], time.Unix(sec, 0), strings.TrimSpace(fields[2]), nil
 }
 
 // isMergedInto reports whether branch's tip commit is already an ancestor

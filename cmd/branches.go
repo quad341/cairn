@@ -3,7 +3,10 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/quad341/cairn/internal/cairn"
@@ -19,6 +22,8 @@ func init() {
 		"compute and report status without actually mailing a reviewer")
 	staleBranchesCmd.Flags().String("reviewer", "",
 		"reviewer to mail for every notify-status branch (default: $CAIRN_REVIEWER, else a per-tier computed default)")
+	staleBranchesCmd.Flags().String("state-file", "",
+		"path to the JSON file tracking prior notifies, keyed by branch+commit (default: <store>/.git/cairn-stale-branches-state.json)")
 	rootCmd.AddCommand(staleBranchesCmd)
 }
 
@@ -41,9 +46,21 @@ var staleBranchesCmd = &cobra.Command{
 			return err
 		}
 
+		statePath := stateFilePath(cmd)
+		state, err := loadNotifyState(statePath)
+		if err != nil {
+			return err
+		}
+
 		findings := make([]StaleBranchFinding, 0, len(reviewBranches))
 		for _, b := range reviewBranches {
-			findings = append(findings, evaluateBranch(cmd, b, notifyAfter, escalateAfter, dryRun))
+			findings = append(findings, evaluateBranch(cmd, b, notifyAfter, escalateAfter, dryRun, state))
+		}
+
+		if !dryRun {
+			if err := saveNotifyState(statePath, state); err != nil {
+				return err
+			}
 		}
 
 		enc := json.NewEncoder(cmd.OutOrStdout())
@@ -70,12 +87,83 @@ type StaleBranchFinding struct {
 	Error      string `json:"error,omitempty"`
 }
 
+// notifyState maps a review branch's name to the tip SHA it was last
+// successfully notified at. evaluateBranch consults it to require at least
+// one prior notify at the branch's *current* tip before ever reporting
+// escalate -- a fresh commit (a different SHA) is indistinguishable from a
+// never-before-seen branch, so it must be renotified before it can escalate
+// again too (crn-3l6).
+type notifyState map[string]string
+
+// stateFilePath resolves --state-file (flag override, else a default rooted
+// at storePath()'s .git directory -- unconditionally excluded from any
+// commit regardless of that store repo's own .gitignore content, unlike
+// index/cairn.sqlite's convention).
+//
+// This default only carries memory across sweep passes if the same store
+// checkout is reused call to call. A caller that re-clones store fresh every
+// sweep tick must pass --state-file pointing at a durable path outside the
+// ephemeral checkout, or this command's cross-pass memory is lost every
+// cycle.
+func stateFilePath(cmd *cobra.Command) string {
+	if f, _ := cmd.Flags().GetString("state-file"); f != "" {
+		return f
+	}
+	return filepath.Join(storePath(), ".git", "cairn-stale-branches-state.json")
+}
+
+// loadNotifyState reads path's persisted notifyState. A missing file --
+// the common case, since it means no sweep pass has ever recorded a notify
+// -- is not an error.
+func loadNotifyState(path string) (notifyState, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return notifyState{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read state file %s: %w", path, err)
+	}
+	state := notifyState{}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("parse state file %s: %w", path, err)
+	}
+	return state, nil
+}
+
+// saveNotifyState persists state to path as JSON, creating path's parent
+// directory if needed -- a store's own .git directory always already
+// exists by the time this runs, but an explicit --state-file override
+// pointing elsewhere might not.
+func saveNotifyState(path string, state notifyState) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("create state file directory: %w", err)
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write state file %s: %w", path, err)
+	}
+	return nil
+}
+
 // evaluateBranch buckets b by age and, for a notify-status branch, resolves
 // and (unless dryRun) mails its reviewer a reminder. It also resolves (but
 // never mails) the reviewer for an escalate-status branch -- the downstream
 // bd-bead-filing step wants to name who was already reminded and didn't
 // act, not just that nobody did.
-func evaluateBranch(cmd *cobra.Command, b cairn.ReviewBranch, notifyAfter, escalateAfter time.Duration, dryRun bool) StaleBranchFinding {
+//
+// A raw escalate bucket is downgraded to notify whenever state has no
+// record of a prior notify at b's exact current SHA: escalate must never be
+// reachable on a branch's first-ever observed pass (or its first pass since
+// a new commit landed), since nobody has been given a chance to act on a
+// reminder yet (crn-3l6, crn-0yv.1 AC2). state is mutated in place -- a
+// successful notify (whether from a raw notify bucket or a downgraded one)
+// records b's SHA, so a later pass over the same tip can escalate.
+func evaluateBranch(cmd *cobra.Command, b cairn.ReviewBranch, notifyAfter, escalateAfter time.Duration,
+	dryRun bool, state notifyState,
+) StaleBranchFinding {
 	f := StaleBranchFinding{
 		Branch:     b.Name,
 		EntryID:    b.EntryID,
@@ -93,6 +181,9 @@ func evaluateBranch(cmd *cobra.Command, b cairn.ReviewBranch, notifyAfter, escal
 	if f.Status == "fresh" {
 		return f
 	}
+	if f.Status == "escalate" && state[b.Name] != b.SHA {
+		f.Status = "notify"
+	}
 
 	reviewer, err := resolveReviewer(cmd, b.Tier, b.Value)
 	if err != nil {
@@ -107,6 +198,7 @@ func evaluateBranch(cmd *cobra.Command, b cairn.ReviewBranch, notifyAfter, escal
 			return f
 		}
 		f.Notified = true
+		state[b.Name] = b.SHA
 	}
 	return f
 }
