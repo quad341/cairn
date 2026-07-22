@@ -66,36 +66,78 @@ Escalation stays a shell/formula concern for the opposite reason:
 reuse, and crn-0yv.2 already established the bd-CLI-shelling pattern this
 step's escalation half should just follow, not reinvent.
 
-## Design decision: two absolute-age thresholds, no cross-cycle state
+## Design decision: two absolute-age thresholds, plus minimal per-SHA notify state
 
 The acceptance criteria's shape — re-notify, then escalate only "after the
 next sweep cycle" if still unactioned — could be read as needing this step
 to remember what the *previous* cycle saw (a marker file, or a cycle
 counter) to know whether a branch has already had its one reminder.
 
-This plan uses two absolute-age thresholds instead (`--notify-after` /
+This plan uses two absolute-age thresholds (`--notify-after` /
 `--escalate-after`, checked each pass against the branch's own commit
-timestamp) and keeps no cross-cycle state, for the same reason
-crn-0yv.2's sibling plan gives for its own single-observation design:
-the signal this step keys off — git commit age — is itself already a
-durable, monotonic record of elapsed time since the last real reviewer
+timestamp) for the fresh/notify/escalate bucketing itself, for the same
+reason crn-0yv.2's sibling plan gives for its own single-observation
+design: the signal this step keys off — git commit age — is itself already
+a durable, monotonic record of elapsed time since the last real reviewer
 action (any new commit on the branch resets it, per `ListReviewBranches`'
-own age computation). A cycle counter would only be answering a question
-the commit timestamp already answers, while additionally coupling
-correctness to the sweep actually running on a regular cadence. If a sweep
-cycle is skipped or delayed, an absolute-age design still buckets branches
-correctly on the next run; a cycle-counted design would not.
+own age computation). If a sweep cycle is skipped or delayed, an
+absolute-age design still buckets branches correctly on the next run; a
+cycle-counted design would not.
+
+Bucketing alone can't guarantee "re-notify, *then* escalate", though —
+only that a branch is old enough for one or the other. A branch observed
+for the first time ever (tool never run before, or a fresh `--state-file`)
+can already be past `--escalate-after` on that very first pass, with no
+reminder having gone out yet; age-only bucketing would report
+`escalate`/`notified=false` immediately, skipping the notify step entirely.
+This was crn-3l6's bug.
+
+The shipped fix (crn-0yv.1, `evaluateBranch` in `cmd/branches.go`) closes
+that gap with the smallest state that can: a `notifyState` map, `branch
+name -> last-notified SHA`, persisted to `--state-file` (default
+`<store>/.git/cairn-stale-branches-state.json`). A raw `escalate` bucket is
+downgraded to `notify` whenever the map has no record of a prior notify at
+the branch's *current* SHA (`state[b.Name] != b.SHA`); a successful,
+non-dry-run notify then records that SHA, so a later pass over the same tip
+is the one allowed to escalate. This is narrower than either alternative
+this section originally argued against: it is not a cycle counter (nothing
+counts cycles or requires a regular sweep cadence — a skipped or delayed
+pass still resolves correctly next time, same as pure age-bucketing), and
+it self-resets on a new commit the same way age-bucketing already does for
+the other three exclusion cases (merged / deleted / new-commit — see "What
+this bead already gives this step" above). It is the one piece of memory
+that git commit age structurally cannot provide on its own: whether *this
+exact tip* has already had its one reminder.
+
+**Operational requirement this creates for crn-0yv.5:** the escalate
+guarantee above only holds if `--state-file`'s target actually persists
+from one sweep pass to the next. If the formula wiring this step in reuses
+the same durable `$STORE` checkout call to call, the default path (rooted
+under `$STORE/.git/`) already persists correctly and nothing further is
+needed. If instead each sweep tick re-clones or re-checks-out `$STORE`
+fresh, the default path is wiped every cycle: `state[b.Name] != b.SHA` is
+then always true, so every pass — including every escalate-eligible one —
+is downgraded to `notify` forever. A reminder mail goes out every single
+pass instead of once, no bead is ever filed no matter how long a branch
+sits unmerged, and nothing errors to reveal it's happening
+(`stateFilePath`'s own doc comment in `cmd/branches.go` flags this same
+risk). Whoever assembles `mol-cairn-librarian.formula.toml` (crn-0yv.5)
+needs to know which case applies to its actual sweep invocation and, if the
+checkout isn't reused, pass `--state-file` pointing at a location that
+survives across ticks — see the note on the invocation in the recovery
+step below.
 
 This also directly satisfies "not a duplicate per cycle" for the escalate
-side: once a branch is old enough to escalate, it stays `escalate`-status on
-every later pass (its age only grows), so the shell step's own bd dedup
+side: once a branch is old enough to escalate *and* has a recorded prior
+notify at its tip, it stays `escalate`-status on every later pass (its age
+only grows and its SHA doesn't change), so the shell step's own bd dedup
 check (next section) is what prevents re-filing — not anything Go needs to
-track. And it satisfies "re-notify... then escalate" ordering on the notify
-side implicitly: `evaluateBranch` (`cmd/branches.go`) only mails a
-`notify`-status branch, never an `escalate`-status one, so once a branch
-crosses into escalate range the reminders stop (avoiding redundant nagging
-once a bead is about to exist) without any explicit "already reminded" flag
-to maintain.
+track further. And it satisfies "re-notify... then escalate" ordering on
+the notify side implicitly: `evaluateBranch` only mails a `notify`-status
+branch, never an `escalate`-status one, so once a branch crosses into
+escalate range the reminders stop (avoiding redundant nagging once a bead
+is about to exist) without any separate "already reminded" flag beyond the
+notify-state map itself.
 
 ## Design decision: dedup query anchoring
 
@@ -123,7 +165,15 @@ gc stub that always fails and asserting no error surfaces), a per-branch
 mail failure being reported without failing the whole command (report, don't
 abort — the same stance `cairn sweep` takes for one bad entry), and
 `--reviewer` overriding the per-tier default for every branch mailed, not
-just one. `go build`, `go vet`, `gofmt -l`, `go test ./... -race`, and
+just one. It also covers crn-3l6's cross-cycle notify-state fix directly:
+`TestStaleBranchesFirstPassNeverEscalates` proves a branch's first-ever
+observed pass downgrades to `notify` regardless of age, and
+`TestStaleBranchesEscalatesOnlyAfterPriorNotify` proves a second pass
+sharing the same `--state-file` (and so a recorded prior notify at the
+branch's exact tip SHA) is the one allowed to reach `escalate`. Both rely
+on the `SHA` field `ListReviewBranches` reports per branch
+(`internal/cairn/branches.go`), which `evaluateBranch` keys its notify-state
+entries on. `go build`, `go vet`, `gofmt -l`, `go test ./... -race`, and
 `golangci-lint run ./...` all clean. Not run against a live `bd`/`gc` pair —
 that's crn-0yv.5's smoke-test scope once this step is assembled into the
 real formula, same as crn-0yv.2's own plan notes for its escalation half.
@@ -143,10 +193,21 @@ finding, deduplicated across cycles. This step never merges or rewrites a
 review branch itself, per crn-xw3 guardrail 8 — only mails a reviewer
 (delegated to the "cairn stale-branches" call above) or files a bead.
 
+IMPORTANT before pasting this step as-is: "cairn stale-branches"'s escalate
+guarantee depends on --state-file persisting across sweep passes (see
+"Design decision: two absolute-age thresholds, plus minimal per-SHA notify
+state" above). Confirm $STORE is a durable checkout this formula reuses
+pass to pass; if it's instead re-cloned fresh every sweep tick, add
+--state-file pointing at a separately durable path to the invocation below
+— otherwise escalate silently never fires.
+
   STORE="${CAIRN_STORE:?CAIRN_STORE must be set}"
   FILED=0
   SKIPPED=0
 
+  # See the --state-file persistence note above this script: the
+  # "cairn stale-branches --store $STORE" call below only retains
+  # cross-pass notify state if $STORE itself persists call to call.
   while IFS= read -r finding; do
     BRANCH=$(printf '%s' "$finding" | jq -r '.branch')
     ENTRY_ID=$(printf '%s' "$finding" | jq -r '.entry_id')
@@ -168,9 +229,9 @@ review branch itself, per crn-xw3 guardrail 8 — only mails a reviewer
         --stdin --type=task --priority=3 \
         --labels=dim:review-branch,source:cairn-librarian --silent <<BODY
 Review branch "$BRANCH" (entry $ENTRY_ID, tier $TIER) has been unmerged for
-${AGE_SECONDS}s and was already sent a reminder mail (reviewer: $REVIEWER) by
-this same cairn stale-branches pass. It is now past the escalate threshold
-with no merge and no new commit.
+${AGE_SECONDS}s. A reminder mail was already sent to $REVIEWER on an earlier
+cairn stale-branches pass at this same commit, and it is now past the
+escalate threshold with no merge and no new commit since.
 
 Filed by the mol-cairn-librarian stale-review-branch-recovery step
 (crn-0yv.1). This is a proposal only: it never merges the branch itself. To
