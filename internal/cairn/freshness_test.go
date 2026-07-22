@@ -31,6 +31,14 @@ func gitCommitAll(t *testing.T, dir, msg string) {
 	require.NoErrorf(t, err, "git commit: %s", out)
 }
 
+// gitAdd stages a path without committing it — for fixtures that need a
+// path tracked in the index but not resolvable at HEAD (crn-8x4).
+func gitAdd(t *testing.T, dir, path string) {
+	t.Helper()
+	out, err := exec.CommandContext(t.Context(), "git", "-C", dir, "add", path).CombinedOutput()
+	require.NoErrorf(t, err, "git add: %s", out)
+}
+
 func TestCheckNoAnchor(t *testing.T) {
 	st, _ := Check(t.Context(), &Entry{ID: "x", Anchor: Anchor{Type: "none"}})
 	assert.Equal(t, Unknown, st)

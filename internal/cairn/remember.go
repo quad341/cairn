@@ -1,9 +1,12 @@
 package cairn
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -93,17 +96,152 @@ func (e *Entry) Create(store string) error {
 	}
 }
 
+// ResolvedTier reports which DESIGN.md §2 tier scope resolves to -- "rig",
+// "role", "agent", or "global" when no tier tag matches -- and that tag's
+// value (the part after the colon; empty for global). Shared tiers (every
+// value but "agent") require DESIGN.md §7's branch-and-review path rather
+// than a direct commit.
+func ResolvedTier(scope []string) (tier, value string) {
+	for _, t := range scopeDirs[1:] { // rig, role, agent -- global is the fallback
+		for _, tag := range scope {
+			if val, ok := strings.CutPrefix(tag, t+":"); ok {
+				return t, val
+			}
+		}
+	}
+	return "global", ""
+}
+
 // scopeDir maps scope tags to their DESIGN.md §2 directory. An empty scope
 // (or one with no rig:/role:/agent: tag) is filed under global/; otherwise
 // the first matching tier in rig > role > agent order wins, using the tag's
 // value (the part after the colon) as the subdirectory name.
 func scopeDir(store string, scope []string) string {
-	for _, tier := range scopeDirs[1:] { // rig, role, agent -- global is the fallback
-		for _, tag := range scope {
-			if val, ok := strings.CutPrefix(tag, tier+":"); ok {
-				return filepath.Join(store, tier, val)
-			}
-		}
+	tier, value := ResolvedTier(scope)
+	if tier == "global" {
+		return filepath.Join(store, "global")
 	}
-	return filepath.Join(store, "global")
+	return filepath.Join(store, tier, value)
+}
+
+// IsPrivateScope reports whether scope resolves to the DESIGN.md §7 private
+// (agent/) tier: commit straight to the store's current branch, no review.
+// A scope that also carries a rig: or role: tag does not qualify -- those
+// tiers take precedence over agent: in ResolvedTier, matching scopeDir
+// exactly.
+func IsPrivateScope(scope []string) bool {
+	tier, _ := ResolvedTier(scope)
+	return tier == "agent"
+}
+
+// gitRun runs git -C repo args..., returning combined stdout+stderr on
+// success. On failure it returns an error embedding that output, so callers
+// see git's own diagnostic (e.g. "nothing to commit", a merge conflict)
+// instead of a bare "exit status 1". This is distinct from freshness.go's
+// git() helper, which collapses failure to a bool -- CommitDirect and
+// CommitToReviewBranch's callers need a clear, detailed error, not just a
+// yes/no.
+func gitRun(ctx context.Context, repo string, args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+// CommitDirect stages and commits e's already-written body file straight to
+// the store repo's current branch: the private agent/ tier's flow
+// (DESIGN.md §7, "commit straight to main -- no review"). Callers must only
+// invoke this after a successful e.Create, and only when e.Scope resolves to
+// the private tier (IsPrivateScope) -- committing a shared-tier entry this
+// way would bypass the review DESIGN.md §7 requires for that tier.
+//
+// The add and commit are both scoped to e.BodyPath alone (never `git add -A`
+// or a bare `git commit`), so anything else already staged or dirty in the
+// store's index is left untouched -- the resulting commit contains only the
+// new entry file, regardless of what else a concurrent writer left in the
+// index. No branch is created or switched to; this commits onto whatever
+// branch is already checked out.
+//
+// On a git failure the entry file is left on disk exactly as e.Create wrote
+// it -- uncommitted, not rolled back -- and the returned error says so
+// explicitly, so that state is reported rather than silently lost.
+func (e *Entry) CommitDirect(ctx context.Context, store string) (string, error) {
+	rel, err := filepath.Rel(store, e.BodyPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s relative to store %s: %w", e.BodyPath, store, err)
+	}
+	if _, err := gitRun(ctx, store, "add", "--", rel); err != nil {
+		return "", fmt.Errorf("git add %s (entry written but not committed -- remove or retry): %w", rel, err)
+	}
+	if _, err := gitRun(ctx, store, "commit", "-m", "remember: "+e.ID, "--", rel); err != nil {
+		return "", fmt.Errorf("git commit %s (entry written and staged but not committed -- remove or retry): %w", rel, err)
+	}
+	sha, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("commit succeeded but could not resolve the resulting SHA: %w", err)
+	}
+	return strings.TrimSpace(sha), nil
+}
+
+// reviewBranchName is the git branch a shared-tier entry's review commit
+// lands on -- namespaced under remember/ and keyed by the entry's own ID, so
+// concurrent remember calls (even for the same topic_key) never collide.
+func reviewBranchName(e *Entry) string {
+	return "remember/" + e.ID
+}
+
+// CommitToReviewBranch commits e -- already written to store by Create --
+// onto a fresh branch, never the store's current (default) branch, per
+// DESIGN.md §7's shared-tier curation model: "shared = branch, merge
+// request, review, merge." It uses `git worktree add` for isolation rather
+// than checkout-in-place: a checkout/add/commit/checkout-back sequence in
+// the store's own working tree would leave a real corruption window if
+// interrupted mid-sequence (killed process, panic), which a throwaway
+// worktree -- entirely separate from the store's HEAD, index, and working
+// tree -- cannot. Returns the branch name on success.
+func (e *Entry) CommitToReviewBranch(ctx context.Context, store string) (string, error) {
+	branch := reviewBranchName(e)
+	rel, err := filepath.Rel(store, e.BodyPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve entry path: %w", err)
+	}
+
+	scratch, err := os.MkdirTemp("", "cairn-review-*")
+	if err != nil {
+		return "", fmt.Errorf("create review worktree scratch dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+
+	wt := filepath.Join(scratch, "wt")
+	if _, err := gitRun(ctx, store, "worktree", "add", "-b", branch, wt, "HEAD"); err != nil {
+		return "", fmt.Errorf("create review branch %q: %w", branch, err)
+	}
+	defer func() { _, _ = gitRun(ctx, store, "worktree", "remove", "--force", wt) }()
+
+	content, err := os.ReadFile(e.BodyPath)
+	if err != nil {
+		return "", fmt.Errorf("read entry for review commit: %w", err)
+	}
+	dst := filepath.Join(wt, rel)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
+		return "", fmt.Errorf("prepare review worktree dir: %w", err)
+	}
+	// dst stays under wt, a throwaway worktree this function created above;
+	// rel is the same relative path Create already used to write e.BodyPath,
+	// built from topic/scope segments validated at the CLI boundary before
+	// any Entry is ever constructed.
+	//nolint:gosec // dst is confined to a temp worktree, not attacker-controlled
+	if err := os.WriteFile(dst, content, 0o600); err != nil {
+		return "", fmt.Errorf("copy entry into review worktree: %w", err)
+	}
+
+	if _, err := gitRun(ctx, wt, "add", "--", rel); err != nil {
+		return "", fmt.Errorf("stage entry in review worktree: %w", err)
+	}
+	msg := fmt.Sprintf("remember: %s\n\nscope: %s", e.ID, strings.Join(e.Scope, " "))
+	if _, err := gitRun(ctx, wt, "commit", "-q", "-m", msg); err != nil {
+		return "", fmt.Errorf("commit entry to review branch: %w", err)
+	}
+	return branch, nil
 }
