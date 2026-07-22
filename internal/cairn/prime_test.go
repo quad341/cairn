@@ -16,7 +16,7 @@ func TestPrime(t *testing.T) {
 	out, err := Prime(dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 	assert.Contains(t, out, "alpha/thing", "an alpha-scoped agent should see the alpha topic")
-	assert.Contains(t, out, "hand-author", "prime should still nudge agents to capture what they learn")
+	assert.Contains(t, out, "cairn remember", "prime should still nudge agents to capture what they learn")
 
 	bare, err := Prime(dir, nil)
 	require.NoError(t, err)
@@ -27,6 +27,19 @@ func TestPrimeEmpty(t *testing.T) {
 	out, err := Prime(t.TempDir(), nil)
 	require.NoError(t, err)
 	assert.Contains(t, out, "No cached knowledge")
+}
+
+// TestPrimeDoesNotClaimRememberMissing covers crn-6az.2: prime's footer used
+// to hardcode "no `remember` command yet" and tell agents to hand-author
+// entries directly, which went stale the moment the remember command
+// shipped (it now writes entries itself, including committing/routing them
+// for review) -- leaving prime denying a command that cairn --help lists.
+func TestPrimeDoesNotClaimRememberMissing(t *testing.T) {
+	out, err := Prime(t.TempDir(), nil)
+	require.NoError(t, err)
+	assert.NotContains(t, out, "no `remember` command yet")
+	assert.NotContains(t, out, "hand-author")
+	assert.Contains(t, out, "cairn remember")
 }
 
 // TestPrimeWarnsOnUnmatchedScopeDimension is crn-ln1 acceptance criterion 1

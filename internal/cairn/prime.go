@@ -49,8 +49,9 @@ func Prime(store string, identity []string) (string, error) {
 	for _, w := range scopeMismatchWarnings(all, entries, identity) {
 		fmt.Fprintf(&b, "\n%s\n", w)
 	}
-	b.WriteString("Capture what you learn: hand-author a `+++`-fenced markdown entry under the right scope dir\n" +
-		"(DESIGN.md §2, §6-§7) — no `remember` command yet.\n")
+	b.WriteString("Capture what you learn: `cairn remember <body>` writes a new entry (private tier\n" +
+		"commits directly; shared tiers route through review — see `cairn remember --help`\n" +
+		"and DESIGN.md §6-§7).\n")
 	return b.String(), nil
 }
 
