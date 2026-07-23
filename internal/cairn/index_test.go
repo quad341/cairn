@@ -138,6 +138,134 @@ func TestReindexPreservesHitCount(t *testing.T) {
 	assert.Equal(t, 5, hitCount)
 }
 
+func TestReindexPopulatesNewFieldColumns(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	body := "+++\n" +
+		"id = \"a\"\n" +
+		"title = \"A\"\n" +
+		"kind = \"remediation\"\n" +
+		"auto_actionable = true\n" +
+		"recurrence_count = 3\n" +
+		"promoted_bead_id = \"crn-abcd\"\n" +
+		"last_recalled_at = \"2026-07-20T00:00:00Z\"\n" +
+		"+++\n" +
+		"body\n"
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"), []byte(body), 0o600))
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var kind, promotedBeadID, lastRecalledAt string
+	var autoActionable, recurrenceCount int
+	require.NoError(t, db.QueryRowContext(ctx,
+		"SELECT kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at FROM entries WHERE id = 'a'",
+	).Scan(&kind, &autoActionable, &recurrenceCount, &promotedBeadID, &lastRecalledAt))
+	assert.Equal(t, "remediation", kind)
+	assert.Equal(t, 1, autoActionable)
+	assert.Equal(t, 3, recurrenceCount)
+	assert.Equal(t, "crn-abcd", promotedBeadID)
+	assert.Equal(t, "2026-07-20T00:00:00Z", lastRecalledAt)
+}
+
+// TestReindexPreservesNewIndexOnlyFields covers this bead's core acceptance
+// criterion: LastRecalledAt/RecurrenceCount/PromotedBeadID/Kind/AutoActionable
+// are index-only state like hit_count (TestReindexPreservesHitCount) once a
+// future call site (crn-28ge.1.2/.1.4/.1.5) writes them directly via SQL --
+// a reindex must leave them alone rather than resetting them from the body's
+// stale-by-construction zero values.
+func TestReindexPreservesNewIndexOnlyFields(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	body := "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"), []byte(body), 0o600))
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	_, err = db.ExecContext(ctx, `UPDATE entries SET
+		kind = 'remediation', auto_actionable = 1, recurrence_count = 5,
+		promoted_bead_id = 'crn-live', last_recalled_at = '2026-07-21T00:00:00Z'
+		WHERE id = 'a'`)
+	require.NoError(t, err)
+
+	_, err = Reindex(ctx, store)
+	require.NoError(t, err)
+
+	var kind, promotedBeadID, lastRecalledAt string
+	var autoActionable, recurrenceCount int
+	require.NoError(t, db.QueryRowContext(ctx,
+		"SELECT kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at FROM entries WHERE id = 'a'",
+	).Scan(&kind, &autoActionable, &recurrenceCount, &promotedBeadID, &lastRecalledAt))
+	assert.Equal(t, "remediation", kind, "kind is index-only state; reindex must not reset it from the body")
+	assert.Equal(t, 1, autoActionable, "auto_actionable is index-only state; reindex must not reset it from the body")
+	assert.Equal(t, 5, recurrenceCount, "recurrence_count is index-only state; reindex must not reset it from the body")
+	assert.Equal(t, "crn-live", promotedBeadID, "promoted_bead_id is index-only state; reindex must not reset it from the body")
+	assert.Equal(t, "2026-07-21T00:00:00Z", lastRecalledAt, "last_recalled_at is index-only state; reindex must not reset it from the body")
+}
+
+// TestReindexMigratesLegacyIndexSchemaNewFields covers an index.sqlite built
+// by a binary that predates this bead's 5 new columns -- mirrors
+// TestReindexMigratesLegacyIndexSchema's coverage of the crn-6az.6.1.1
+// migration, one bead's schema addition later.
+func TestReindexMigratesLegacyIndexSchemaNewFields(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(IndexPath(store)), 0o750))
+	legacyDB, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	_, err = legacyDB.ExecContext(ctx, `
+CREATE TABLE entries (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  summary TEXT,
+  type TEXT,
+  topic_key TEXT,
+  body_path TEXT NOT NULL,
+  anchor_type TEXT,
+  anchor_repo TEXT,
+  anchor_paths TEXT,
+  anchor_spec TEXT,
+  anchor_fingerprint TEXT,
+  verified_at TEXT,
+  created_by TEXT,
+  created_at TEXT,
+  hit_count INTEGER DEFAULT 0
+);
+CREATE TABLE entry_tags (entry_id TEXT, tag TEXT);
+`)
+	require.NoError(t, err)
+	require.NoError(t, legacyDB.Close())
+
+	n, err := Reindex(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var kind, promotedBeadID, lastRecalledAt string
+	var autoActionable, recurrenceCount int
+	require.NoError(t, db.QueryRowContext(ctx,
+		"SELECT kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at FROM entries WHERE id = 'a'",
+	).Scan(&kind, &autoActionable, &recurrenceCount, &promotedBeadID, &lastRecalledAt))
+}
+
 func TestReindexRemovesDeletedEntries(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
