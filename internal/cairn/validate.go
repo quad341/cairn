@@ -11,10 +11,15 @@ import (
 // under the store root (DESIGN.md §7: an unreviewed write gets the
 // strictest guard). It rejects an empty value, a value containing a slash,
 // a value containing two consecutive dots, a value starting with a dot,
-// and a value containing any non-ASCII, control, or null byte -- non-ASCII
-// runes are rejected outright rather than normalized, since Unicode
-// confusables (lookalike dots, zero-width characters) can otherwise disguise
-// a traversal attempt from a checker that only understands ASCII '.'.
+// a value containing any non-ASCII, control, or null byte, and a value
+// containing '[', ']', '|', or ',' -- non-ASCII runes are rejected outright
+// rather than normalized, since Unicode confusables (lookalike dots,
+// zero-width characters) can otherwise disguise a traversal attempt from a
+// checker that only understands ASCII '.'. The bracket/pipe/comma rejection
+// (crn-ryi) preserves collision-safety for the mol-cairn-librarian dedup
+// step's bracket-delimited anchor tokens ([pair:ID_LO|ID_HI],
+// [ids:ID_1,ID_2,...]), which rely on those characters never appearing
+// inside a cairn entry ID for their substring-uniqueness argument to hold.
 func ValidatePathSegment(s string) error {
 	if s == "" {
 		return errors.New("must not be empty")
@@ -27,6 +32,9 @@ func ValidatePathSegment(s string) error {
 	}
 	if strings.HasPrefix(s, ".") {
 		return errors.New("must not start with a dot")
+	}
+	if strings.ContainsAny(s, "[]|,") {
+		return errors.New("must not contain '[', ']', '|', or ','")
 	}
 	for _, r := range s {
 		if r < 0x20 || r >= 0x7f {
