@@ -11,7 +11,10 @@ import (
 // under the store root (DESIGN.md §7: an unreviewed write gets the
 // strictest guard). It rejects an empty value, a value containing a slash,
 // a value containing two consecutive dots, a value starting with a dot,
-// and a value containing a control or null byte.
+// and a value containing any non-ASCII, control, or null byte -- non-ASCII
+// runes are rejected outright rather than normalized, since Unicode
+// confusables (lookalike dots, zero-width characters) can otherwise disguise
+// a traversal attempt from a checker that only understands ASCII '.'.
 func ValidatePathSegment(s string) error {
 	if s == "" {
 		return errors.New("must not be empty")
@@ -26,8 +29,8 @@ func ValidatePathSegment(s string) error {
 		return errors.New("must not start with a dot")
 	}
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
-			return errors.New("must not contain a control or null byte")
+		if r < 0x20 || r >= 0x7f {
+			return errors.New("must not contain a non-ASCII, control, or null byte")
 		}
 	}
 	return nil
