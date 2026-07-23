@@ -10,7 +10,7 @@ import (
 
 func TestRunScopePrecedenceScenarioPasses(t *testing.T) {
 	store := t.TempDir()
-	r := RunScopePrecedenceScenario(store)
+	r := RunScopePrecedenceScenario(t.Context(), store)
 	require.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 	assert.Equal(t, DimensionScopePrecedence, r.Dimension)
 	assert.Equal(t, scopePrecedenceScenarioID, r.ScenarioID)
@@ -18,15 +18,15 @@ func TestRunScopePrecedenceScenarioPasses(t *testing.T) {
 
 func TestRunScopePrecedenceScenarioIsRepeatable(t *testing.T) {
 	store := t.TempDir()
-	r1 := RunScopePrecedenceScenario(store)
+	r1 := RunScopePrecedenceScenario(t.Context(), store)
 	require.Equal(t, Pass, r1.Verdict, "detail: %s", r1.Detail)
-	r2 := RunScopePrecedenceScenario(store)
+	r2 := RunScopePrecedenceScenario(t.Context(), store)
 	require.Equal(t, Pass, r2.Verdict, "detail: %s", r2.Detail)
 }
 
 func TestRunScopePrecedenceScenarioCleansUpAfterItself(t *testing.T) {
 	store := t.TempDir()
-	r := RunScopePrecedenceScenario(store)
+	r := RunScopePrecedenceScenario(t.Context(), store)
 	require.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 
 	entries, err := cairn.IterEntries(store)
@@ -35,17 +35,17 @@ func TestRunScopePrecedenceScenarioCleansUpAfterItself(t *testing.T) {
 }
 
 func TestCheckShadowWinsBySpecificity(t *testing.T) {
-	r := checkShadowWinsBySpecificity(t.TempDir(), "unit-specificity")
+	r := checkShadowWinsBySpecificity(t.Context(), t.TempDir(), "unit-specificity")
 	assert.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 }
 
 func TestCheckShadowTiebreak(t *testing.T) {
-	r := checkShadowTiebreak(t.TempDir(), "unit-tiebreak")
+	r := checkShadowTiebreak(t.Context(), t.TempDir(), "unit-tiebreak")
 	assert.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 }
 
 func TestCheckShadowMapSupersetSemantics(t *testing.T) {
-	r := checkShadowMapSupersetSemantics(t.TempDir(), "unit-supersets")
+	r := checkShadowMapSupersetSemantics(t.Context(), t.TempDir(), "unit-supersets")
 	assert.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 }
 

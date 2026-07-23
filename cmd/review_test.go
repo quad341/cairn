@@ -181,7 +181,7 @@ func TestReviewMergeSplitsCommaSeparatedScope(t *testing.T) {
 			"--topic-key", "curated", "--scope", "role:a,role:b"))
 	})
 
-	got, err := cairn.Find(store, e.ID)
+	got, err := cairn.Find(t.Context(), store, e.ID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"role:a", "role:b"}, got.Scope)
 }

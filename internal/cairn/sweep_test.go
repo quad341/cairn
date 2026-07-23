@@ -106,7 +106,7 @@ func TestSweepOverridesUntrackedAnchorToUnknown(t *testing.T) {
 
 	writeFile(t, dir, "global/broken.md", filesEntry("broken-1", repo, []string{"gone.txt"}, ""))
 
-	e, err := Find(dir, "broken-1")
+	e, err := Find(ctx, dir, "broken-1")
 	require.NoError(t, err)
 	naiveStatus, naiveDetail := Check(ctx, e)
 	require.Equal(t, Unknown, naiveStatus, "Check alone must already report Unknown for an untracked anchor path")
@@ -143,7 +143,7 @@ func TestSweepOverridesStagedUncommittedAnchorToUnknown(t *testing.T) {
 
 	writeFile(t, dir, "global/staged.md", filesEntry("staged-1", repo, []string{"staged.go"}, ""))
 
-	e, err := Find(dir, "staged-1")
+	e, err := Find(ctx, dir, "staged-1")
 	require.NoError(t, err)
 	naiveStatus, naiveDetail := Check(ctx, e)
 	require.Equal(t, Unknown, naiveStatus, "Check alone must already report Unknown for a staged-but-uncommitted anchor path")

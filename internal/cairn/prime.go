@@ -1,6 +1,7 @@
 package cairn
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,8 +10,8 @@ import (
 // Prime renders an agent's always-in-context payload: a bounded topic map of its
 // unioned scope plus a short usage preamble. It is meant to be injected at session
 // start (e.g. via a SessionStart hook) so an agent boots aware of what it knows.
-func Prime(store string, identity []string) (string, error) {
-	all, err := IterEntries(store)
+func Prime(ctx context.Context, store string, identity []string) (string, error) {
+	all, err := Status(ctx, store)
 	if err != nil {
 		return "", err
 	}

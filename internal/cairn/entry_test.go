@@ -1,6 +1,7 @@
 package cairn
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -306,7 +307,7 @@ func TestVisible(t *testing.T) {
 	writeFile(t, dir, "role/investigator/x.md", crossEntry)
 
 	seen := func(identity []string) map[string]bool {
-		vs, err := Visible(dir, identity)
+		vs, err := Visible(t.Context(), dir, identity)
 		require.NoError(t, err)
 		m := map[string]bool{}
 		for _, e := range vs {
@@ -348,7 +349,7 @@ func TestVisibleShadowsBySpecificity(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/s1.md", lessSpecificShared)
 	writeFile(t, dir, "role/investigator/s2.md", moreSpecificShared)
 
-	vs, err := Visible(dir, []string{"rig:alpha", "role:investigator"})
+	vs, err := Visible(t.Context(), dir, []string{"rig:alpha", "role:investigator"})
 	require.NoError(t, err)
 
 	ids := map[string]bool{}
@@ -364,7 +365,7 @@ func TestVisibleShadowTiebreakVerifiedAt(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/v1.md", earlyVerifiedShared)
 	writeFile(t, dir, "rig/alpha/v2.md", lateVerifiedShared)
 
-	vs, err := Visible(dir, []string{"rig:alpha"})
+	vs, err := Visible(t.Context(), dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 
 	ids := map[string]bool{}
@@ -380,7 +381,7 @@ func TestVisibleShadowTiebreakID(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/c2.md", tiebreakHighID)
 	writeFile(t, dir, "rig/alpha/c1.md", tiebreakLowID)
 
-	vs, err := Visible(dir, []string{"rig:alpha"})
+	vs, err := Visible(t.Context(), dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 
 	ids := map[string]bool{}
@@ -397,7 +398,7 @@ func TestVisibleUntopicedNeverShadow(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/u2.md", untopiced2)
 	writeFile(t, dir, "rig/alpha/u3.md", untopiced3)
 
-	vs, err := Visible(dir, []string{"rig:alpha"})
+	vs, err := Visible(t.Context(), dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 
 	ids := map[string]bool{}
@@ -493,4 +494,216 @@ func TestShadowMapGlobalShadowedByScoped(t *testing.T) {
 	require.Contains(t, sm, "gs", "the global (empty-scope) entry must be shadowed by the scoped one")
 	assert.Equal(t, "rs", sm["gs"].ID)
 	assert.NotContains(t, sm, "rs", "the scoped entry must not appear as shadowed by the global one")
+}
+
+func TestFindReturnsErrNotFoundForUnknownID(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+
+	_, err := Find(ctx, store, "does-not-exist")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFindIncrementsHitCount(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
+
+	e, err := Find(ctx, store, "a")
+	require.NoError(t, err)
+	assert.Equal(t, 1, e.HitCount, "the returned entry must carry the authoritative post-increment count")
+
+	e, err = Find(ctx, store, "a")
+	require.NoError(t, err)
+	assert.Equal(t, 2, e.HitCount)
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var hitCount int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT hit_count FROM entries WHERE id = 'a'").Scan(&hitCount))
+	assert.Equal(t, 2, hitCount, "the index's own counter must match what Find returned")
+}
+
+func TestFindUsesIndexPointLookupNotWalk(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
+
+	_, err := Find(ctx, store, "a")
+	require.NoError(t, err, "this builds the index")
+
+	// A genuinely malformed entry (unterminated frontmatter) added after
+	// indexing would break a walk-based lookup: IterEntries propagates any
+	// ParseEntry error that isn't errNotEntry.
+	writeFile(t, store, "global/bad.md", "+++\nid = \"bad\nno closing fence\n")
+	_, err = IterEntries(store)
+	require.Error(t, err, "sanity check: the malformed sibling file must break a walk")
+
+	// Find resolves "a" via the already-built index rather than re-walking --
+	// a non-git store's index is trusted fresh once built (crn-6az.6.1.2) --
+	// so the malformed sibling is never parsed.
+	e, err := Find(ctx, store, "a")
+	require.NoError(t, err)
+	assert.Equal(t, "a", e.ID)
+}
+
+func TestFindAfterSequentialCreateOnNonGitStore(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+
+	e1, err := NewEntry("dbg-topic-1", nil, "body 1", "tester")
+	require.NoError(t, err)
+	require.NoError(t, e1.Create(store))
+
+	_, err = Find(ctx, store, e1.ID)
+	require.NoError(t, err, "first Find must succeed")
+
+	e2, err := NewEntry("dbg-topic-2", nil, "body 2", "tester")
+	require.NoError(t, err)
+	require.NoError(t, e2.Create(store))
+
+	// Entry.Create is a pure filesystem write -- no git commit, no reindex --
+	// so without Find's retry-on-miss, ensureFresh would treat the index
+	// built by the first Find above as fresh forever on this non-git store
+	// (crn-6az.6.1.2), falsely reporting this second entry not found.
+	_, err = Find(ctx, store, e2.ID)
+	require.NoError(t, err, "second Find must succeed even though the store's index predates this entry")
+}
+
+func TestVisibleNeverReadsBodiesAfterIndexBuilt(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	vs, err := Visible(t.Context(), dir, nil)
+	require.NoError(t, err)
+	require.Len(t, vs, 1)
+	assert.Equal(t, "g", vs[0].ID)
+
+	// Added after the index already exists, on a store with no git HEAD to
+	// diff against -- ensureFresh treats an already-indexed, non-git store as
+	// forever fresh (see indexStale), so this file is never walked. Confirm
+	// it really would break a body walk if it were, so the assertion below
+	// is a real proof rather than a vacuous one.
+	writeFile(t, dir, "global/broken.md", "+++\nid = \"broken\"\nno closing fence\n")
+	_, walkErr := IterEntries(dir)
+	require.Error(t, walkErr, "sanity check: the malformed sibling must actually break a body walk")
+
+	vs2, err := Visible(t.Context(), dir, nil)
+	require.NoError(t, err, "Visible must never re-walk bodies to satisfy a query")
+	require.Len(t, vs2, 1)
+	assert.Equal(t, "g", vs2[0].ID)
+}
+
+func TestStatusNeverReadsBodiesAfterIndexBuilt(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	entries, err := Status(t.Context(), dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "g", entries[0].ID)
+
+	// Added after the index already exists, on a store with no git HEAD to
+	// diff against -- ensureFresh treats an already-indexed, non-git store as
+	// forever fresh (see indexStale), so this file is never walked. Confirm
+	// it really would break a body walk if it were, so the assertion below
+	// is a real proof rather than a vacuous one.
+	writeFile(t, dir, "global/broken.md", "+++\nid = \"broken\"\nno closing fence\n")
+	_, walkErr := IterEntries(dir)
+	require.Error(t, walkErr, "sanity check: the malformed sibling must actually break a body walk")
+
+	entries2, err := Status(t.Context(), dir)
+	require.NoError(t, err, "Status must never re-walk bodies to satisfy a query")
+	require.Len(t, entries2, 1)
+	assert.Equal(t, "g", entries2[0].ID)
+}
+
+func TestVisibleNeverTouchesHitCount(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	_, err := Visible(t.Context(), dir, nil)
+	require.NoError(t, err)
+
+	// Simulate a prior Find/Get having bumped hit_count independently of the
+	// body (crn-6az.6.1.1, see reindexTx's comment) -- exactly the index-only
+	// state Visible must leave alone, since it only ever issues SELECTs.
+	db, err := openDB(dir)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `UPDATE entries SET hit_count = 7 WHERE id = 'g'`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = Visible(t.Context(), dir, nil)
+	require.NoError(t, err)
+
+	db, err = openDB(dir)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	var got int
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT hit_count FROM entries WHERE id = 'g'`).Scan(&got))
+	assert.Equal(t, 7, got, "Visible must never touch hit_count")
+}
+
+func TestStatusNeverTouchesHitCount(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	_, err := Status(t.Context(), dir)
+	require.NoError(t, err)
+
+	db, err := openDB(dir)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `UPDATE entries SET hit_count = 7 WHERE id = 'g'`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = Status(t.Context(), dir)
+	require.NoError(t, err)
+
+	db, err = openDB(dir)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	var got int
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT hit_count FROM entries WHERE id = 'g'`).Scan(&got))
+	assert.Equal(t, 7, got, "Status must never touch hit_count")
+}
+
+func TestStatusPopulatesAnchorAndScopeFields(t *testing.T) {
+	dir := t.TempDir()
+	body := "+++\n" +
+		"id = \"a\"\n" +
+		"title = \"A\"\n" +
+		"topic_key = \"t/a\"\n" +
+		"scope = [\"rig:alpha\", \"role:investigator\"]\n" +
+		"verified_at = \"2026-07-01\"\n" +
+		"created_at = \"2026-01-01T00:00:00Z\"\n" +
+		"\n" +
+		"[anchor]\n" +
+		"type = \"files\"\n" +
+		"repo = \"/some/repo\"\n" +
+		"paths = [\"a.go\", \"b.go\"]\n" +
+		"spec = \"main\"\n" +
+		"fingerprint = \"abc123\"\n" +
+		"+++\n" +
+		"body\n"
+	writeFile(t, dir, "role/investigator/a.md", body)
+
+	entries, err := Status(t.Context(), dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	e := entries[0]
+	assert.Equal(t, "a", e.ID)
+	assert.Equal(t, "t/a", e.TopicKey)
+	assert.ElementsMatch(t, []string{"rig:alpha", "role:investigator"}, e.Scope)
+	assert.Equal(t, "2026-07-01", e.VerifiedAt)
+	assert.Equal(t, "2026-01-01T00:00:00Z", e.CreatedAt)
+	assert.Equal(t, "files", e.Anchor.Type)
+	assert.Equal(t, "/some/repo", e.Anchor.Repo)
+	assert.Equal(t, []string{"a.go", "b.go"}, e.Anchor.Paths)
+	assert.Equal(t, "main", e.Anchor.Spec)
+	assert.Equal(t, "abc123", e.Anchor.Fingerprint)
 }

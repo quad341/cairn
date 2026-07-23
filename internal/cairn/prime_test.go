@@ -13,18 +13,18 @@ func TestPrime(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/r.md",
 		"+++\nid = \"r\"\ntitle = \"r\"\ntopic_key = \"alpha/thing\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
 
-	out, err := Prime(dir, []string{"rig:alpha"})
+	out, err := Prime(t.Context(), dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 	assert.Contains(t, out, "alpha/thing", "an alpha-scoped agent should see the alpha topic")
 	assert.Contains(t, out, "cairn remember", "prime should still nudge agents to capture what they learn")
 
-	bare, err := Prime(dir, nil)
+	bare, err := Prime(t.Context(), dir, nil)
 	require.NoError(t, err)
 	assert.NotContains(t, bare, "alpha/thing", "a bare identity should not see the alpha topic")
 }
 
 func TestPrimeEmpty(t *testing.T) {
-	out, err := Prime(t.TempDir(), nil)
+	out, err := Prime(t.Context(), t.TempDir(), nil)
 	require.NoError(t, err)
 	assert.Contains(t, out, "No cached knowledge")
 }
@@ -35,7 +35,7 @@ func TestPrimeEmpty(t *testing.T) {
 // shipped (it now writes entries itself, including committing/routing them
 // for review) -- leaving prime denying a command that cairn --help lists.
 func TestPrimeDoesNotClaimRememberMissing(t *testing.T) {
-	out, err := Prime(t.TempDir(), nil)
+	out, err := Prime(t.Context(), t.TempDir(), nil)
 	require.NoError(t, err)
 	assert.NotContains(t, out, "no `remember` command yet")
 	assert.NotContains(t, out, "hand-author")
@@ -52,7 +52,7 @@ func TestPrimeWarnsOnUnmatchedScopeDimension(t *testing.T) {
 	writeFile(t, dir, "role/investigator/o.md",
 		"+++\nid = \"o\"\ntitle = \"o\"\ntopic_key = \"o/thing\"\nscope = [\"role:investigator\"]\n+++\nx\n")
 
-	out, err := Prime(dir, []string{"role:builder"})
+	out, err := Prime(t.Context(), dir, []string{"role:builder"})
 	require.NoError(t, err)
 	assert.Contains(t, out, "No cached knowledge", "precondition: the mismatch should leave nothing visible")
 	assert.Contains(t, out, "role:", "warning should name the mismatched dimension")
@@ -66,7 +66,7 @@ func TestPrimeNoWarningOnScopeMatch(t *testing.T) {
 	writeFile(t, dir, "role/investigator/o.md",
 		"+++\nid = \"o\"\ntitle = \"o\"\ntopic_key = \"o/thing\"\nscope = [\"role:investigator\"]\n+++\nx\n")
 
-	out, err := Prime(dir, []string{"role:investigator"})
+	out, err := Prime(t.Context(), dir, []string{"role:investigator"})
 	require.NoError(t, err)
 	assert.Contains(t, out, "o/thing", "precondition: the entry should actually be visible")
 	assert.NotContains(t, out, "tag-shape mismatch")
@@ -80,7 +80,7 @@ func TestPrimeNoWarningOnEmptyScopeDimension(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "global/g.md", globalEntry)
 
-	out, err := Prime(dir, []string{"role:investigator"})
+	out, err := Prime(t.Context(), dir, []string{"role:investigator"})
 	require.NoError(t, err)
 	assert.NotContains(t, out, "tag-shape mismatch")
 }
