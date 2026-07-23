@@ -151,6 +151,37 @@ func TestEntryCreateRetriesOnIDCollision(t *testing.T) {
 	assert.Equal(t, e.ID, got.ID)
 }
 
+func TestEntryCreateOmitsZeroHitCount(t *testing.T) {
+	e, err := NewEntry("t", nil, "body", "")
+	require.NoError(t, err)
+	require.Equal(t, 0, e.HitCount, "a freshly constructed entry must start at the zero value")
+
+	store := t.TempDir()
+	require.NoError(t, e.Create(store))
+
+	raw, err := os.ReadFile(e.BodyPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "hit_count",
+		"a zero HitCount must not appear in the serialized frontmatter at all")
+}
+
+func TestEntryCreateSerializesNonZeroHitCount(t *testing.T) {
+	e, err := NewEntry("t", nil, "body", "")
+	require.NoError(t, err)
+	e.HitCount = 7
+
+	store := t.TempDir()
+	require.NoError(t, e.Create(store))
+
+	raw, err := os.ReadFile(e.BodyPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "hit_count", "a non-zero HitCount must still be serialized")
+
+	got, err := ParseEntry(e.BodyPath)
+	require.NoError(t, err)
+	assert.Equal(t, 7, got.HitCount)
+}
+
 func TestIsPrivateScope(t *testing.T) {
 	cases := []struct {
 		name  string

@@ -1,6 +1,7 @@
 # Plan: squash-merge-aware landing-verification gate
 
 Root bead: crn-rqf.3 (source: crn-rqf step 5, crn-7oa FR-7)
+Fix: crn-rqf.3.1 (parenthetical-anchoring correction for a prose-cross-reference false-positive found by crn-rqf.4)
 
 ## Why
 
@@ -45,47 +46,79 @@ Confirmed directly: `git log -1 --format=%B 3bc2df7` (squashed subject shows onl
 ## Validated technique
 
 ```sh
-git log <ref> -E --grep="<id-with-literal-dot-escaped>(\$|[^.0-9])"
+git log <ref> -E --grep="\(<id-with-literal-dot-escaped>\)"
 ```
 
 - `git log --grep` matches the full commit message (subject **and** body), so it
   finds ids that only survive in the squashed body — unlike a raw
   `git log --oneline | grep` pipeline, which only ever sees the subject line.
-- **Anchoring is required, not cosmetic.** This rig's bead ids are pervasively
-  dotted/hierarchical (`crn-419.1`..`.4`, `crn-rqf.1`..`.5`, `crn-6az.2`..`.8`
-  with grandchildren `crn-6az.8.1`/`crn-6az.8.2` — all real, concurrently open at
-  the time of writing). A bare substring grep for a parent id (`crn-6az.8`) is a
-  literal string-prefix of its children's ids (`crn-6az.8.1`), so it would
-  false-positive as "landed" the instant *any one child* merges, even if the
-  parent itself never did. The pattern above escapes the id's literal `.` (so it
-  doesn't act as a regex wildcard) and requires the character immediately after
-  the id to be either end-of-message or anything other than `.`/a digit — i.e.
-  "this id, and nothing that extends it into a longer sibling id."
+- **The id must sit in its own bare parentheses, touching on both sides.** This
+  rig's commit convention tags the commit that actually implements a bead with
+  `(<bead-id>)` — the id alone, nothing else inside the parens — on that
+  commit's own subject line before squashing (verified directly against real
+  history: `(crn-419.2)`, `(crn-di7)`, `(crn-rqf.1)`, and `(crn-rqf.3)` all
+  appear exactly this way). A reference to a *different* bead never takes this
+  shape: it shows up bare (`refs crn-rqf.9`) or with other words sharing the
+  parens (`(refs crn-419)`), never as that bead's id alone in its own parens.
+  Requiring the parens to touch the id on both sides also fully subsumes the
+  weaker boundary-character anchoring this replaced (see correction below):
+  `\(crn-6az\.8\)` still can't match inside `(crn-6az.8.1)`, since `.1)`
+  follows the `8`, not a bare `)`.
 
   Sanity-checked in isolation before trusting it against real history:
-  `printf 'crn-6az.8 done\ncrn-6az.8.1 fix\ncrn-6az.8.2 fix\n' | grep -E
-  "crn-6az\.8(\$|[^.0-9])"` matches only the `crn-6az.8` line.
+  `printf '* fix: foo (crn-6az.8)\n* fix: bar (crn-6az.8.1)\n* fix: baz
+  (crn-6az.8.2)\n' | grep -E "\(crn-6az\.8\)"` matches only the `crn-6az.8`
+  line.
 
-## Empirical validation (real cairn history, checked 2026-07-22)
+## Correction (crn-rqf.3.1): boundary-anchoring alone wasn't enough
 
-| bead-id | ground truth | `git log origin/main -E --grep=...` result | verdict |
-|---|---|---|---|
-| `crn-419.2` | landed (real, merged PR #12) | `3bc2df7`, `571515d` | matched — correctly landing-verified |
-| `crn-di7` | landed (real, merged PR #11) | `c28b0ed` | matched — correctly landing-verified |
-| `crn-419.3` | **not** landed (local-only, unmerged) | *(no match)* | correctly not-yet-landed |
-| `crn-419.4` | **not** landed (local-only, unmerged) | *(no match)* | correctly not-yet-landed |
+The pattern above replaces an earlier version that anchored on a boundary
+character instead of parens — `<id>($|[^.0-9])`, matching the id anywhere in
+the message as long as it wasn't extended into a longer sibling id. An
+independent validator re-test (`crn-rqf.4`) found that pattern has a real
+false-positive: it matches a bead id *anywhere*, including a plain-English
+forward-reference to a different, unimplemented bead. Confirmed on real
+history — this doc's own landing commit, `407db36`, reads "Includes a
+ready-to-paste formula step for crn-rqf.5 to assemble into
+mol-cairn-critic.formula.toml." `crn-rqf.5` there is a bare mention, not an
+implementation — the bead was open and unimplemented at the time (and remains
+so) — but a trailing space is a valid non-dot/non-digit boundary, so the old
+pattern matched it, which would have fired `bd close crn-rqf.5` on a bead with
+zero lines of actual implementation.
 
-The `crn-419.3`/`crn-419.4` negative result was cross-checked against a positive
-control (`git log HEAD -E --grep=...` on the local branch that actually holds
-those two commits, which *does* match) to rule out a tooling false-negative —
-the technique genuinely distinguishes landed from not-yet-landed, it isn't just
-silently failing to match anything.
+The parens-must-touch-the-id fix above closes this: `crn-rqf.5` never appears
+as bare `(crn-rqf.5)` anywhere in `407db36`, so the corrected pattern
+correctly returns no match, while `crn-rqf.3` — what that commit actually
+implements, tagged `(crn-rqf.3)` — still matches. Full before/after in the
+table below.
 
-This satisfies crn-rqf.3's acceptance criteria: tested against real merged
-bead-ids (not synthetic), tested against a real bead that exists only on an
-unmerged branch, and validated against this rig's actual merge convention
-(squash-merge) rather than assumed from `crn-7oa`'s literal `--is-ancestor`
-wording or `mol-witness-patrol`'s literal `--oneline`-subject wording.
+## Empirical validation (real cairn history)
+
+| bead-id | ground truth | old pattern `id($\|[^.0-9])` | new pattern `\(id\)` | verdict |
+|---|---|---|---|---|
+| `crn-419.2` | landed (real, merged PR #12) | matched `3bc2df7` | matched `3bc2df7` | correct under both |
+| `crn-di7` | landed (real, merged PR #11) | matched `c28b0ed` | matched `c28b0ed` | correct under both |
+| `crn-rqf.1` | landed (real, merged PR #15) | matched `22a58ba` | matched `22a58ba` | correct under both |
+| `crn-rqf.5` | **not** landed — OPEN, unimplemented, zero commits on any branch (`bd show crn-rqf.5`; `git log --all --grep`) | matched `407db36` — a bare prose mention ("...for crn-rqf.5 to assemble into...", not an implementation) | *(no match)* | **old pattern false-positived (this bug); new pattern fixes it** |
+| `crn-78d` | **not** landed — decided not to build in this repo (filed upstream as `gastownhall/beads#4960` instead), zero commits on any branch | *(no match)* | *(no match)* | correct under both |
+
+`crn-419.2`, `crn-di7`, and `crn-rqf.1` are this doc's and `crn-rqf.4`'s
+already-validated positive controls, re-run here to confirm the parens
+requirement doesn't regress them — all three carry their id as a bare `(id)`
+at the end of a sub-commit subject, so both patterns still match. `crn-rqf.5`
+is the exact case `crn-rqf.4` found broken: it's this bug's reproduction, not
+a synthetic example. This doc's original negative controls, `crn-419.3` and
+`crn-419.4`, have since actually landed (both closed 2026-07-22, confirmed via
+`git log --grep` finding commit `65374e1`) — no longer valid not-yet-landed
+examples, superseded above by `crn-78d`.
+
+This satisfies both crn-rqf.3's original acceptance criteria (tested against
+real merged bead-ids, a real not-yet-landed bead, and this rig's actual
+squash-merge convention) and crn-rqf.3.1's (all previously-validated positive
+controls still match; all previously-validated negative controls — `crn-78d`
+directly, `crn-419.3`/`crn-419.4` no longer applicable since they've since
+landed — still correctly reject; the specific reported false-positive,
+`crn-rqf.5` against `407db36`, no longer matches).
 
 ## Gate step (ready for crn-rqf.5 to assemble into `mol-cairn-critic.formula.toml`)
 
@@ -100,14 +133,19 @@ succeeds (a branch commit is never an ancestor of the squashed result), and a
 bare `git log main --oneline | grep <id>` misses ids that only survive in the
 squashed commit body (cairn's own PR-merge subjects usually carry only a PR
 number, not the bead id). Use --grep, which searches the full message, and
-anchor the id so it can't false-match a longer sibling id under this rig's
-dotted hierarchical ids (crn-419.1 is a literal prefix of crn-419.10, were
-that ever to exist):
+require the id to sit alone in its own parens: this rig's convention tags the
+commit that actually implements a bead with `(<bead-id>)`, so requiring the
+parens closes two gaps at once — it can't false-match a longer sibling id
+under this rig's dotted hierarchical ids (crn-419.1 is a literal prefix of
+crn-419.10, were that ever to exist), and it can't false-match a plain-English
+mention of a different bead elsewhere in the same message (crn-rqf.3.1: an
+earlier version matched "...for crn-rqf.5 to assemble into..." even though
+crn-rqf.5 was never implemented there):
 
   git fetch origin --quiet
   ID="<the bead id>"
   PATTERN=$(printf '%s' "$ID" | sed 's/\./\\./g')
-  MATCH=$(git log origin/main -E --grep="${PATTERN}(\$|[^.0-9])" --format="%H %s" -1)
+  MATCH=$(git log origin/main -E --grep="\(${PATTERN}\)" --format="%H %s" -1)
 
   if [ -n "$MATCH" ]; then
     SHA=$(printf '%s' "$MATCH" | cut -d' ' -f1)
