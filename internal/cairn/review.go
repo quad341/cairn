@@ -222,15 +222,20 @@ func detectSecretPattern(text string) string {
 
 // ReviewMergeOptions carries what a reviewer supplies at merge time. TopicKey
 // is required: DESIGN.md §6 assigns the canonical topic_key at merge time,
-// not from the contributor's `remember --topic` hint. AnchorType and Scope
-// are optional -- omitted, they leave those fields as the contributor wrote
-// them. Bead is an optional traceability reference for the merge commit's
-// "(<bead-id>)" suffix; if omitted, the (possibly just-curated) TopicKey is
-// used instead.
+// not from the contributor's `remember --topic` hint. AnchorType, Scope, and
+// Kind are optional -- omitted, they leave those fields as the contributor
+// wrote them. AutoActionable is a one-way grant (mirroring AllowSecretPattern
+// -- there is no flag to revoke it here); MergeReviewBranch rejects it unless
+// the effective kind (Kind if given, else the entry's existing kind) is
+// "remediation". Bead is an optional traceability reference for the merge
+// commit's "(<bead-id>)" suffix; if omitted, the (possibly just-curated)
+// TopicKey is used instead.
 type ReviewMergeOptions struct {
 	TopicKey           string
 	AnchorType         string
 	Scope              []string
+	Kind               string // "" (leave as contributor wrote it) | "remediation" | "note"
+	AutoActionable     bool   // requires effective Kind == "remediation"; reviewer-granted, never self-declared
 	Bead               string
 	AllowSecretPattern bool
 }
@@ -262,6 +267,9 @@ func MergeReviewBranch(ctx context.Context, store, branch string, opts ReviewMer
 		if err := ValidatePathSegment(opts.AnchorType); err != nil {
 			return nil, fmt.Errorf("invalid --anchor-type: %w", err)
 		}
+	}
+	if opts.Kind != "" && opts.Kind != "remediation" && opts.Kind != "note" {
+		return nil, fmt.Errorf("invalid --kind %q: must be \"remediation\" or \"note\"", opts.Kind)
 	}
 
 	def, relPath, entry, err := curateReviewBranch(ctx, store, branch, opts)
@@ -302,6 +310,19 @@ func curateReviewBranch(ctx context.Context, store, branch string, opts ReviewMe
 	entry, err = parseEntryContent(raw, branch+":"+relPath)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("parse entry: %w", err)
+	}
+
+	if opts.AutoActionable {
+		effectiveKind := opts.Kind
+		if effectiveKind == "" {
+			effectiveKind = entry.Kind
+		}
+		if effectiveKind != "remediation" {
+			return "", "", nil, fmt.Errorf(
+				"--auto-actionable requires an effective kind of \"remediation\" (got %q); "+
+					"pass --kind remediation, or merge an entry whose existing kind is already remediation",
+				effectiveKind)
+		}
 	}
 
 	patched, err := patchFrontmatterFields(raw, opts)
@@ -384,6 +405,12 @@ func patchFrontmatterFields(raw []byte, opts ReviewMergeOptions) ([]byte, error)
 		if err != nil {
 			return nil, err
 		}
+	}
+	if opts.Kind != "" {
+		lines = setScalarLine(lines, "kind", tomlQuote(opts.Kind))
+	}
+	if opts.AutoActionable {
+		lines = setScalarLine(lines, "auto_actionable", "true")
 	}
 
 	return []byte(fence + strings.Join(lines, "\n") + closeAndBody), nil

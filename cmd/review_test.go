@@ -64,6 +64,8 @@ func resetReviewFlags(t *testing.T) {
 	reset(reviewMergeCmd, "scope", "")
 	reset(reviewMergeCmd, "bead", "")
 	reset(reviewMergeCmd, "allow-secret-pattern", "false")
+	reset(reviewMergeCmd, "kind", "")
+	reset(reviewMergeCmd, "auto-actionable", "false")
 }
 
 func TestReviewRegisteredOnRootCmd(t *testing.T) {
