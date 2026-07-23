@@ -48,6 +48,29 @@ func TestValidatePathSegmentRejectsUnicodeDotTricks(t *testing.T) {
 	}
 }
 
+// TestValidatePathSegmentRejectsBracketAnchorDelimiters covers crn-ryi: the
+// mol-cairn-librarian dedup-candidate-beads step builds bracket-delimited
+// anchor tokens ([pair:ID_LO|ID_HI], [ids:ID_1,ID_2,...]) from raw cairn
+// entry IDs and relies on substring-uniqueness of those tokens for
+// collision-safe idempotent bd-bead-filing. That invariant only holds if a
+// contributor-supplied topic_key or scope tag can never itself contain the
+// delimiter characters -- otherwise a crafted topic_key could produce an
+// entry ID that collides with, or is a substring of, an unrelated anchor
+// token.
+func TestValidatePathSegmentRejectsBracketAnchorDelimiters(t *testing.T) {
+	cases := map[string]string{
+		"open bracket":  "[pair:x",
+		"close bracket": "ids]",
+		"pipe":          "a|b",
+		"comma":         "a,b",
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, ValidatePathSegment(s), "%q must be rejected", s)
+		})
+	}
+}
+
 func TestValidatePathSegmentAcceptsSafeValues(t *testing.T) {
 	cases := map[string]string{
 		"simple word":  "alpha",
