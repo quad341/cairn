@@ -54,6 +54,12 @@ type Entry struct {
 	CreatedAt  string   `toml:"created_at,omitempty"`
 	HitCount   int      `toml:"hit_count,omitzero"`
 
+	Kind            string `toml:"kind,omitempty"`             // "" (note, default) | "remediation"
+	AutoActionable  bool   `toml:"auto_actionable,omitempty"`  // only for Kind=="remediation"; reviewer-granted, not self-declared
+	RecurrenceCount int    `toml:"recurrence_count,omitzero"`  // incremented on exact topic_key match at capture time (crn-28ge.1.4)
+	PromotedBeadID  string `toml:"promoted_bead_id,omitempty"` // empty until promoted; promotion idempotency guard
+	LastRecalledAt  string `toml:"last_recalled_at,omitempty"` // RFC3339; written only by the get/freshness/verify call site (crn-28ge.1.5)
+
 	BodyPath string `toml:"-"`
 	Body     string `toml:"-"`
 }

@@ -33,7 +33,12 @@ CREATE TABLE IF NOT EXISTS entries (
   verified_at TEXT,
   created_by TEXT,
   created_at TEXT,
-  hit_count INTEGER DEFAULT 0
+  hit_count INTEGER DEFAULT 0,
+  kind TEXT,
+  auto_actionable INTEGER,
+  recurrence_count INTEGER DEFAULT 0,
+  promoted_bead_id TEXT,
+  last_recalled_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_entries_topic ON entries(topic_key);
 CREATE TABLE IF NOT EXISTS index_meta (
@@ -59,6 +64,11 @@ var entriesMigrationCols = []struct{ name, def string }{
 	{"anchor_paths", "TEXT"},
 	{"anchor_spec", "TEXT"},
 	{"created_at", "TEXT"},
+	{"kind", "TEXT"},
+	{"auto_actionable", "INTEGER"},
+	{"recurrence_count", "INTEGER DEFAULT 0"},
+	{"promoted_bead_id", "TEXT"},
+	{"last_recalled_at", "TEXT"},
 }
 
 // IndexPath is the rebuildable SQLite index (gitignored; not source of truth).
@@ -151,12 +161,17 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 		if err != nil {
 			return err
 		}
+		autoActionable := 0
+		if e.AutoActionable {
+			autoActionable = 1
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO entries (
 				id, title, summary, type, topic_key, body_path,
 				anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
-				verified_at, created_by, created_at, hit_count
-			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				verified_at, created_by, created_at, hit_count,
+				kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(id) DO UPDATE SET
 				title=excluded.title, summary=excluded.summary, type=excluded.type,
 				topic_key=excluded.topic_key, body_path=excluded.body_path,
@@ -165,12 +180,15 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 				anchor_fingerprint=excluded.anchor_fingerprint,
 				verified_at=excluded.verified_at, created_by=excluded.created_by,
 				created_at=excluded.created_at`,
-			// hit_count is deliberately not in the UPDATE SET: the index tracks
-			// it independently of the body (crn-6az.6.1.1), so a reindex must
-			// not stamp a surviving row back to the body's stale seed value.
+			// hit_count, kind, auto_actionable, recurrence_count, promoted_bead_id,
+			// and last_recalled_at are deliberately not in the UPDATE SET: like
+			// hit_count (crn-6az.6.1.1), they're index-only state a future call
+			// site writes directly via SQL (crn-28ge.1.1), so a reindex must not
+			// stamp a surviving row back to the body's stale seed value.
 			e.ID, e.Title, e.Summary, e.Type, e.TopicKey, e.BodyPath,
 			e.Anchor.Type, e.Anchor.Repo, string(anchorPaths), e.Anchor.Spec, e.Anchor.Fingerprint,
 			e.VerifiedAt, e.CreatedBy, e.CreatedAt, e.HitCount,
+			e.Kind, autoActionable, e.RecurrenceCount, e.PromotedBeadID, e.LastRecalledAt,
 		); err != nil {
 			return err
 		}
