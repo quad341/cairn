@@ -1,0 +1,283 @@
+description = """
+Librarian sweep: recurring maintenance pass over shared-tier cairn entries.
+Recovers stale review branches (crn-0yv.1), re-verifies freshness and files
+drift beads (crn-0yv.2), and detects dedup/re-scope candidates (crn-0yv.3) --
+one formula, tier-parameterized, rather than three near-duplicate formulas
+(crn-xw3's own explicit trade-off call). Every step is read-only against
+cairn itself and proposal-only against bd: it only ever mails a reviewer or
+files a bead, never merges, deletes, or rewrites a curated entry (crn-xw3
+guardrail 8).
+
+## Variables
+
+| Variable | Source | Description |
+|----------|--------|--------------|
+| tier     | caller | "global" or "rig" (default "global"). "role" is explicitly out of v0 scope -- DESIGN.md section 7 classifies role/ as light and self-curated, lower stakes than the owned rig/global tiers; it relies on crn-ffm's reactive review path plus ordinary session activity instead of a swept sweep. Can be added later as a cheap increment (the formula is already tier-parameterized) if observed staleness justifies it. |
+| rig      | caller | Rig name, required when tier="rig" (e.g. the pouring architect's own $GC_RIG). Ignored when tier="global". |
+| cooldown | caller | Recommended minimum gap before the next pour of this tier (default "24h") -- a scheduling convention for whoever pours, not a mechanically enforced gate. |
+
+## Pourer wiring
+
+- tier=global (mayor, the fleet's one singleton): `bd mol pour mol-cairn-librarian --var tier=global`
+- tier=rig (each rig's own architect): `bd mol pour mol-cairn-librarian --var tier=rig --var rig=$GC_RIG`
+
+Starting a continuous recurring loop on either wiring is an operational
+decision for mayor and each rig's architect to make -- not something any
+single pour, including this formula's own smoke test, activates unilaterally
+(crn-0yv.5 scope note).
+
+Requires $CAIRN_STORE set in the pouring agent's environment, pointing at a
+durable checkout reused pour to pour, not re-cloned fresh each cycle -- the
+stale-review-branch-recovery step's escalate guarantee depends on
+--state-file persisting across passes (see
+docs/plans/cairn-librarian-stale-branch-recovery.md).
+"""
+formula = "mol-cairn-librarian"
+version = 1
+
+[vars]
+[vars.tier]
+description = "Sweep tier: 'global' (fleet-wide, mayor-owned) or 'rig' (single rig, that rig's architect-owned). 'role' is explicitly out of v0 scope -- see top-level description."
+default = "global"
+
+[vars.rig]
+description = "Rig name, required when tier='rig' (e.g. the pouring architect's own $GC_RIG). Ignored when tier='global'."
+default = ""
+
+[vars.cooldown]
+description = "Minimum wall-clock gap the loop step recommends before the next pour of this same tier (and rig, if set) -- a documented convention, not a mechanically enforced gate."
+default = "24h"
+
+[[steps]]
+id = "stale-review-branch-recovery"
+title = "Validate tier/rig, then reactively re-notify a stale review branch's reviewer and escalate to a bd bead if still unactioned"
+description = '''
+Before any sweep work: validate the tier/rig variables this pour was given.
+"role" is a deliberate rejection, not an oversight -- see the formula's
+top-level description for why role-tier is out of v0 scope.
+
+  case "{{tier}}" in
+    global) ;;
+    rig)
+      if [ -z "{{rig}}" ]; then
+        echo "mol-cairn-librarian: tier=rig requires a non-empty rig variable, e.g. --var rig=<rig-name>" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "mol-cairn-librarian: tier must be 'global' or 'rig' (got '{{tier}}'); role-tier is explicitly out of v0 scope, see this formula's description" >&2
+      exit 1
+      ;;
+  esac
+
+Run "cairn stale-branches" (crn-0yv.1). It reactively re-mails the resolved
+reviewer for any branch past --notify-after in-process (reusing crn-419.6's
+reviewer resolution) and reports every branch's status as JSON -- this step's
+own job is only the escalate half: file a bd bead for each escalate-status
+finding, deduplicated across cycles. This step never merges or rewrites a
+review branch itself, per crn-xw3 guardrail 8 -- only mails a reviewer
+(delegated to the "cairn stale-branches" call above) or files a bead.
+
+IMPORTANT before pasting this step as-is: "cairn stale-branches"'s escalate
+guarantee depends on --state-file persisting across sweep passes (see
+"Design decision: two absolute-age thresholds, plus minimal per-SHA notify
+state" above). Confirm $STORE is a durable checkout this formula reuses
+pass to pass; if it's instead re-cloned fresh every sweep tick, add
+--state-file pointing at a separately durable path to the invocation below
+-- otherwise escalate silently never fires.
+
+  STORE="${CAIRN_STORE:?CAIRN_STORE must be set}"
+  FILED=0
+  SKIPPED=0
+
+  # See the --state-file persistence note above this script: the
+  # "cairn stale-branches --store $STORE" call below only retains
+  # cross-pass notify state if $STORE itself persists call to call.
+  while IFS= read -r finding; do
+    BRANCH=$(printf '%s' "$finding" | jq -r '.branch')
+    ENTRY_ID=$(printf '%s' "$finding" | jq -r '.entry_id')
+    TIER=$(printf '%s' "$finding" | jq -r '.tier')
+    AGE_SECONDS=$(printf '%s' "$finding" | jq -r '.age_seconds')
+    REVIEWER=$(printf '%s' "$finding" | jq -r '.reviewer')
+
+    EXISTING=$(bd list --label=dim:review-branch,source:cairn-librarian \
+      --title-contains="on $BRANCH (" --json --no-pager 2>/dev/null | jq -r '.[0].id // empty')
+
+    if [ -n "$EXISTING" ]; then
+      echo "skip $BRANCH: already tracked as $EXISTING"
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
+
+    NEW_ID=$(bd create \
+        --title="cairn librarian: stale review branch on $BRANCH ($TIER)" \
+        --stdin --type=task --priority=3 \
+        --labels=dim:review-branch,source:cairn-librarian --silent <<BODY
+Review branch "$BRANCH" (entry $ENTRY_ID, tier $TIER) has been unmerged for
+${AGE_SECONDS}s. A reminder mail was already sent to $REVIEWER on an earlier
+cairn stale-branches pass at this same commit, and it is now past the
+escalate threshold with no merge and no new commit since.
+
+Filed by the mol-cairn-librarian stale-review-branch-recovery step
+(crn-0yv.1). This is a proposal only: it never merges the branch itself. To
+resolve, $REVIEWER (or another reviewer) should review and merge the branch
+into the store's default branch, or an author should update it -- either
+action removes the branch from future "cairn stale-branches" output.
+BODY
+    )
+    echo "filed $NEW_ID for $BRANCH"
+    FILED=$((FILED + 1))
+  done < <(cairn stale-branches --store "$STORE" | jq -c '.[] | select(.status == "escalate")')
+
+  echo "librarian stale-branch recovery: $FILED bead(s) filed, $SKIPPED already tracked"
+'''
+
+[[steps]]
+id = "freshness-drift-beads"
+title = "File a bd bead for every non-fresh cairn sweep finding, deduplicated across cycles"
+needs = ["stale-review-branch-recovery"]
+description = '''
+Run the read-only freshness sweep (crn-0yv.2) and turn every non-fresh
+finding into exactly one open bd bead. A single Stale/Unknown observation is
+enough to file (see docs/plans/cairn-librarian-freshness-drift-beads.md for
+why persistence-gating across cycles isn't needed) -- "not a duplicate per
+cycle" comes from checking bd for an already-open bead before creating a new
+one. This step only ever calls "cairn sweep" (read-only) and "bd list"/"bd
+create" (bd's own store) -- it never rewrites a cairn entry, per crn-xw3
+guardrail 8.
+
+  STORE="${CAIRN_STORE:?CAIRN_STORE must be set}"
+  FILED=0
+  SKIPPED=0
+
+  while IFS= read -r finding; do
+    ID=$(printf '%s' "$finding" | jq -r '.id')
+    TIER=$(printf '%s' "$finding" | jq -r '.tier')
+    STATUS=$(printf '%s' "$finding" | jq -r '.status')
+    DETAIL=$(printf '%s' "$finding" | jq -r '.detail')
+    ANCHOR=$(printf '%s' "$finding" | jq -r '.anchor_type')
+
+    EXISTING=$(bd list --label=dim:freshness,source:cairn-librarian \
+      --title-contains="on $ID (" --json --no-pager 2>/dev/null | jq -r '.[0].id // empty')
+
+    if [ -n "$EXISTING" ]; then
+      echo "skip $ID ($STATUS): already tracked as $EXISTING"
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
+
+    NEW_ID=$(bd create \
+        --title="cairn librarian: $STATUS freshness on $ID ($TIER)" \
+        --stdin --type=task --priority=3 \
+        --labels=dim:freshness,source:cairn-librarian --silent <<BODY
+Sweep detected $STATUS freshness for shared-tier cairn entry "$ID" (tier: $TIER, anchor: $ANCHOR).
+
+$DETAIL
+
+Filed by the mol-cairn-librarian freshness-sweep step (crn-0yv.2). This is a
+proposal only: the sweep step itself never rewrites an already-curated entry
+(crn-xw3 guardrail 8) and never calls "cairn verify" on your behalf. To
+resolve, a reviewer or the entry's original author should inspect the
+anchor, then either re-run "cairn verify $ID" once the source has settled,
+re-anchor the entry, or retire it if it no longer applies.
+BODY
+    )
+    echo "filed $NEW_ID for $ID ($STATUS)"
+    FILED=$((FILED + 1))
+  done < <(cairn sweep --store "$STORE" | jq -c '.[] | select(.status != "fresh")')
+
+  echo "librarian freshness sweep: $FILED bead(s) filed, $SKIPPED already tracked"
+'''
+
+[[steps]]
+id = "dedup-candidate-beads"
+title = "File a bd bead for every cairn dedup/re-scope candidate, deduplicated across cycles"
+needs = ["freshness-drift-beads"]
+description = '''
+Run the read-only dedup/re-scope detector (crn-0yv.3) and turn every
+finding into exactly one open bd bead. "Not a duplicate per cycle" comes
+from checking bd for an already-open bead whose title contains this
+finding's bracket-delimited anchor token before creating a new one (see
+docs/plans/cairn-librarian-dedup-detection-beads.md for why a bracket token
+rather than a natural-language phrase, and for the deliberate limitation
+around growing topic_key groups). This step only ever calls "cairn dedup"
+(read-only) and "bd list"/"bd create" (bd's own store) -- it never merges,
+deletes, or rewrites a cairn entry, per crn-xw3 guardrail 8.
+
+  STORE="${CAIRN_STORE:?CAIRN_STORE must be set}"
+  FILED=0
+  SKIPPED=0
+
+  while IFS= read -r finding; do
+    KIND=$(printf '%s' "$finding" | jq -r '.kind')
+    IDS_CSV=$(printf '%s' "$finding" | jq -r '.entry_ids | join(",")')
+    DETAIL=$(printf '%s' "$finding" | jq -r '.detail')
+
+    if [ "$KIND" = "content" ]; then
+      ID_LO=$(printf '%s' "$finding" | jq -r '.entry_ids[0]')
+      ID_HI=$(printf '%s' "$finding" | jq -r '.entry_ids[1]')
+      SCORE=$(printf '%s' "$finding" | jq -r '.similarity')
+      ANCHOR="[pair:${ID_LO}|${ID_HI}]"
+      TITLE="cairn librarian: content-similarity dup ${ANCHOR} (score ${SCORE})"
+    else
+      KEY=$(printf '%s' "$finding" | jq -r '.topic_key')
+      TIER=$(printf '%s' "$finding" | jq -r '.tier')
+      ANCHOR="[ids:${IDS_CSV}]"
+      TITLE="cairn librarian: topic_key collision \"${KEY}\" in tier ${TIER} ${ANCHOR}"
+    fi
+
+    EXISTING=$(bd list --label=dim:dedup,source:cairn-librarian \
+      --title-contains="$ANCHOR" --json --no-pager 2>/dev/null | jq -r '.[0].id // empty')
+
+    if [ -n "$EXISTING" ]; then
+      echo "skip $KIND $ANCHOR: already tracked as $EXISTING"
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
+
+    NEW_ID=$(bd create \
+        --title="$TITLE" \
+        --stdin --type=task --priority=3 \
+        --labels=dim:dedup,source:cairn-librarian --silent <<BODY
+Sweep detected a $KIND duplicate/re-scope candidate across shared-tier cairn entries: $IDS_CSV.
+
+$DETAIL
+
+Filed by the mol-cairn-librarian dedup-detection step (crn-0yv.3). This is a
+proposal only: the step itself never merges, deletes, or rewrites an entry
+(crn-xw3 guardrail 8). To resolve, a reviewer or the entries' authors should
+compare them and decide whether to consolidate, re-scope one of them, or
+close this bead as a false positive (e.g. two same-tier entries that
+legitimately picked the same topic_key for unrelated reasons).
+BODY
+    )
+    echo "filed $NEW_ID for $KIND $ANCHOR"
+    FILED=$((FILED + 1))
+  done < <(cairn dedup --store "$STORE" | jq -c '.[]')
+
+  echo "librarian dedup sweep: $FILED bead(s) filed, $SKIPPED already tracked"
+'''
+
+[[steps]]
+id = "loop"
+title = "Log iteration summary, then pour the next cycle no sooner than cooldown"
+needs = ["dedup-candidate-beads"]
+description = '''
+Librarian sweep cycle complete (tier={{tier}}, rig={{rig}}). Log a one-line
+summary of this cycle's outcome across all three steps (beads filed/skipped
+for stale branches, freshness drift, and dedup candidates).
+
+Do NOT pour the next cycle immediately. This formula has no timer of its
+own -- {{cooldown}} (default 24h) is a documented convention for whoever
+schedules pours, not something this step enforces mechanically. When ready:
+
+  tier=global (mayor):
+    bd mol pour mol-cairn-librarian --var tier=global
+
+  tier=rig (that rig's architect):
+    bd mol pour mol-cairn-librarian --var tier=rig --var rig={{rig}}
+
+Whether to run this on a recurring cadence at all is an operational decision
+for mayor and each rig's architect, not something a single pour activates
+unilaterally (crn-0yv.5 scope note). Sleep -- do not spin.
+'''
