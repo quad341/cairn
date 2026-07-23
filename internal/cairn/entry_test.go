@@ -60,6 +60,78 @@ func TestParseEntryUnterminated(t *testing.T) {
 	assert.NotErrorIs(t, err, errNotEntry) // a real parse error, not "not an entry"
 }
 
+func TestParseEntryNewFieldsZeroValues(t *testing.T) {
+	e, err := ParseEntry(writeFile(t, t.TempDir(), "global/one.md", sampleEntry))
+	require.NoError(t, err)
+	assert.Empty(t, e.Kind, `unset Kind means "note" by convention`)
+	assert.False(t, e.AutoActionable)
+	assert.Zero(t, e.RecurrenceCount)
+	assert.Empty(t, e.PromotedBeadID)
+	assert.Empty(t, e.LastRecalledAt)
+}
+
+const sampleEntryAllFields = `+++
+id = "test/all"
+title = "All"
+kind = "remediation"
+auto_actionable = true
+recurrence_count = 3
+promoted_bead_id = "crn-abcd"
+last_recalled_at = "2026-07-20T00:00:00Z"
+
+[anchor]
+type = "none"
++++
+
+body here
+`
+
+func TestParseEntryNewFieldsRoundTrip(t *testing.T) {
+	e, err := ParseEntry(writeFile(t, t.TempDir(), "global/all.md", sampleEntryAllFields))
+	require.NoError(t, err)
+	assert.Equal(t, "remediation", e.Kind)
+	assert.True(t, e.AutoActionable)
+	assert.Equal(t, 3, e.RecurrenceCount)
+	assert.Equal(t, "crn-abcd", e.PromotedBeadID)
+	assert.Equal(t, "2026-07-20T00:00:00Z", e.LastRecalledAt)
+}
+
+func TestEntryMarshalRoundTripsNewFields(t *testing.T) {
+	e := &Entry{
+		ID:              "rt/1",
+		Title:           "RT",
+		Kind:            "remediation",
+		AutoActionable:  true,
+		RecurrenceCount: 3,
+		PromotedBeadID:  "crn-abcd",
+		LastRecalledAt:  "2026-07-20T00:00:00Z",
+		Anchor:          Anchor{Type: "none"},
+	}
+	raw, err := e.marshal()
+	require.NoError(t, err)
+
+	e2, err := ParseEntry(writeFile(t, t.TempDir(), "global/rt.md", string(raw)))
+	require.NoError(t, err)
+	assert.Equal(t, "remediation", e2.Kind)
+	assert.True(t, e2.AutoActionable)
+	assert.Equal(t, 3, e2.RecurrenceCount)
+	assert.Equal(t, "crn-abcd", e2.PromotedBeadID)
+	assert.Equal(t, "2026-07-20T00:00:00Z", e2.LastRecalledAt)
+}
+
+func TestEntryMarshalOmitsZeroValueNewFields(t *testing.T) {
+	e := &Entry{ID: "rt/2", Title: "RT2", Anchor: Anchor{Type: "none"}}
+	raw, err := e.marshal()
+	require.NoError(t, err)
+
+	s := string(raw)
+	assert.NotContains(t, s, "kind", "zero-value Kind must be omitted from marshaled output")
+	assert.NotContains(t, s, "auto_actionable", "zero-value AutoActionable must be omitted from marshaled output")
+	assert.NotContains(t, s, "recurrence_count", "zero-value RecurrenceCount must be omitted from marshaled output")
+	assert.NotContains(t, s, "promoted_bead_id", "zero-value PromotedBeadID must be omitted from marshaled output")
+	assert.NotContains(t, s, "last_recalled_at", "zero-value LastRecalledAt must be omitted from marshaled output")
+}
+
 func TestWriteBackRoundTrip(t *testing.T) {
 	p := writeFile(t, t.TempDir(), "global/one.md", sampleEntry)
 	e, err := ParseEntry(p)
