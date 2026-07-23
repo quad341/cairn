@@ -23,6 +23,7 @@ integration. The actual knowledge lives in a **separate private store repo** (on
 per fleet/deployment): cairn is generic; your notes are yours.
 
 Design & architecture → [`docs/DESIGN.md`](docs/DESIGN.md).
+Usage & the knowledge lifecycle (+ how it differs from MEMORY.md / `bd remember`) → [`docs/knowledge-lifecycle.md`](docs/knowledge-lifecycle.md).
 
 ## Concepts, one breath
 - **Entry** = a markdown body (source of truth) + an index row (queryable metadata).
