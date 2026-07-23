@@ -32,7 +32,7 @@ var reviewListCmd = &cobra.Command{
 	Short: "List pending remember/* review branches",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		tier, _ := cmd.Flags().GetString("tier")
-		branches, err := cairn.ListReviewBranches(cmd.Context(), storePath())
+		branches, err := cairn.ListReviewMergeBranches(cmd.Context(), storePath())
 		if err != nil {
 			return err
 		}

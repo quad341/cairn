@@ -58,7 +58,7 @@ func TestDefaultBranchErrorsOutsideGitRepo(t *testing.T) {
 
 func TestListReviewBranchesEmptyStore(t *testing.T) {
 	store := reviewStore(t)
-	branches, err := ListReviewBranches(t.Context(), store)
+	branches, err := ListReviewMergeBranches(t.Context(), store)
 	require.NoError(t, err)
 	assert.Empty(t, branches)
 }
@@ -73,11 +73,11 @@ func TestListReviewBranchesDerivesTierFromEntryPath(t *testing.T) {
 	rigBranch, _ := fixtureBranch(t, store, "rig-topic", []string{"rig:web"}, "a rig note")
 	roleBranch, _ := fixtureBranch(t, store, "role-topic", []string{"role:reviewer"}, "a role note")
 
-	branches, err := ListReviewBranches(t.Context(), store)
+	branches, err := ListReviewMergeBranches(t.Context(), store)
 	require.NoError(t, err)
 	require.Len(t, branches, 3)
 
-	byName := make(map[string]ReviewBranch, len(branches))
+	byName := make(map[string]ReviewMergeBranch, len(branches))
 	for _, b := range branches {
 		byName[b.Name] = b
 	}
@@ -99,17 +99,17 @@ func TestListReviewBranchesDerivesTierFromEntryPath(t *testing.T) {
 }
 
 // TestListReviewBranchesErrorsOnPrivateTierBranch documents the other side
-// of tierFromEntryPath's contract: ListReviewBranches has no tier filter of
-// its own, so a remember/* branch that (unusually) changes a file under
-// agent/ surfaces as an explicit error rather than being silently skipped or
-// reported as a fourth tier. In production cmd/remember.go never routes a
-// private-tier entry through CommitToReviewBranch, but the guarantee lives
-// here, not there.
+// of tierFromEntryPath's contract: ListReviewMergeBranches has no tier
+// filter of its own, so a remember/* branch that (unusually) changes a file
+// under agent/ surfaces as an explicit error rather than being silently
+// skipped or reported as a fourth tier. In production cmd/remember.go never
+// routes a private-tier entry through CommitToReviewBranch, but the
+// guarantee lives here, not there.
 func TestListReviewBranchesErrorsOnPrivateTierBranch(t *testing.T) {
 	store := reviewStore(t)
 	fixtureBranch(t, store, "private-topic", []string{"agent:bot"}, "a private note")
 
-	_, err := ListReviewBranches(t.Context(), store)
+	_, err := ListReviewMergeBranches(t.Context(), store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "private agent/ tier")
 }

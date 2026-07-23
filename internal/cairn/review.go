@@ -12,10 +12,16 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// ReviewBranch describes one pending remember/* branch: a shared-tier entry
-// a contributor has written but that hasn't yet been curated and merged by a
-// reviewer (DESIGN.md §7, "shared = branch, merge request, review, merge").
-type ReviewBranch struct {
+// ReviewMergeBranch describes one pending remember/* branch: a shared-tier
+// entry a contributor has written but that hasn't yet been curated and
+// merged by a reviewer (DESIGN.md §7, "shared = branch, merge request,
+// review, merge"). Named distinctly from branches.go's ReviewBranch (the
+// librarian sweep's stale-branch bookkeeping type, crn-0yv.1): the two model
+// overlapping but different concerns -- this one is shaped for the
+// interactive list/show/merge review flow, that one for age/SHA-tracked
+// notify-escalate state -- and were developed independently before either
+// saw the other (crn-j1uh).
+type ReviewMergeBranch struct {
 	Name      string // e.g. "remember/foo-a1b2c3d4"
 	Tier      string // "global" | "rig" | "role" -- never "agent" (crn-xw3 FR-8: agent/ is private and never reaches a review branch)
 	TierValue string // e.g. "web" for a rig:web entry; "" for global
@@ -23,7 +29,7 @@ type ReviewBranch struct {
 }
 
 // DefaultBranch resolves the store's currently checked-out branch -- the
-// merge target for ListReviewBranches/ShowReviewBranch's diff base and
+// merge target for ListReviewMergeBranches/ShowReviewBranch's diff base and
 // MergeReviewBranch's actual merge destination.
 func DefaultBranch(ctx context.Context, store string) (string, error) {
 	out, err := gitRun(ctx, store, "symbolic-ref", "--short", "HEAD")
@@ -33,11 +39,11 @@ func DefaultBranch(ctx context.Context, store string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// ListReviewBranches discovers local remember/* branches and, for each,
+// ListReviewMergeBranches discovers local remember/* branches and, for each,
 // derives its tier from the single entry file it changes -- never from the
 // branch name -- per crn-xw3 AF1: the branch is only ever named after the
 // entry's random id (reviewBranchName), which carries no tier information.
-func ListReviewBranches(ctx context.Context, store string) ([]ReviewBranch, error) {
+func ListReviewMergeBranches(ctx context.Context, store string) ([]ReviewMergeBranch, error) {
 	def, err := DefaultBranch(ctx, store)
 	if err != nil {
 		return nil, err
@@ -47,7 +53,7 @@ func ListReviewBranches(ctx context.Context, store string) ([]ReviewBranch, erro
 		return nil, fmt.Errorf("list remember/* branches: %w", err)
 	}
 
-	var branches []ReviewBranch
+	var branches []ReviewMergeBranch
 	for _, name := range strings.Split(out, "\n") {
 		name = strings.TrimSpace(name)
 		if name == "" {
@@ -61,7 +67,7 @@ func ListReviewBranches(ctx context.Context, store string) ([]ReviewBranch, erro
 		if err != nil {
 			return nil, fmt.Errorf("branch %q: %w", name, err)
 		}
-		branches = append(branches, ReviewBranch{Name: name, Tier: tier, TierValue: value, EntryPath: relPath})
+		branches = append(branches, ReviewMergeBranch{Name: name, Tier: tier, TierValue: value, EntryPath: relPath})
 	}
 	return branches, nil
 }
@@ -138,14 +144,17 @@ func ShowReviewBranch(ctx context.Context, store, branch string) (diff string, e
 	return diff, e, nil
 }
 
-// splitFrontmatter splits +++-fenced content into the frontmatter text
-// (front, excluding both fences) and everything from the closing fence
+// splitFrontmatterForPatch splits +++-fenced content into the frontmatter
+// text (front, excluding both fences) and everything from the closing fence
 // onward (closeAndBody), mirroring ParseEntry's own fence-parsing rules
-// exactly. It exists separately from ParseEntry because that function only
-// ever reads from a file path (os.ReadFile), while review branches are
-// never checked out to a path ShowReviewBranch/MergeReviewBranch could read
-// from directly -- their content only ever exists as `git show` output.
-func splitFrontmatter(raw []byte) (front, closeAndBody string, err error) {
+// exactly. Named distinctly from entry.go's splitFrontmatter (same fence
+// grammar, different contract: that one reads a path via os.ReadFile and
+// returns body without the closing fence; this one takes already-read
+// bytes -- review branches are never checked out to a path ParseEntry could
+// read from directly, their content only ever exists as `git show` output
+// -- and keeps the closing fence in closeAndBody so patchFrontmatterFields
+// can reassemble the file byte-exact around a surgical field edit.
+func splitFrontmatterForPatch(raw []byte) (front, closeAndBody string, err error) {
 	text := string(raw)
 	if !strings.HasPrefix(text, fence) {
 		return "", "", errNotEntry
@@ -162,7 +171,7 @@ func splitFrontmatter(raw []byte) (front, closeAndBody string, err error) {
 // bytes. source labels errors (e.g. "branch:path", which has no filesystem
 // path ParseEntry could use instead).
 func parseEntryContent(raw []byte, source string) (*Entry, error) {
-	front, closeAndBody, err := splitFrontmatter(raw)
+	front, closeAndBody, err := splitFrontmatterForPatch(raw)
 	if err != nil {
 		if errors.Is(err, errNotEntry) {
 			return nil, err
@@ -360,7 +369,7 @@ func mergeCuratedBranch(
 // toml.NewEncoder re-encode, which reformats the entire frontmatter and so
 // produces a full-file diff for a one-field curation change (crn-6az.5.1).
 func patchFrontmatterFields(raw []byte, opts ReviewMergeOptions) ([]byte, error) {
-	front, closeAndBody, err := splitFrontmatter(raw)
+	front, closeAndBody, err := splitFrontmatterForPatch(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -441,17 +450,9 @@ func insertAfter(lines []string, i int, newLine string) []string {
 	return out
 }
 
-// tomlQuote renders s as a TOML basic string. Escaping is limited to
-// backslash and double-quote because s has already passed
-// ValidatePathSegment by the time this is called, which rules out control
-// and null bytes -- the only other characters a TOML basic string must
-// escape.
-func tomlQuote(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	return `"` + s + `"`
-}
-
+// tomlArray renders vals as a TOML array of basic strings, quoting each
+// element with entry.go's tomlQuote (shared package-wide; review.go no
+// longer keeps its own copy -- see crn-j1uh).
 func tomlArray(vals []string) string {
 	quoted := make([]string, len(vals))
 	for i, v := range vals {
