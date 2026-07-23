@@ -1,5 +1,6 @@
 formula = "mol-cairn-critic"
 version = 1
+phase = "vapor"
 description = """
 cairn dogfood/critic loop — a self-perpetuating bd formula that, each
 iteration, mechanically stress-tests the cairn engine on ONE of 5 dimensions
@@ -265,7 +266,7 @@ exact SHA + subject as evidence, never a vague "fixed".
 
 [[steps]]
 id = "loop"
-title = "Log the iteration summary, pour the next iteration, then stop"
+title = "Log the iteration summary, self-repour a root-only wisp, then stop"
 needs = ["landing-check"]
 description = '''
 Iteration complete. Log a one-line summary of this pass, reading the env file
@@ -275,17 +276,25 @@ the earlier steps wrote:
   . "$ENV" 2>/dev/null || true
   echo "critic-loop summary: dim=${DIM:-?} verdict=${VERDICT:-?} filed=${FILED:-none}; landing-check reconciled above (closed / in-flight / pending)."
 
-Then pour the next iteration, mirroring mol-witness-patrol's self-perpetuating
-loop step:
+Then self-repour the next iteration as a ROOT-ONLY wisp -- not a plain pour,
+which would spray this formula's 6 steps as independently-orphanable child
+beads on every generation, compounding forever across a loop that never
+stops (the original crn-gc9m orphaned-steps bug). bd mol wisp has no
+--metadata flag, and a self-repour bypasses the order controller that would
+otherwise stamp gc.routed_to automatically -- so restamp it by hand, or
+generation-2+ silently goes unrouted and the scale-from-zero cairn/dogfood
+pool stops waking after this first iteration:
 
-  bd mol pour mol-cairn-critic
+  NEW_ID=$(bd mol wisp mol-cairn-critic --root-only --json | jq -r '.id')
+  bd update "$NEW_ID" --set-metadata gc.routed_to=cairn/dogfood
+  echo "critic-loop: repoured next iteration as $NEW_ID (root-only, routed to cairn/dogfood)"
 
 Then STOP — do not spin immediately.
 
 Cadence: this loop is meant to run on a ~{{cooldown}} cooldown (crn-7oa NFR-4
 / R5 — cost-bounded, not a tight poll). bd formulas have no native schedule
-field, so the spacing between iterations is enforced by how THIS pour is
+field, so the spacing between iterations is enforced by how THIS repour is
 throttled at the pool / order layer — the same way packs/actual/improver
 wakes mol-feedback-harvest on a daily cooldown — NOT inside this file. Do not
-add a busy sleep here; just pour and stop.
+add a busy sleep here; just repour and stop.
 '''
