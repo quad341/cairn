@@ -1,6 +1,7 @@
 package critic
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -12,11 +13,25 @@ const perfScenarioID = "perf-visible-at-scale"
 // perfFixtureCount is how many fixture entries are seeded before timing.
 // perfPassThreshold/perfFailThreshold are fixed wall-clock buckets, not a
 // relative/comparative benchmark, so the verdict is reproducible run to run.
-const (
-	perfFixtureCount  = 500
-	perfPassThreshold = 500 * time.Millisecond
-	perfFailThreshold = 2500 * time.Millisecond
+// Under raceEnabled they're scaled way up: the race detector instruments
+// every SQL statement modernc.org/sqlite's pure-Go driver executes, which
+// measured ~50x slower for this scenario's Reindex than an unraced run —
+// an instrumentation cost, not a real regression, so holding race builds to
+// the same thresholds as normal builds would just make this scenario flaky
+// under `go test -race` rather than tell us anything about Visible().
+const perfFixtureCount = 500
+
+var (
+	perfPassThreshold = perfThreshold(500*time.Millisecond, 10*time.Second)
+	perfFailThreshold = perfThreshold(2500*time.Millisecond, 30*time.Second)
 )
+
+func perfThreshold(normal, raced time.Duration) time.Duration {
+	if raceEnabled {
+		return raced
+	}
+	return normal
+}
 
 // RunPerfScenario seeds perfFixtureCount real entries into store — entry.go
 // has no index to lean on, it's a full filesystem walk per query, so this is
@@ -25,7 +40,7 @@ const (
 // against the 2 fixed thresholds. It also asserts recall didn't silently
 // degrade under load: a query that returns fast because it truncated
 // results would otherwise read as a pass.
-func RunPerfScenario(store string) Result {
+func RunPerfScenario(ctx context.Context, store string) Result {
 	n, err := nonce()
 	if err != nil {
 		return NewResult(DimensionPerf, perfScenarioID, Fail, fmt.Sprintf("nonce: %v", err))
@@ -41,14 +56,14 @@ func RunPerfScenario(store string) Result {
 		entries = append(entries, e)
 	}
 
-	cleanup, err := seedEntries(store, entries)
+	cleanup, err := seedEntries(ctx, store, entries)
 	defer cleanup()
 	if err != nil {
 		return NewResult(DimensionPerf, perfScenarioID, Fail, fmt.Sprintf("seed fixtures: %v", err))
 	}
 
 	start := time.Now()
-	visible, err := cairn.Visible(store, []string{rig})
+	visible, err := cairn.Visible(ctx, store, []string{rig})
 	elapsed := time.Since(start)
 	if err != nil {
 		return NewResult(DimensionPerf, perfScenarioID, Fail, fmt.Sprintf("Visible: %v", err))

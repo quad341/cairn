@@ -54,13 +54,13 @@ func checkFreshnessNoAnchor(ctx context.Context, store, n string) Result {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("build entry: %v", err))
 	}
 
-	cleanup, err := seedEntries(store, []*cairn.Entry{e})
+	cleanup, err := seedEntries(ctx, store, []*cairn.Entry{e})
 	defer cleanup()
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("seed fixture: %v", err))
 	}
 
-	loaded, err := cairn.Find(store, e.ID)
+	loaded, err := cairn.Find(ctx, store, e.ID)
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("Find: %v", err))
 	}
@@ -82,13 +82,13 @@ func checkFreshnessNeverVerified(ctx context.Context, store, n, repo string) Res
 	}
 	e.Anchor = cairn.Anchor{Type: "files", Repo: repo, Paths: []string{freshnessFixtureFile}}
 
-	cleanup, err := seedEntries(store, []*cairn.Entry{e})
+	cleanup, err := seedEntries(ctx, store, []*cairn.Entry{e})
 	defer cleanup()
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("seed fixture: %v", err))
 	}
 
-	loaded, err := cairn.Find(store, e.ID)
+	loaded, err := cairn.Find(ctx, store, e.ID)
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("Find: %v", err))
 	}
@@ -118,13 +118,13 @@ func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Re
 	}
 	e.Anchor = anchor
 
-	cleanup, err := seedEntries(store, []*cairn.Entry{e})
+	cleanup, err := seedEntries(ctx, store, []*cairn.Entry{e})
 	defer cleanup()
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("seed fixture: %v", err))
 	}
 
-	loaded, err := cairn.Find(store, e.ID)
+	loaded, err := cairn.Find(ctx, store, e.ID)
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("Find: %v", err))
 	}

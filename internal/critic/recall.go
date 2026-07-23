@@ -1,6 +1,7 @@
 package critic
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -18,7 +19,7 @@ const recallScenarioID = "recall-subset-match"
 // diffs the actual visible-ID set against an independently computed
 // expected set — catching both a false negative (recall miss) and a false
 // positive (a scope leak) in one pass.
-func RunRecallScenario(store string) Result {
+func RunRecallScenario(ctx context.Context, store string) Result {
 	n, err := nonce()
 	if err != nil {
 		return NewResult(DimensionRecall, recallScenarioID, Fail, fmt.Sprintf("nonce: %v", err))
@@ -42,13 +43,13 @@ func RunRecallScenario(store string) Result {
 		return NewResult(DimensionRecall, recallScenarioID, Fail, fmt.Sprintf("build other-rig entry: %v", err))
 	}
 
-	cleanup, err := seedEntries(store, []*cairn.Entry{global, rigOnly, rigAndRole, otherRig})
+	cleanup, err := seedEntries(ctx, store, []*cairn.Entry{global, rigOnly, rigAndRole, otherRig})
 	defer cleanup()
 	if err != nil {
 		return NewResult(DimensionRecall, recallScenarioID, Fail, fmt.Sprintf("seed fixtures: %v", err))
 	}
 
-	visible, err := cairn.Visible(store, []string{rig})
+	visible, err := cairn.Visible(ctx, store, []string{rig})
 	if err != nil {
 		return NewResult(DimensionRecall, recallScenarioID, Fail, fmt.Sprintf("Visible: %v", err))
 	}

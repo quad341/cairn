@@ -17,7 +17,7 @@ func TestRunPerfScenarioDoesNotFail(t *testing.T) {
 	// itself flaky over something classifyPerfLatency's own unit tests
 	// below already cover precisely.
 	store := t.TempDir()
-	r := RunPerfScenario(store)
+	r := RunPerfScenario(t.Context(), store)
 	require.NotEqual(t, Fail, r.Verdict, "detail: %s", r.Detail)
 	assert.Equal(t, DimensionPerf, r.Dimension)
 	assert.Equal(t, perfScenarioID, r.ScenarioID)
@@ -25,7 +25,7 @@ func TestRunPerfScenarioDoesNotFail(t *testing.T) {
 
 func TestRunPerfScenarioCleansUpAfterItself(t *testing.T) {
 	store := t.TempDir()
-	r := RunPerfScenario(store)
+	r := RunPerfScenario(t.Context(), store)
 	require.NotEqual(t, Fail, r.Verdict, "detail: %s", r.Detail)
 
 	entries, err := cairn.IterEntries(store)

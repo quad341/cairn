@@ -257,7 +257,7 @@ func TestMergeReviewBranchSucceeds(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, strings.TrimSpace(branchList), "the review branch must be deleted after a successful merge")
 
-	got, err := Find(store, e.ID)
+	got, err := Find(t.Context(), store, e.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "curated-topic", got.TopicKey, "topic_key must be curated to the reviewer's --topic-key, not the contributor's draft value")
 }
@@ -297,7 +297,7 @@ func TestMergeReviewBranchLeavesScopeAndAnchorTypeUntouchedWhenOmitted(t *testin
 	_, err := MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{TopicKey: "curated"})
 	require.NoError(t, err)
 
-	got, err := Find(store, e.ID)
+	got, err := Find(t.Context(), store, e.ID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"rig:web"}, got.Scope, "omitted --scope must leave the contributor's scope untouched")
 	assert.Equal(t, "none", got.Anchor.Type, "omitted --anchor-type must leave the contributor's anchor type untouched")
@@ -322,7 +322,7 @@ func TestMergeReviewBranchAppliesScopeAndAnchorTypeWhenGiven(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, err := Find(store, e.ID)
+	got, err := Find(t.Context(), store, e.ID)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"role:reviewer"}, got.Scope)
 	assert.Equal(t, "files", got.Anchor.Type)

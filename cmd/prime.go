@@ -16,7 +16,7 @@ var primeCmd = &cobra.Command{
 	Short: "Emit the agent's scoped knowledge map + usage (for a SessionStart hook)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		out, err := cairn.Prime(storePath(), resolveIdentity(cmd))
+		out, err := cairn.Prime(cmd.Context(), storePath(), resolveIdentity(cmd))
 		if err != nil {
 			return err
 		}
