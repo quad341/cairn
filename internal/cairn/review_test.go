@@ -328,6 +328,135 @@ func TestMergeReviewBranchAppliesScopeAndAnchorTypeWhenGiven(t *testing.T) {
 	assert.Equal(t, "files", got.Anchor.Type)
 }
 
+// TestMergeReviewBranchAppliesKindWhenGiven mirrors
+// TestMergeReviewBranchAppliesScopeAndAnchorTypeWhenGiven for --kind: a
+// reviewer-given kind is written to the merged entry.
+func TestMergeReviewBranchAppliesKindWhenGiven(t *testing.T) {
+	store := reviewStore(t)
+	branch, e := fixtureBranch(t, store, "draft-topic", []string{"rig:web"}, "a note")
+
+	_, err := MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{
+		TopicKey: "curated",
+		Kind:     "remediation",
+	})
+	require.NoError(t, err)
+
+	got, err := Find(t.Context(), store, e.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "remediation", got.Kind)
+}
+
+// TestMergeReviewBranchLeavesKindUntouchedWhenOmitted mirrors
+// TestMergeReviewBranchLeavesScopeAndAnchorTypeUntouchedWhenOmitted: an
+// omitted --kind must leave the contributor's (here, unset) kind alone.
+func TestMergeReviewBranchLeavesKindUntouchedWhenOmitted(t *testing.T) {
+	store := reviewStore(t)
+	branch, e := fixtureBranch(t, store, "draft-topic", []string{"rig:web"}, "a note")
+
+	_, err := MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{TopicKey: "curated"})
+	require.NoError(t, err)
+
+	got, err := Find(t.Context(), store, e.ID)
+	require.NoError(t, err)
+	assert.Empty(t, got.Kind, "omitted --kind must leave the contributor's kind untouched")
+}
+
+// TestMergeReviewBranchRejectsInvalidKind covers the fixed --kind enum: only
+// "remediation" and "note" (or omitted) are valid.
+func TestMergeReviewBranchRejectsInvalidKind(t *testing.T) {
+	store := reviewStore(t)
+	branch, _ := fixtureBranch(t, store, "draft-topic", nil, "a note")
+
+	_, err := MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{
+		TopicKey: "curated",
+		Kind:     "bogus",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--kind")
+}
+
+// TestMergeReviewBranchAutoActionableRejectedWithoutRemediationKind covers
+// the core --auto-actionable gate: a fresh entry has no kind at all, and
+// --auto-actionable alone (no --kind) must be rejected rather than silently
+// granting auto-actionable to a plain note.
+func TestMergeReviewBranchAutoActionableRejectedWithoutRemediationKind(t *testing.T) {
+	store := reviewStore(t)
+	branch, _ := fixtureBranch(t, store, "draft-topic", nil, "a note")
+
+	_, err := MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{
+		TopicKey:       "curated",
+		AutoActionable: true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--auto-actionable")
+	assert.Contains(t, err.Error(), "remediation")
+}
+
+// TestMergeReviewBranchAutoActionableRejectedWhenKindExplicitlySetToNote
+// proves an explicit --kind in this same invocation overrides the entry's
+// existing kind for the gate check -- even an entry already marked
+// remediation cannot be merged with --kind note --auto-actionable together.
+func TestMergeReviewBranchAutoActionableRejectedWhenKindExplicitlySetToNote(t *testing.T) {
+	store := reviewStore(t)
+	e, err := NewEntry("draft-topic", []string{"rig:web"}, "a note", "agent:bot")
+	require.NoError(t, err)
+	e.Kind = "remediation"
+	require.NoError(t, e.Create(store))
+	branch, err := e.CommitToReviewBranch(t.Context(), store)
+	require.NoError(t, err)
+
+	_, err = MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{
+		TopicKey:       "curated",
+		Kind:           "note",
+		AutoActionable: true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--auto-actionable")
+}
+
+// TestMergeReviewBranchAutoActionableSucceedsWhenKindSetToRemediationInSameInvocation
+// covers the acceptance criterion's first allowed case: --kind remediation
+// and --auto-actionable given together in one invocation.
+func TestMergeReviewBranchAutoActionableSucceedsWhenKindSetToRemediationInSameInvocation(t *testing.T) {
+	store := reviewStore(t)
+	branch, e := fixtureBranch(t, store, "draft-topic", nil, "a note")
+
+	_, err := MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{
+		TopicKey:       "curated",
+		Kind:           "remediation",
+		AutoActionable: true,
+	})
+	require.NoError(t, err)
+
+	got, err := Find(t.Context(), store, e.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "remediation", got.Kind)
+	assert.True(t, got.AutoActionable)
+}
+
+// TestMergeReviewBranchAutoActionableSucceedsWhenEntryAlreadyHasRemediationKind
+// covers the acceptance criterion's second allowed case: --kind is omitted,
+// but the entry's existing (pre-merge) kind is already "remediation".
+func TestMergeReviewBranchAutoActionableSucceedsWhenEntryAlreadyHasRemediationKind(t *testing.T) {
+	store := reviewStore(t)
+	e, err := NewEntry("draft-topic", []string{"rig:web"}, "a note", "agent:bot")
+	require.NoError(t, err)
+	e.Kind = "remediation"
+	require.NoError(t, e.Create(store))
+	branch, err := e.CommitToReviewBranch(t.Context(), store)
+	require.NoError(t, err)
+
+	_, err = MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{
+		TopicKey:       "curated",
+		AutoActionable: true,
+	})
+	require.NoError(t, err)
+
+	got, err := Find(t.Context(), store, e.ID)
+	require.NoError(t, err)
+	assert.True(t, got.AutoActionable)
+}
+
 func TestMergeReviewBranchBlocksObviousSecretByDefault(t *testing.T) {
 	store := reviewStore(t)
 	branch, _ := fixtureBranch(t, store, "draft-topic", nil, "leaked key: "+testAWSKeyExample)
@@ -486,6 +615,41 @@ func TestPatchFrontmatterFieldsAppliesScopeAndAnchorTypeWhenGiven(t *testing.T) 
 	s := string(patched)
 	assert.Contains(t, s, `scope = ["rig:web", "role:reviewer"]`)
 	assert.Contains(t, s, `type = "files"`)
+}
+
+func TestPatchFrontmatterFieldsAppliesKindAndAutoActionableWhenGiven(t *testing.T) {
+	e, err := NewEntry("draft", []string{"agent:bot"}, "body text", "agent:bot")
+	require.NoError(t, err)
+	raw, err := e.marshal()
+	require.NoError(t, err)
+
+	patched, err := patchFrontmatterFields(raw, ReviewMergeOptions{
+		TopicKey:       "curated",
+		Kind:           "remediation",
+		AutoActionable: true,
+	})
+	require.NoError(t, err)
+
+	s := string(patched)
+	assert.Contains(t, s, `kind = "remediation"`)
+	assert.Contains(t, s, `auto_actionable = true`)
+}
+
+// TestPatchFrontmatterFieldsLeavesKindAndAutoActionableUntouchedWhenOmitted
+// extends TestPatchFrontmatterFieldsOnlyTouchesRequestedFields's guarantee to
+// the two new fields: omitted, neither line is added to the frontmatter.
+func TestPatchFrontmatterFieldsLeavesKindAndAutoActionableUntouchedWhenOmitted(t *testing.T) {
+	e, err := NewEntry("draft", []string{"agent:bot"}, "body text", "agent:bot")
+	require.NoError(t, err)
+	raw, err := e.marshal()
+	require.NoError(t, err)
+
+	patched, err := patchFrontmatterFields(raw, ReviewMergeOptions{TopicKey: "curated"})
+	require.NoError(t, err)
+
+	s := string(patched)
+	assert.NotContains(t, s, "kind =")
+	assert.NotContains(t, s, "auto_actionable =")
 }
 
 // TestPatchFrontmatterFieldsIsLineForLineSurgical proves the "not a full

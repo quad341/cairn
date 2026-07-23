@@ -199,6 +199,35 @@ func TestReviewMergeBeadFlagAppearsInCommitMessage(t *testing.T) {
 	assert.Contains(t, subject, "(crn-999)")
 }
 
+func TestReviewMergeKindAndAutoActionableFlagWiring(t *testing.T) {
+	store := reviewCLIStore(t)
+	branch, e := seedReviewBranch(t, store, "topic-a", []string{"rig:web"}, "body")
+
+	captureStdout(t, func() {
+		require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store,
+			"--topic-key", "curated", "--kind", "remediation", "--auto-actionable"))
+	})
+
+	got, err := cairn.Find(t.Context(), store, e.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "remediation", got.Kind)
+	assert.True(t, got.AutoActionable)
+}
+
+// TestReviewMergeAutoActionableWithoutRemediationKindErrors covers the CLI
+// wiring of the --auto-actionable gate: passing it without --kind on an
+// entry that isn't already remediation must be rejected.
+func TestReviewMergeAutoActionableWithoutRemediationKindErrors(t *testing.T) {
+	store := reviewCLIStore(t)
+	branch, _ := seedReviewBranch(t, store, "topic-a", nil, "body")
+
+	err := runReviewCmd(t, "review", "merge", branch, "--store", store,
+		"--topic-key", "curated", "--auto-actionable")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--auto-actionable")
+	assert.Contains(t, err.Error(), "remediation")
+}
+
 func TestReviewMergeAllowSecretPatternFlagWiring(t *testing.T) {
 	store := reviewCLIStore(t)
 	branch, _ := seedReviewBranch(t, store, "topic-a", nil, "leaked: AKIAIOSFODNN7EXAMPLE")
