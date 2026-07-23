@@ -10,10 +10,12 @@ import (
 // unioned scope plus a short usage preamble. It is meant to be injected at session
 // start (e.g. via a SessionStart hook) so an agent boots aware of what it knows.
 func Prime(store string, identity []string) (string, error) {
-	entries, err := Visible(store, identity)
+	all, err := IterEntries(store)
 	if err != nil {
 		return "", err
 	}
+	entries := visibleFrom(all, identity)
+
 	counts := map[string]int{}
 	for _, e := range entries {
 		t := e.TopicKey
@@ -44,9 +46,64 @@ func Prime(store string, identity []string) (string, error) {
 		}
 		b.WriteString("\nEntries can go stale — `cairn get` reports freshness; treat a stale entry as a lead, not truth.\n")
 	}
-	b.WriteString("Capture what you learn: hand-author a `+++`-fenced markdown entry under the right scope dir\n" +
-		"(DESIGN.md §2, §6-§7) — no `remember` command yet.\n")
+	for _, w := range scopeMismatchWarnings(all, entries, identity) {
+		fmt.Fprintf(&b, "\n%s\n", w)
+	}
+	b.WriteString("Capture what you learn: `cairn remember <body>` writes a new entry (private tier\n" +
+		"commits directly; shared tiers route through review — see `cairn remember --help`\n" +
+		"and DESIGN.md §6-§7).\n")
 	return b.String(), nil
+}
+
+// scopeDimensionPrefixes are the scope-tag prefixes Visible does subset
+// matching on (see entry.go's Scope doc, e.g. "rig:web"). "global" is
+// excluded: global entries carry no tag at all, so there is no "global:"
+// prefix that could go missing.
+var scopeDimensionPrefixes = []string{"rig:", "role:", "agent:"}
+
+// scopeMismatchWarnings flags a likely tag-shape mismatch between an
+// identity and the store's scope tags (crn-ln1): for each scope-dimension
+// prefix present in identity, if the store has any entry tagged in that
+// dimension anywhere but none of them made it into visible, cairn prime
+// would otherwise silently report a low or zero entry count with no signal
+// that something (as opposed to nothing) is wrong. A dimension absent from
+// the store entirely, or one where the match is simply non-empty, produces
+// no warning.
+func scopeMismatchWarnings(all, visible []*Entry, identity []string) []string {
+	present := map[string]bool{}
+	for _, tag := range identity {
+		for _, prefix := range scopeDimensionPrefixes {
+			if strings.HasPrefix(tag, prefix) {
+				present[prefix] = true
+			}
+		}
+	}
+
+	var warnings []string
+	for _, prefix := range scopeDimensionPrefixes {
+		if !present[prefix] || !anyTagWithPrefix(all, prefix) || anyTagWithPrefix(visible, prefix) {
+			continue
+		}
+		dim := strings.TrimSuffix(prefix, ":")
+		warnings = append(warnings, fmt.Sprintf(
+			"warning: your identity has a %s tag, and the store has %s-scoped entries, but none matched you -- check for a tag-shape mismatch",
+			prefix, dim,
+		))
+	}
+	return warnings
+}
+
+// anyTagWithPrefix reports whether any entry carries a scope tag with the
+// given prefix.
+func anyTagWithPrefix(entries []*Entry, prefix string) bool {
+	for _, e := range entries {
+		for _, tag := range e.Scope {
+			if strings.HasPrefix(tag, prefix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func plural(n int) string {
