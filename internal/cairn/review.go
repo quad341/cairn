@@ -249,6 +249,11 @@ func MergeReviewBranch(ctx context.Context, store, branch string, opts ReviewMer
 			return nil, fmt.Errorf("invalid --scope tag %q: %w", tag, err)
 		}
 	}
+	if opts.AnchorType != "" {
+		if err := ValidatePathSegment(opts.AnchorType); err != nil {
+			return nil, fmt.Errorf("invalid --anchor-type: %w", err)
+		}
+	}
 
 	def, relPath, entry, err := curateReviewBranch(ctx, store, branch, opts)
 	if err != nil {

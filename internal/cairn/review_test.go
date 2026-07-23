@@ -421,6 +421,35 @@ func TestMergeReviewBranchRejectsInvalidScopeTag(t *testing.T) {
 	assert.Contains(t, err.Error(), "--scope tag")
 }
 
+// TestMergeReviewBranchRejectsInvalidAnchorType pins the exact corruption
+// case a real reviewer hit: an embedded newline in --anchor-type reached
+// tomlQuote unvalidated, splitting the frontmatter's "type = ..." line into
+// invalid TOML that merged successfully before Reindex choked on it --
+// corrupting the default branch and breaking every store read path
+// (IterEntries) until someone hand-fixed the file. AnchorType must be
+// rejected up front, exactly like TopicKey and Scope.
+func TestMergeReviewBranchRejectsInvalidAnchorType(t *testing.T) {
+	store := reviewStore(t)
+	branch, _ := fixtureBranch(t, store, "draft-topic", nil, "a note")
+	headBefore, err := gitRun(t.Context(), store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+
+	_, err = MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{
+		TopicKey:   "curated",
+		AnchorType: "files\"\n[bogus]\nevil = \"1",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--anchor-type")
+
+	headAfter, err := gitRun(t.Context(), store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(headBefore), strings.TrimSpace(headAfter), "an invalid --anchor-type must be rejected before any git mutation")
+
+	branchList, err := gitRun(t.Context(), store, "branch", "--list", branch)
+	require.NoError(t, err)
+	assert.NotEmpty(t, strings.TrimSpace(branchList), "the branch must survive a rejected merge")
+}
+
 // TestPatchFrontmatterFieldsOnlyTouchesRequestedFields is the core "surgical
 // patch, not a full re-encode" guarantee (crn-6az.5.1): every line not named
 // by opts survives byte for byte, in place, including the body.
