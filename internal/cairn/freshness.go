@@ -72,8 +72,11 @@ func expand(ctx context.Context, repo string, paths []string) []string {
 	return files
 }
 
-// ComputeFingerprint returns a deterministic fingerprint of the anchored source,
-// or "" if it cannot be computed (none/query/external in v1).
+// ComputeFingerprint returns a deterministic fingerprint of the anchored
+// source, or "" if it cannot be computed: none/query/external in v1, or a
+// files anchor with a path that doesn't resolve to a real tracked object at
+// repo's HEAD (objectHash's "?" sentinel -- the same one untrackedPaths in
+// sweep.go checks for).
 func ComputeFingerprint(ctx context.Context, a Anchor) string {
 	switch a.Type {
 	case "commit":
@@ -84,7 +87,11 @@ func ComputeFingerprint(ctx context.Context, a Anchor) string {
 		}
 		parts := make([]string, 0, len(a.Paths))
 		for _, p := range expand(ctx, a.Repo, a.Paths) {
-			parts = append(parts, p+":"+objectHash(ctx, a.Repo, p))
+			h := objectHash(ctx, a.Repo, p)
+			if h == "?" {
+				return ""
+			}
+			parts = append(parts, p+":"+h)
 		}
 		sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
 		return hex.EncodeToString(sum[:])[:16]

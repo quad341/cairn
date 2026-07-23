@@ -16,7 +16,7 @@ func TestPrime(t *testing.T) {
 	out, err := Prime(t.Context(), dir, []string{"rig:alpha"})
 	require.NoError(t, err)
 	assert.Contains(t, out, "alpha/thing", "an alpha-scoped agent should see the alpha topic")
-	assert.Contains(t, out, "hand-author", "prime should still nudge agents to capture what they learn")
+	assert.Contains(t, out, "cairn remember", "prime should still nudge agents to capture what they learn")
 
 	bare, err := Prime(t.Context(), dir, nil)
 	require.NoError(t, err)
@@ -27,4 +27,60 @@ func TestPrimeEmpty(t *testing.T) {
 	out, err := Prime(t.Context(), t.TempDir(), nil)
 	require.NoError(t, err)
 	assert.Contains(t, out, "No cached knowledge")
+}
+
+// TestPrimeDoesNotClaimRememberMissing covers crn-6az.2: prime's footer used
+// to hardcode "no `remember` command yet" and tell agents to hand-author
+// entries directly, which went stale the moment the remember command
+// shipped (it now writes entries itself, including committing/routing them
+// for review) -- leaving prime denying a command that cairn --help lists.
+func TestPrimeDoesNotClaimRememberMissing(t *testing.T) {
+	out, err := Prime(t.Context(), t.TempDir(), nil)
+	require.NoError(t, err)
+	assert.NotContains(t, out, "no `remember` command yet")
+	assert.NotContains(t, out, "hand-author")
+	assert.Contains(t, out, "cairn remember")
+}
+
+// TestPrimeWarnsOnUnmatchedScopeDimension is crn-ln1 acceptance criterion 1
+// and 3 (populated-but-unmatched case): the store has role-scoped entries,
+// the identity carries a role: tag, but no entry's scope matches it — this
+// is the silent-miss shape the diagnostic exists to catch, including when it
+// drives the visible count to zero (the "No cached knowledge" branch).
+func TestPrimeWarnsOnUnmatchedScopeDimension(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "role/investigator/o.md",
+		"+++\nid = \"o\"\ntitle = \"o\"\ntopic_key = \"o/thing\"\nscope = [\"role:investigator\"]\n+++\nx\n")
+
+	out, err := Prime(t.Context(), dir, []string{"role:builder"})
+	require.NoError(t, err)
+	assert.Contains(t, out, "No cached knowledge", "precondition: the mismatch should leave nothing visible")
+	assert.Contains(t, out, "role:", "warning should name the mismatched dimension")
+	assert.Contains(t, out, "tag-shape mismatch")
+}
+
+// TestPrimeNoWarningOnScopeMatch is crn-ln1 acceptance criterion 3 (working
+// as intended case): a genuine, non-empty match must never warn.
+func TestPrimeNoWarningOnScopeMatch(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "role/investigator/o.md",
+		"+++\nid = \"o\"\ntitle = \"o\"\ntopic_key = \"o/thing\"\nscope = [\"role:investigator\"]\n+++\nx\n")
+
+	out, err := Prime(t.Context(), dir, []string{"role:investigator"})
+	require.NoError(t, err)
+	assert.Contains(t, out, "o/thing", "precondition: the entry should actually be visible")
+	assert.NotContains(t, out, "tag-shape mismatch")
+}
+
+// TestPrimeNoWarningOnEmptyScopeDimension is crn-ln1 acceptance criterion 3
+// (nothing-to-warn-about case): the identity carries a role: tag, but the
+// store has zero role-scoped entries anywhere -- there is nothing to have
+// silently missed, so this must stay quiet too.
+func TestPrimeNoWarningOnEmptyScopeDimension(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	out, err := Prime(t.Context(), dir, []string{"role:investigator"})
+	require.NoError(t, err)
+	assert.NotContains(t, out, "tag-shape mismatch")
 }

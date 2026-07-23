@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -51,13 +52,31 @@ type Entry struct {
 	VerifiedAt string   `toml:"verified_at,omitempty"`
 	CreatedBy  string   `toml:"created_by,omitempty"`
 	CreatedAt  string   `toml:"created_at,omitempty"`
-	HitCount   int      `toml:"hit_count,omitempty"`
+	HitCount   int      `toml:"hit_count,omitzero"`
 
 	BodyPath string `toml:"-"`
 	Body     string `toml:"-"`
 }
 
 var scopeDirs = []string{"global", "rig", "role", "agent"}
+
+// splitFrontmatter splits raw file text into its +++-fenced frontmatter and
+// body -- the fence-finding ParseEntry and WriteBack both need. ok is false
+// (with a nil error) when text carries no +++ frontmatter at all, distinct
+// from a real parse error (an opened-but-never-closed fence).
+func splitFrontmatter(text string) (front, body string, ok bool, err error) {
+	if !strings.HasPrefix(text, fence) {
+		return "", "", false, nil
+	}
+	rest := text[len(fence):]
+	end := strings.Index(rest, "\n"+fence)
+	if end < 0 {
+		return "", "", false, fmt.Errorf("unterminated %s frontmatter", fence)
+	}
+	front = rest[:end]
+	body = strings.TrimLeft(rest[end+len("\n"+fence):], "\n")
+	return front, body, true, nil
+}
 
 // ParseEntry reads a markdown file with TOML frontmatter (+++ fences). It
 // returns errNotEntry for files that carry no frontmatter or no id.
@@ -66,17 +85,13 @@ func ParseEntry(path string) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	text := string(raw)
-	if !strings.HasPrefix(text, fence) {
+	front, body, ok, err := splitFrontmatter(string(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if !ok {
 		return nil, errNotEntry
 	}
-	rest := text[len(fence):]
-	end := strings.Index(rest, "\n"+fence)
-	if end < 0 {
-		return nil, fmt.Errorf("%s: unterminated +++ frontmatter", path)
-	}
-	front := rest[:end]
-	body := strings.TrimLeft(rest[end+len("\n"+fence):], "\n")
 
 	var e Entry
 	if _, err := toml.Decode(front, &e); err != nil {
@@ -90,13 +105,137 @@ func ParseEntry(path string) (*Entry, error) {
 	return &e, nil
 }
 
-// WriteBack re-serializes the frontmatter (+++), preserving the body.
+// WriteBack surgically patches verified_at and anchor.fingerprint into the
+// on-disk frontmatter, leaving every other line byte-for-byte untouched --
+// unlike marshal's full re-encode (used by Create, where there is no prior
+// on-disk text to preserve), WriteBack's only production caller
+// (cmd/commands.go verifyCmd) always patches an existing file, and a
+// `cairn verify` diff should show only what actually changed.
 func (e *Entry) WriteBack() error {
-	content, err := e.marshal()
+	raw, err := os.ReadFile(e.BodyPath)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(e.BodyPath, content, 0o600)
+	front, body, ok, err := splitFrontmatter(string(raw))
+	if err != nil {
+		return fmt.Errorf("%s: %w", e.BodyPath, err)
+	}
+	if !ok {
+		return fmt.Errorf("%s: %w", e.BodyPath, errNotEntry)
+	}
+
+	patched, err := patchVerification(front, e.VerifiedAt, e.Anchor.Fingerprint)
+	if err != nil {
+		return fmt.Errorf("%s (id %s): %w", e.BodyPath, e.ID, err)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fence)
+	sb.WriteString(patched)
+	sb.WriteString("\n" + fence + "\n\n")
+	sb.WriteString(body)
+	return os.WriteFile(e.BodyPath, []byte(sb.String()), 0o600)
+}
+
+// patchVerification patches verified_at (top-level) and anchor.fingerprint
+// (inside the [anchor] table) into front, a splitFrontmatter frontmatter
+// blob, in place -- every other line, including field order, indentation,
+// and empty collections like `scope = []`, passes through unchanged. front
+// must contain an [anchor] table; every entry that reaches WriteBack has one
+// (Anchor.Type is always set, even to "none"), so a missing table means
+// corruption or an unsupported hand-edit, reported as an error rather than
+// guessed at.
+func patchVerification(front, verifiedAt, fingerprint string) (string, error) {
+	lines := strings.Split(front, "\n")
+
+	anchorAt := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "[anchor]" {
+			anchorAt = i
+			break
+		}
+	}
+	if anchorAt < 0 {
+		return "", errors.New("no [anchor] table in frontmatter")
+	}
+	anchorEnd := len(lines)
+	for i := anchorAt + 1; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "[") {
+			anchorEnd = i
+			break
+		}
+	}
+
+	// Three-index slices cap capacity at each region's own length, so
+	// setTOMLLine's append (when a key is absent) always allocates a fresh
+	// backing array instead of writing through into the next region.
+	top := lines[:anchorAt:anchorAt]
+	anchor := lines[anchorAt:anchorEnd:anchorEnd]
+	rest := lines[anchorEnd:]
+
+	top = setTOMLLine(top, "verified_at", tomlQuote(verifiedAt))
+	anchor = setTOMLLine(anchor, "fingerprint", tomlQuote(fingerprint))
+
+	out := make([]string, 0, len(top)+len(anchor)+len(rest))
+	out = append(out, top...)
+	out = append(out, anchor...)
+	out = append(out, rest...)
+	return strings.Join(out, "\n"), nil
+}
+
+// tomlKeyLine matches a "key = value" line, capturing its leading
+// whitespace and bare key name.
+var tomlKeyLine = regexp.MustCompile(`^(\s*)([A-Za-z0-9_-]+)\s*=`)
+
+// setTOMLLine replaces the value on region's existing "key = value" line,
+// preserving that line's own indentation, or -- if key isn't present --
+// appends a new line at the end of region using the indentation of an
+// existing sibling key = value line there (or none, if region has no such
+// line to copy from).
+func setTOMLLine(region []string, key, quotedValue string) []string {
+	for i, l := range region {
+		if m := tomlKeyLine.FindStringSubmatch(l); m != nil && m[2] == key {
+			region[i] = m[1] + key + " = " + quotedValue
+			return region
+		}
+	}
+	indent := ""
+	for _, l := range region {
+		if m := tomlKeyLine.FindStringSubmatch(l); m != nil {
+			indent = m[1]
+			break
+		}
+	}
+	return append(region, indent+key+" = "+quotedValue)
+}
+
+// tomlQuote renders s as a TOML basic string. WriteBack's two patched values
+// (a verified_at date and a hex fingerprint) never need it in practice, but
+// the patch is line-based text surgery, not a TOML encode, so it must not
+// assume that and hand-escape only what those two callers happen to produce
+// today.
+func tomlQuote(s string) string {
+	var sb strings.Builder
+	sb.WriteByte('"')
+	for _, r := range s {
+		switch {
+		case r == '\\' || r == '"':
+			sb.WriteByte('\\')
+			sb.WriteRune(r)
+		case r == '\n':
+			sb.WriteString(`\n`)
+		case r == '\t':
+			sb.WriteString(`\t`)
+		case r == '\r':
+			sb.WriteString(`\r`)
+		case r < 0x20:
+			fmt.Fprintf(&sb, `\u%04X`, r)
+		default:
+			sb.WriteRune(r)
+		}
+	}
+	sb.WriteByte('"')
+	return sb.String()
 }
 
 // marshal renders the +++-fenced TOML frontmatter followed by the body --
@@ -210,42 +349,29 @@ func findBodyPath(ctx context.Context, db *sql.DB, id string) (string, error) {
 // must be satisfied by the identity (a subset match). Global (untagged)
 // entries are visible to all. When multiple visible entries share a
 // non-empty topic_key, only the most specific one is returned — CSS-style
-// shadowing (DESIGN.md §3). Reads the SQL index rather than entry bodies (via
-// ensureFresh's self-heal), so it never reads a body file and never touches
-// hit_count.
+// shadowing (DESIGN.md §3). Built on Status's index-backed bulk read (never
+// a body file, never touches hit_count), filtered through visibleFrom.
 func Visible(ctx context.Context, store string, identity []string) ([]*Entry, error) {
-	if err := ensureFresh(ctx, store); err != nil {
-		return nil, err
-	}
-	db, err := openDB(store)
+	all, err := Status(ctx, store)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = db.Close() }()
+	return visibleFrom(all, identity), nil
+}
 
-	tags, err := scopeTags(ctx, db)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := db.QueryContext(ctx, `SELECT id, topic_key, verified_at, created_at FROM entries`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
+// visibleFrom applies Visible's subset-match + shadowing rule to an
+// already-loaded entry list. Factored out of Visible so callers that also
+// need the full unfiltered list (e.g. Prime's scope-mismatch diagnostic,
+// crn-ln1) can load the store once via Status and derive both from a single
+// pass, instead of Visible re-querying the index a second time.
+func visibleFrom(entries []*Entry, identity []string) []*Entry {
 	idset := make(map[string]struct{}, len(identity))
 	for _, t := range identity {
 		idset[t] = struct{}{}
 	}
 
 	var out []*Entry
-	for rows.Next() {
-		e := &Entry{}
-		if err := rows.Scan(&e.ID, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt); err != nil {
-			return nil, err
-		}
-		e.Scope = tags[e.ID]
+	for _, e := range entries {
 		visible := true
 		for _, tag := range e.Scope {
 			if _, has := idset[tag]; !has {
@@ -257,10 +383,7 @@ func Visible(ctx context.Context, store string, identity []string) ([]*Entry, er
 			out = append(out, e)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return shadow(out), nil
+	return shadow(out)
 }
 
 // scopeTags loads every entry's scope tags from the index, keyed by entry id.
@@ -401,11 +524,14 @@ func scopeSuperset(super, sub []string) bool {
 
 // Status returns every entry for the freshness/shadow report `cairn status`
 // prints, reading index columns only instead of walking + parsing every body
-// (crn-6az.6.1.5). Check only ever reads e.Anchor, and ShadowMap only ever
-// reads ID, TopicKey, Scope, VerifiedAt, and CreatedAt, so those are the only
-// fields populated here — Title, Summary, Type, CreatedBy, HitCount, Body,
-// and BodyPath are left zero-valued, mirroring the judgment call Visible
-// made in crn-6az.6.1.4.
+// (crn-6az.6.1.5). It also backs Visible (via visibleFrom) and Prime's
+// scope-mismatch diagnostic (via scopeMismatchWarnings, crn-ln1), which need
+// the same bulk index read pre- and post-identity-filtering respectively.
+// Check only ever reads e.Anchor, ShadowMap only ever reads ID, TopicKey,
+// Scope, VerifiedAt, and CreatedAt, and Visible/scopeMismatchWarnings only
+// ever read those same five -- so those are the only fields populated here;
+// Title, Summary, Type, CreatedBy, HitCount, Body, and BodyPath are left
+// zero-valued for every caller.
 func Status(ctx context.Context, store string) ([]*Entry, error) {
 	if err := ensureFresh(ctx, store); err != nil {
 		return nil, err

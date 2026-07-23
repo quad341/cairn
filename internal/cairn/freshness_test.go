@@ -57,6 +57,28 @@ func TestCheckNeverVerified(t *testing.T) {
 	assert.Equal(t, Unknown, st)
 }
 
+// TestFileAnchorNonexistentPathFingerprintEmpty covers crn-6az.8.2: a
+// files anchor pointing at a path that isn't tracked at the target repo's
+// HEAD must never produce a fingerprint. Before the fix, expand()/
+// objectHash() silently fell back to a deterministic-but-meaningless
+// placeholder instead of propagating the failure, so verify would happily
+// write back a bogus fingerprint and report Fresh forever after.
+func TestFileAnchorNonexistentPathFingerprintEmpty(t *testing.T) {
+	ctx := t.Context()
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	a := Anchor{Type: "files", Repo: repo, Paths: []string{"does-not-exist.go"}}
+	assert.Empty(t, ComputeFingerprint(ctx, a),
+		"a files anchor path untracked at HEAD must not produce a fingerprint")
+
+	e := &Entry{ID: "x", Anchor: a}
+	st, detail := Check(ctx, e)
+	assert.Equalf(t, Unknown, st, "detail: %s", detail)
+}
+
 func TestFileAnchorDrift(t *testing.T) {
 	ctx := t.Context()
 	repo := t.TempDir()

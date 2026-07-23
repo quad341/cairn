@@ -13,20 +13,32 @@ LDFLAGS := -X github.com/quad341/cairn/cmd.version=$(VERSION) \
            -X github.com/quad341/cairn/cmd.commit=$(COMMIT) \
            -X github.com/quad341/cairn/cmd.date=$(DATE)
 
-.PHONY: all build test install fmt fmt-check clean help
+.PHONY: all build test install fmt fmt-check clean help formulas
 
-all: build
+all: build formulas
 
 ## build: compile the cairn binary with version metadata
 build:
 	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) .
+
+## formulas: link version-controlled formulas/ into the bd runtime dir
+## Gas City's rig setup local-excludes .beads/formulas/ (treats it as runtime),
+## so the source of truth lives under formulas/ and we symlink it into the
+## runtime dir per worktree. Idempotent; safe to re-run.
+formulas:
+	@mkdir -p .beads/formulas
+	@for f in formulas/*.formula.toml; do \
+		[ -e "$$f" ] || continue; \
+		ln -sf "../../$$f" ".beads/formulas/$$(basename "$$f")"; \
+	done
+	@echo "linked $$(ls formulas/*.formula.toml 2>/dev/null | wc -l) cairn formula(s) into .beads/formulas/"
 
 ## test: run all tests (race-enabled, matching CI)
 test:
 	go test ./... -race -count=1
 
 ## install: build and install cairn to ~/.local/bin
-install: build
+install: build formulas
 	@mkdir -p $(INSTALL_DIR)
 	@set -e; \
 	tmp="$(INSTALL_DIR)/.$(BINARY).tmp.$$$$"; \
