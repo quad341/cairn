@@ -1,0 +1,291 @@
+formula = "mol-cairn-critic"
+version = 1
+description = """
+cairn dogfood/critic loop — a self-perpetuating bd formula that, each
+iteration, mechanically stress-tests the cairn engine on ONE of 5 dimensions
+(recall, scope-precedence, freshness, perf, ergonomics), files a labeled crn-
+bead on any fail/degraded verdict, verifies that previously-filed critic-loop
+beads actually LANDED on origin/main before closing them, then pours its own
+next iteration on a cooldown cadence.
+
+Assembled from the already-landed critic-loop pieces per crn-7oa §6 (AF-3)
+and §10, modeled on this fleet's mol-witness-patrol (self-perpetuating loop
+step) and mol-feedback-harvest (cooldown var). This formula ORCHESTRATES,
+it does not re-implement: the scenarios live in internal/critic (crn-rqf.1),
+the feedback-bead taxonomy in cmd/critic_filebead.go (crn-rqf.2), and the
+squash-merge-aware landing gate in docs/plans/cairn-critic-loop-landing-
+check.md (crn-rqf.3 + crn-rqf.3.1, validator-reviewed in crn-rqf.4).
+
+Steps (6, needs-chained): select-target -> stress-test -> judge -> file-bead
+-> landing-check -> loop.
+
+## Variables
+
+| Variable   | Default            | Description |
+|------------|--------------------|-------------|
+| cooldown   | "24h"              | Intended minimum spacing between iterations (crn-7oa NFR-4 / R5: cost-bounded, not a tight poll). Advisory — like mol-feedback-harvest's `since`, real cadence is enforced by how the recurring pour is throttled at the pool/order layer, since bd formulas have no native schedule field. |
+| cairn_repo | "~/projects/cairn" | cairn engine repo where the critic scenarios (go test) run and where crn-* fixes land on origin/main. |
+"""
+
+[vars]
+[vars.cooldown]
+description = "Intended minimum spacing between critic-loop iterations, e.g. '24h', '12h' (crn-7oa NFR-4 — cost-bounded cadence, not a tight poll). Advisory; the real cadence is set by how the pour is throttled, not by a formula field."
+default = "24h"
+
+[vars.cairn_repo]
+description = "Filesystem path to the cairn engine repo. The go-test scenarios and the origin/main landing checks both run here. A leading ~ is expanded to $HOME."
+default = "~/projects/cairn"
+
+[[steps]]
+id = "select-target"
+title = "Select this iteration's critic dimension (round-robin over the 5 axes)"
+description = '''
+Pick exactly ONE of the 5 critic-loop dimensions to stress-test this
+iteration, mirroring the landed critic.SelectTarget round-robin
+(internal/critic/critic.go, crn-rqf.1). The canonical, stable rotation order
+is: recall, scope-precedence, freshness, perf, ergonomics.
+
+Round-robin (not random) is preferred so every dimension is covered within
+any 5 consecutive iterations — bounded coverage latency is the right property
+for a continuous loop. This formula keeps no persistent iteration counter, so
+derive a stateless index from the calendar (the loop runs on a ~{{cooldown}}
+cadence, so epoch-day is a monotonic counter at roughly the right
+granularity). crn-7oa UC-2 explicitly allows "rotate OR randomize" — random
+(`shuf -n1`) is a sanctioned fallback if you prefer.
+
+State for the iteration is passed between steps via a small env file (the
+same file-passing pattern mol-feedback-harvest uses), since molecule steps do
+not share a shell:
+
+  STATE_DIR="${CAIRN_CRITIC_STATE:-$HOME/.cache/cairn-critic}"; mkdir -p "$STATE_DIR"
+  ENV="$STATE_DIR/iteration.env"
+
+  DIM=$(printf 'recall\nscope-precedence\nfreshness\nperf\nergonomics\n' \
+        | sed -n "$(( $(date -u +%s) / 86400 % 5 + 1 ))p")
+
+  printf 'DIM=%s\n' "$DIM" > "$ENV"     # fresh env file for this iteration
+  echo "critic-loop: selected dimension = $DIM"
+
+Carry $DIM forward (via $ENV) to the stress-test step.
+'''
+
+[[steps]]
+id = "stress-test"
+title = "Run the selected dimension's landed scenario against a real store"
+needs = ["select-target"]
+description = '''
+Execute the landed scenario for $DIM against a REAL cairn store — never a mock
+(crn-rqf.1). Each scenario seeds its own nonce-namespaced fixtures through the
+real internal/cairn code paths (Entry.Create / Visible / freshness Check) and
+cleans up after itself; the perf scenario seeds 500 real entries for real
+scale.
+
+There is NO `cairn critic` CLI verb yet (confirmed: cmd/critic_filebead.go's
+own comment records that none exists), so the scenarios are driven through
+their landed go-test entry points — the exact same repro commands crn-rqf.2
+baked into the feedback-bead taxonomy, so what the loop runs and what a filed
+bead tells a human to run are identical.
+
+  STATE_DIR="${CAIRN_CRITIC_STATE:-$HOME/.cache/cairn-critic}"; ENV="$STATE_DIR/iteration.env"
+  . "$ENV"
+
+  CAIRN_REPO="{{cairn_repo}}"; CAIRN_REPO="${CAIRN_REPO/#\~/$HOME}"
+  cd "$CAIRN_REPO" || { echo "critic-loop: cairn repo not found at $CAIRN_REPO"; exit 1; }
+
+  case "$DIM" in
+    recall)           PKG=./internal/critic/ ; TEST=TestRunRecallScenarioPasses ;;
+    scope-precedence) PKG=./internal/critic/ ; TEST=TestRunScopePrecedenceScenarioPasses ;;
+    freshness)        PKG=./internal/critic/ ; TEST=TestRunFreshnessScenarioPasses ;;
+    perf)             PKG=./internal/critic/ ; TEST=TestRunPerfScenarioDoesNotFail ;;
+    ergonomics)       PKG=./cmd/            ; TEST=TestRunErgonomicsScenarioPasses ;;
+  esac
+
+  OUT=$(go test "$PKG" -run "$TEST" -count=1 -v 2>&1); RC=$?
+  printf '%s\n' "$OUT" > "$STATE_DIR/stress.out"
+  printf 'RC=%s\n' "$RC" >> "$ENV"
+  printf '%s\n' "$OUT"
+  echo "critic-loop: stress-test $DIM rc=$RC"
+
+`-count=1` defeats Go's test cache so every iteration re-exercises the CURRENT
+engine (a cached PASS would make the whole dogfood loop worthless). This runs
+against whatever is checked out in $CAIRN_REPO (expected to track main); it
+never mutates the working tree. Carry $DIM, $RC, and $STATE_DIR/stress.out to
+the judge step.
+'''
+
+[[steps]]
+id = "judge"
+title = "Turn the scenario's mechanical result into a pass/fail/degraded verdict"
+needs = ["stress-test"]
+description = '''
+Convert the scenario result into a mechanical verdict — no subjective / LLM
+read (crn-rqf.1, re-confirmed genuinely mechanical by validator crn-rqf.4).
+The scenarios judge mechanically already (exact set-diff for recall, exact
+ID/shape checks for scope-precedence & ergonomics, exact freshness enum, fixed
+latency thresholds for perf); the go-test return code is that verdict's coarse
+signal, and the -v output carries the precise verdict + detail.
+
+  STATE_DIR="${CAIRN_CRITIC_STATE:-$HOME/.cache/cairn-critic}"; ENV="$STATE_DIR/iteration.env"
+  . "$ENV"
+  OUT=$(cat "$STATE_DIR/stress.out")
+
+  # rc==0 => PASS. For perf, rc==0 also absorbs a DEGRADED reading: its test
+  # asserts != Fail because wall-clock timing is noisy (see perf_test.go),
+  # so a tolerated slow-but-not-failing run correctly files nothing.
+  # rc!=0 => the scenario returned Fail (or, for the 4 Pass-asserting
+  # dimensions, Degraded). testify prints the actual verdict and a
+  # "detail: <...>" line on failure — mine both out of the -v output.
+  VERDICT=pass
+  if [ "${RC:-1}" -ne 0 ]; then
+    case "$(printf '%s' "$OUT" | tr 'A-Z' 'a-z')" in
+      *degraded*) VERDICT=degraded ;;
+      *)          VERDICT=fail ;;
+    esac
+  fi
+  DETAIL=$(printf '%s\n' "$OUT" | sed -n 's/.*detail: //p' | head -1)
+  [ -z "$DETAIL" ] && DETAIL="$DIM scenario returned $VERDICT (rc=${RC:-?}); see stress-test output"
+
+  printf 'VERDICT=%s\n' "$VERDICT" >> "$ENV"
+  # base64 the detail so arbitrary punctuation survives the env round-trip
+  printf 'DETAIL_B64=%s\n' "$(printf '%s' "$DETAIL" | base64 -w0)" >> "$ENV"
+  echo "critic-loop: judge $DIM -> $VERDICT"
+
+A PASS ends this iteration's finding path (file-bead no-ops on pass, mirroring
+FileCriticBead's pass short-circuit). Carry $DIM, $VERDICT, $DETAIL forward.
+'''
+
+[[steps]]
+id = "file-bead"
+title = "File one taxonomy-shaped crn- bead on a fail/degraded verdict (none on pass)"
+needs = ["judge"]
+description = '''
+Only fail/degraded produces a bead; a pass files nothing (mirrors
+FileCriticBead's `if r.Verdict == Pass { return "", nil }`). On a finding,
+create EXACTLY one bead whose fields mirror cmd/critic_filebead.go's
+criticBeadArgs + criticBeadTaxonomy (crn-rqf.2 / crn-7oa §10) — reusing bd's
+own primitives, no new bead type, no parallel tracker. The bead gets no
+assignee/parent/custom metadata: it routes into the SAME ready-to-build /
+needs-pm pipeline as any other bead (crn-rqf.2 AC: "no special routing").
+
+  STATE_DIR="${CAIRN_CRITIC_STATE:-$HOME/.cache/cairn-critic}"; ENV="$STATE_DIR/iteration.env"
+  . "$ENV"
+  DETAIL=$(printf '%s' "${DETAIL_B64:-}" | base64 -d)
+
+  if [ "${VERDICT:-pass}" = "pass" ]; then
+    echo "critic-loop: $DIM passed — no bead filed"
+  else
+    # taxonomy rows are a verbatim transcription of criticBeadTaxonomy
+    # (cmd/critic_filebead.go): type, priority, scenario-id, repro, rationale.
+    case "$DIM" in
+      recall)           TYPE=bug;     PRIO=1; SID=recall-subset-match;                   REPRO="go test ./internal/critic/ -run TestRunRecallScenarioPasses -v";           RATIONALE="recall: Visible()'s subset-match recall served a false negative or false positive to a real identity -- wrong or silently-wrong behavior." ;;
+      scope-precedence) TYPE=bug;     PRIO=1; SID=scope-precedence-shadow-and-shadowmap; REPRO="go test ./internal/critic/ -run TestRunScopePrecedenceScenarioPasses -v"; RATIONALE="scope-precedence: shadow() or ShadowMap() resolved the wrong entry for a topic -- wrong or silently-wrong behavior." ;;
+      freshness)        TYPE=bug;     PRIO=0; SID=freshness-anchor-drift;                REPRO="go test ./internal/critic/ -run TestRunFreshnessScenarioPasses -v";        RATIONALE="freshness: Check() misreported an entry's freshness state -- a stale entry served as fresh is worse than serving none at all (DESIGN.md)." ;;
+      perf)             TYPE=task;    PRIO=2; SID=perf-visible-at-scale;                 REPRO="go test ./internal/critic/ -run TestRunPerfScenarioDoesNotFail -v";        RATIONALE="perf: Visible() at scale missed its latency threshold -- friction, not wrong, just costly." ;;
+      ergonomics)       TYPE=task;    PRIO=2; SID=ergonomics-cli-shape;                  REPRO="go test ./cmd/ -run TestRunErgonomicsScenarioPasses -v";                  RATIONALE="ergonomics: the CLI's observable behavior deviated from its documented contract -- friction, not wrong, just costly." ;;
+      *)                TYPE=feature; PRIO=3; SID="$DIM";                                REPRO="go test ./... -run TestRun -v  # dimension $DIM has no row in the taxonomy"; RATIONALE="dimension $DIM is not one of the 5 crn-7oa section 10 recognizes -- filed as a capability gap in the mapping itself, not a judgment on the verdict." ;;
+    esac
+
+    ACCEPTANCE=$(printf 'Repro: %s\n\nExpected vs. actual: %s\n\nDimension rationale: %s' "$REPRO" "$DETAIL" "$RATIONALE")
+    NEWID=$(bd create \
+      --title "critic-loop: $DIM $VERDICT ($SID)" \
+      --type "$TYPE" \
+      --priority "$PRIO" \
+      --labels "dim:$DIM,source:cairn-critic-loop" \
+      --description "The cairn dogfood critic loop's $DIM scenario ($SID) returned a $VERDICT verdict against a real store. Filed automatically (crn-7oa section 10); see --acceptance for the repro, expected-vs-actual, and dimension rationale." \
+      --acceptance "$ACCEPTANCE" \
+      --json | jq -r '.id')
+
+    printf 'FILED=%s\n' "$NEWID" >> "$ENV"
+    echo "critic-loop: filed $NEWID ($TYPE P$PRIO dim:$DIM) for $DIM $VERDICT"
+  fi
+
+(criticBeadArgs uses `--silent` and reads the id off stdout; here we use
+`--json | jq -r .id` to capture the id for the loop step's summary — same
+effect. Everything else is byte-for-byte the same argv.)
+'''
+
+[[steps]]
+id = "landing-check"
+title = "Close critic-loop beads ONLY once their fix is landing-verified on origin/main"
+needs = ["file-bead"]
+description = '''
+Before ANY critic-loop-filed bead closes, verify its fix actually landed on
+origin/main — the non-optional FR-7 gate (crn-7oa R2 / crn-rqf.3), using the
+squash-merge-aware, parens-anchored bead-id grep validated in
+docs/plans/cairn-critic-loop-landing-check.md and corrected by crn-rqf.3.1.
+This is the direct fix for the crn-wok / crn-1qb / crn-eat false-close failure
+mode (beads marked done while their code never reached main).
+
+Why this exact technique (do NOT substitute --is-ancestor or a bare --oneline
+grep): this rig squash-merges, so a branch commit is never an ancestor of the
+squashed main commit (--is-ancestor silently never fires), and cairn's PR-
+merge subjects usually carry only a PR number — the bead id survives only in
+the squashed BODY. --grep searches the full message; requiring the id ALONE
+in bare parens `(<id>)` rejects both longer-sibling-id prefixes (crn-419.1 vs
+crn-419.10) and plain-prose cross-references to a different bead (the crn-
+rqf.3.1 false-positive).
+
+Sweep this loop's own not-yet-closed beads and reconcile each:
+
+  CAIRN_REPO="{{cairn_repo}}"; CAIRN_REPO="${CAIRN_REPO/#\~/$HOME}"
+  cd "$CAIRN_REPO" || { echo "critic-loop: cairn repo not found at $CAIRN_REPO"; exit 1; }
+  git fetch origin --quiet
+
+  bd list --label=source:cairn-critic-loop --json \
+    | jq -r '.[] | select(.status != "closed") | [.id, .status] | @tsv' \
+    | while IFS="$(printf '\t')" read -r ID STATUS; do
+        PATTERN=$(printf '%s' "$ID" | sed 's/\./\\./g')
+        MATCH=$(git log origin/main -E --grep="\(${PATTERN}\)" --format="%H %s" -1)
+        if [ -n "$MATCH" ]; then
+          SHA=$(printf '%s' "$MATCH" | cut -d" " -f1)
+          SUBJ=$(printf '%s' "$MATCH" | cut -d" " -f2-)
+          bd close "$ID" --reason="landing-check: found in origin/main $SHA (\"$SUBJ\")"
+          echo "critic-loop: landing-verified + closed $ID -> $SHA"
+        else
+          # NEVER close on no-match. Leave open, append state. Escalate only
+          # beads a fix was actually attempted on (in_progress / in_review),
+          # to bound mail noise under a continuous loop (crn-7oa R5 / NFR-4);
+          # untouched-open beads just wait for the pipeline, no mail.
+          case "$STATUS" in
+            in_progress|in_review)
+              bd update "$ID" --notes="landing-check $(date -u +%Y-%m-%dT%H:%M:%SZ): no (${ID}) commit on origin/main -- NOT landed, left open"
+              gc mail send mayor "landing-check: $ID not yet landed" "Critic-loop bead $ID is in flight ($STATUS) but its fix is not on origin/main yet -- left open, needs follow-up."
+              echo "critic-loop: $ID in flight but NOT landed -- escalated"
+              ;;
+            *)
+              echo "critic-loop: $ID open, no fix landed yet -- left open (no escalation)"
+              ;;
+          esac
+        fi
+      done
+
+Invariants (crn-rqf.3 AC): not-landed NEVER closes; a landed close cites the
+exact SHA + subject as evidence, never a vague "fixed".
+'''
+
+[[steps]]
+id = "loop"
+title = "Log the iteration summary, pour the next iteration, then stop"
+needs = ["landing-check"]
+description = '''
+Iteration complete. Log a one-line summary of this pass, reading the env file
+the earlier steps wrote:
+
+  STATE_DIR="${CAIRN_CRITIC_STATE:-$HOME/.cache/cairn-critic}"; ENV="$STATE_DIR/iteration.env"
+  . "$ENV" 2>/dev/null || true
+  echo "critic-loop summary: dim=${DIM:-?} verdict=${VERDICT:-?} filed=${FILED:-none}; landing-check reconciled above (closed / in-flight / pending)."
+
+Then pour the next iteration, mirroring mol-witness-patrol's self-perpetuating
+loop step:
+
+  bd mol pour mol-cairn-critic
+
+Then STOP — do not spin immediately.
+
+Cadence: this loop is meant to run on a ~{{cooldown}} cooldown (crn-7oa NFR-4
+/ R5 — cost-bounded, not a tight poll). bd formulas have no native schedule
+field, so the spacing between iterations is enforced by how THIS pour is
+throttled at the pool / order layer — the same way packs/actual/improver
+wakes mol-feedback-harvest on a daily cooldown — NOT inside this file. Do not
+add a busy sleep here; just pour and stop.
+'''
