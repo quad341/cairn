@@ -390,3 +390,119 @@ func TestCommitToReviewBranchFailureLeavesEntryWrittenButUncommittedAndReportsEr
 	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
 		"a failed worktree add must not leave a stray worktree registered")
 }
+
+// TestCommitRecurrenceToReviewBranchCreatesBranchWhenAbsent covers
+// CommitRecurrenceToReviewBranch's fallback-to-create path (crn-28ge.1.4):
+// when the entry's own remember/<id> branch does not exist yet, it must
+// behave identically to CommitToReviewBranch itself -- exactly one commit,
+// forked from the store's pre-existing HEAD, the store's own branch/HEAD
+// left untouched.
+func TestCommitRecurrenceToReviewBranchCreatesBranchWhenAbsent(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	headBefore = strings.TrimSpace(headBefore)
+
+	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+	e.RecurrenceCount = 1
+	require.NoError(t, e.WriteBackRecurrenceCount())
+
+	branch, err := e.CommitRecurrenceToReviewBranch(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, "remember/"+e.ID, branch)
+
+	rel, err := filepath.Rel(store, e.BodyPath)
+	require.NoError(t, err)
+	changed, err := gitRun(ctx, store, "diff-tree", "--no-commit-id", "--name-only", "-r", branch)
+	require.NoError(t, err)
+	assert.Equal(t, []string{rel}, strings.Fields(changed), "the review commit must contain only the entry file")
+
+	parent, err := gitRun(ctx, store, "rev-parse", branch+"~1")
+	require.NoError(t, err)
+	assert.Equal(t, headBefore, strings.TrimSpace(parent),
+		"the fallback-to-create path must fork from the store's pre-existing HEAD and add exactly one commit on top, same as CommitToReviewBranch")
+
+	msg, err := gitRun(ctx, store, "log", "-1", "--format=%B", branch)
+	require.NoError(t, err)
+	assert.Contains(t, msg, e.ID)
+	assert.Contains(t, msg, "recurrence")
+	assert.Contains(t, msg, "count 1")
+
+	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, headBefore, strings.TrimSpace(headAfter), "the store's own HEAD must be unaffected")
+
+	worktrees, err := gitRun(ctx, store, "worktree", "list")
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1, "the scratch review worktree must be cleaned up")
+}
+
+// TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch
+// covers the ordinary case (crn-28ge.1.4): a recurrence hit almost always
+// happens while the entry's original review commit from CommitToReviewBranch
+// is still pending on its remember/<id> branch -- a recurring topic tends to
+// recur before anyone has reviewed the first report, not only after.
+// CommitRecurrenceToReviewBranch must append a second commit to that SAME
+// branch rather than fail on "branch already exists" (which reusing
+// CommitToReviewBranch as-is would do on this, the common case) or fork a
+// competing branch.
+func TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	firstBranch, err := e.CommitToReviewBranch(ctx, store)
+	require.NoError(t, err)
+	firstCommit, err := gitRun(ctx, store, "rev-parse", firstBranch)
+	require.NoError(t, err)
+	firstCommit = strings.TrimSpace(firstCommit)
+
+	branchBefore, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	headBefore = strings.TrimSpace(headBefore)
+
+	e.RecurrenceCount = 1
+	require.NoError(t, e.WriteBackRecurrenceCount())
+	branch, err := e.CommitRecurrenceToReviewBranch(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, firstBranch, branch, "a recurrence commit must reuse the entry's existing review branch, not a new one")
+
+	parent, err := gitRun(ctx, store, "rev-parse", branch+"~1")
+	require.NoError(t, err)
+	assert.Equal(t, firstCommit, strings.TrimSpace(parent),
+		"the recurrence commit must be appended on top of the original review commit, not replace or precede it, and must be the only new commit")
+
+	msg, err := gitRun(ctx, store, "log", "-1", "--format=%B", branch)
+	require.NoError(t, err)
+	assert.Contains(t, msg, e.ID)
+	assert.Contains(t, msg, "recurrence")
+	assert.Contains(t, msg, "count 1")
+
+	branchAfter, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(branchBefore), strings.TrimSpace(branchAfter),
+		"CommitRecurrenceToReviewBranch must not switch the store's checked-out branch")
+	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, headBefore, strings.TrimSpace(headAfter), "the store's own HEAD must be unaffected")
+
+	worktrees, err := gitRun(ctx, store, "worktree", "list")
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
+		"the scratch review worktree must be cleaned up, leaving only the store's own")
+}
