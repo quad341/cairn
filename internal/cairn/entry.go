@@ -139,12 +139,24 @@ func (e *Entry) WriteBackRecurrenceCount() error {
 	})
 }
 
+// WriteBackPromotedBeadID surgically patches promoted_bead_id into the
+// on-disk frontmatter -- the same "patch, don't re-encode" contract
+// WriteBack and WriteBackRecurrenceCount use. cmd/promote.go's promote-mark
+// command sets e.PromotedBeadID in memory and calls this to persist it,
+// without disturbing any other field a curator or a prior WriteBack already
+// wrote.
+func (e *Entry) WriteBackPromotedBeadID() error {
+	return e.writeBackPatched(func(front string) (string, error) {
+		return patchPromotedBeadID(front, e.PromotedBeadID)
+	})
+}
+
 // writeBackPatched is the read/split/patch/reassemble/write shell shared by
-// WriteBack and WriteBackRecurrenceCount: read the on-disk file, split it
-// into frontmatter and body, hand the frontmatter to patch, and write the
-// merged result back. Every line patch itself doesn't touch survives
-// byte-for-byte, matching WriteBack's own "surgical patch, not a full
-// re-encode" contract.
+// WriteBack, WriteBackRecurrenceCount, and WriteBackPromotedBeadID: read the
+// on-disk file, split it into frontmatter and body, hand the frontmatter to
+// patch, and write the merged result back. Every line patch itself doesn't
+// touch survives byte-for-byte, matching WriteBack's own "surgical patch,
+// not a full re-encode" contract.
 func (e *Entry) writeBackPatched(patch func(front string) (string, error)) error {
 	raw, err := os.ReadFile(e.BodyPath)
 	if err != nil {
@@ -243,6 +255,39 @@ func patchRecurrenceCount(front string, count int) (string, error) {
 	rest := lines[anchorAt:]
 
 	top = setTOMLLine(top, "recurrence_count", strconv.Itoa(count))
+
+	out := make([]string, 0, len(top)+len(rest))
+	out = append(out, top...)
+	out = append(out, rest...)
+	return strings.Join(out, "\n"), nil
+}
+
+// patchPromotedBeadID patches promoted_bead_id -- a top-level field
+// alongside verified_at and recurrence_count, not one of anchor's -- into
+// front, in place, using the same [anchor]-boundary-finding approach as
+// patchRecurrenceCount: every line at or after [anchor] passes through
+// completely unchanged, since promoted_bead_id never lives there.
+func patchPromotedBeadID(front, beadID string) (string, error) {
+	lines := strings.Split(front, "\n")
+
+	anchorAt := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "[anchor]" {
+			anchorAt = i
+			break
+		}
+	}
+	if anchorAt < 0 {
+		return "", errors.New("no [anchor] table in frontmatter")
+	}
+
+	// Three-index slice caps capacity at the region's own length, so
+	// setTOMLLine's append (when the key is absent) always allocates a fresh
+	// backing array instead of writing through into rest.
+	top := lines[:anchorAt:anchorAt]
+	rest := lines[anchorAt:]
+
+	top = setTOMLLine(top, "promoted_bead_id", tomlQuote(beadID))
 
 	out := make([]string, 0, len(top)+len(rest))
 	out = append(out, top...)

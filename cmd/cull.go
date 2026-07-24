@@ -47,7 +47,7 @@ var cullEvictCmd = &cobra.Command{
 	Short: "Evict an entry: direct delete for private scope, review-branch proposal for shared scope (NFR-07)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		e, err := cairn.EntryForEvict(cmd.Context(), storePath(), args[0])
+		e, err := cairn.EntryByID(cmd.Context(), storePath(), args[0])
 		if err != nil {
 			return fmt.Errorf("look up %s for eviction: %w", args[0], err)
 		}

@@ -310,3 +310,25 @@ func (e *Entry) CommitRecurrenceToReviewBranch(ctx context.Context, store string
 	}
 	return branch, nil
 }
+
+// CommitPromotionToReviewBranch commits e -- an existing shared-tier entry
+// whose PromotedBeadID cmd/promote.go's promote-mark command just set in
+// place -- onto its own remember/<id> review branch, the same namespace
+// CommitToReviewBranch and CommitRecurrenceToReviewBranch use. Like
+// CommitRecurrenceToReviewBranch (and for the identical reason: a
+// promotion-worthy entry's original review is often still pending exactly
+// when the librarian marks it promoted), this reuses an already-existing
+// branch -- appending a second commit to the same pending review -- falling
+// back to creating it fresh only when no such branch exists yet.
+func (e *Entry) CommitPromotionToReviewBranch(ctx context.Context, store string) (string, error) {
+	branch := reviewBranchName(e)
+	exists, err := reviewBranchExists(ctx, store, branch)
+	if err != nil {
+		return "", err
+	}
+	msg := fmt.Sprintf("remember: promote %s (bead %s)", e.ID, e.PromotedBeadID)
+	if err := e.commitToReviewWorktree(ctx, store, branch, !exists, msg); err != nil {
+		return "", err
+	}
+	return branch, nil
+}
