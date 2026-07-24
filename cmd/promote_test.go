@@ -38,7 +38,7 @@ func runPromoteMark(t *testing.T, store, id, bead string) error {
 func TestPromoteMarkPrivateTierCommitsDirectlyAndReportsSHA(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
-	e := seedCommittedEntry(t, store, "old-fact", []string{"agent:bot"})
+	e := seedCommittedEntry(t, store, []string{"agent:bot"})
 
 	var runErr error
 	stdout := captureStdout(t, func() {
@@ -62,7 +62,7 @@ func TestPromoteMarkPrivateTierCommitsDirectlyAndReportsSHA(t *testing.T) {
 func TestPromoteMarkSharedTierProposesReviewBranchAndDoesNotCommitDirectly(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
-	e := seedCommittedEntry(t, store, "old-fact", []string{"rig:web"})
+	e := seedCommittedEntry(t, store, []string{"rig:web"})
 	headBefore := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
 
 	var runErr error
@@ -102,7 +102,7 @@ func TestPromoteMarkUnknownIDReturnsClearError(t *testing.T) {
 func TestPromoteMarkRequiresBeadFlag(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
-	e := seedCommittedEntry(t, store, "old-fact", []string{"agent:bot"})
+	e := seedCommittedEntry(t, store, []string{"agent:bot"})
 
 	err := runPromoteMark(t, store, e.ID, "")
 	require.Error(t, err)
@@ -112,7 +112,7 @@ func TestPromoteMarkRequiresBeadFlag(t *testing.T) {
 func TestPromoteMarkSameBeadIDTwiceSucceedsAsNoOp(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
-	e := seedCommittedEntry(t, store, "old-fact", []string{"agent:bot"})
+	e := seedCommittedEntry(t, store, []string{"agent:bot"})
 
 	require.NoError(t, runPromoteMark(t, store, e.ID, "crn-abcd"))
 	headAfterFirst := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
@@ -131,7 +131,7 @@ func TestPromoteMarkSameBeadIDTwiceSucceedsAsNoOp(t *testing.T) {
 func TestPromoteMarkDifferentBeadIDOnAlreadyPromotedEntryErrors(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
-	e := seedCommittedEntry(t, store, "old-fact", []string{"agent:bot"})
+	e := seedCommittedEntry(t, store, []string{"agent:bot"})
 
 	require.NoError(t, runPromoteMark(t, store, e.ID, "crn-abcd"))
 
