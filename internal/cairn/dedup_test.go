@@ -298,3 +298,155 @@ func TestDedupEmptyStoreNoPanic(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }
+
+// TestConflictsTopicKeyMatch is the single-candidate primitive's topic_key
+// signal: a candidate sharing a non-empty topic_key with another visible
+// entry, with incomparable (non-superset either way) scopes -- so not
+// legitimate ShadowMap-style shadowing -- is reported as a topic_key
+// conflict. This is the "match" half of the recall-time contract ("match OR
+// similarity >= threshold", crn-28ge.1's architecture sketch).
+func TestConflictsTopicKeyMatch(t *testing.T) {
+	candidate := &Entry{ID: "rig/one", Title: "One", TopicKey: "dup-key", Scope: []string{"rig:alpha"}}
+	other := &Entry{ID: "rig/two", Title: "Two", TopicKey: "dup-key", Scope: []string{"rig:beta"}}
+
+	findings := Conflicts(candidate, []*Entry{other})
+
+	tk := dedupFindingsOfKind(findings, "topic_key")
+	require.Len(t, tk, 1)
+	assert.Equal(t, []string{"rig/one", "rig/two"}, tk[0].EntryIDs)
+	assert.Equal(t, "dup-key", tk[0].TopicKey)
+}
+
+// TestConflictsContentMatch is the "similarity" half: no shared topic_key,
+// but Title+Summary Jaccard similarity clears dedupSimilarityThreshold (the
+// same passing pair as TestSimilarityThresholdExamples).
+func TestConflictsContentMatch(t *testing.T) {
+	candidate := &Entry{
+		ID: "g/hook-a", TopicKey: "topic-a",
+		Title:   "Configuring the git pre-commit hook",
+		Summary: "Steps to enable the shared pre-commit hook for this repo",
+	}
+	other := &Entry{
+		ID: "g/hook-b", TopicKey: "topic-b",
+		Title:   "Enabling the shared pre-commit hook",
+		Summary: "How to configure the git pre-commit hook in this repo",
+	}
+
+	findings := Conflicts(candidate, []*Entry{other})
+
+	content := dedupFindingsOfKind(findings, "content")
+	require.Len(t, content, 1)
+	assert.Equal(t, []string{"g/hook-a", "g/hook-b"}, content[0].EntryIDs)
+	assert.InDelta(t, 9.0/17.0, content[0].Similarity, 0.001)
+}
+
+// TestConflictsShadowExemptionAppliesToBothSignals confirms a legitimate
+// ShadowMap-style shadowing relationship (shared topic_key, one Scope a
+// genuine superset of the other's) is exempt from both signals here, exactly
+// as it already is for Dedup's own content check: a candidate is never
+// reported as conflicting with its own intentional override/default.
+func TestConflictsShadowExemptionAppliesToBothSignals(t *testing.T) {
+	candidate := &Entry{
+		ID: "rig/hook", TopicKey: "shared-hook", Scope: []string{"rig:alpha"},
+		Title:   "Configuring the git pre-commit hook",
+		Summary: "Steps to enable the shared pre-commit hook for this repo",
+	}
+	override := &Entry{
+		ID: "role/hook", TopicKey: "shared-hook", Scope: []string{"rig:alpha", "role:builder"},
+		Title:   "Enabling the shared pre-commit hook",
+		Summary: "How to configure the git pre-commit hook in this repo",
+	}
+
+	findings := Conflicts(candidate, []*Entry{override})
+	assert.Empty(t, findings, "a genuine scope-superset relationship is legitimate shadowing, not a conflict")
+}
+
+// TestConflictsIncomparableScopesSharedKeyStillFlagged mirrors Dedup's own
+// TestDedupCrossTierSharedTopicKeyIncomparableScopesGetsContentCheck: a
+// shared topic_key with incomparable (neither-superset) scopes is not
+// legitimate shadowing, so it must still surface as a conflict.
+func TestConflictsIncomparableScopesSharedKeyStillFlagged(t *testing.T) {
+	candidate := &Entry{ID: "rig/hook", TopicKey: "shared-hook", Scope: []string{"rig:alpha"}}
+	other := &Entry{ID: "role/hook", TopicKey: "shared-hook", Scope: []string{"role:builder"}}
+
+	findings := Conflicts(candidate, []*Entry{other})
+
+	tk := dedupFindingsOfKind(findings, "topic_key")
+	require.Len(t, tk, 1)
+	assert.Equal(t, []string{"rig/hook", "role/hook"}, tk[0].EntryIDs)
+}
+
+// TestConflictsBothSignalsCanFireForSamePair confirms Conflicts is
+// deliberately NOT tier-scoped for its topic_key signal (unlike Dedup's own
+// topicKeyCollisions, which only ever compares within a single tier): a
+// candidate and another visible entry can share a topic_key AND clear the
+// content-similarity threshold at once, producing both a topic_key and a
+// content finding for the very same pair. This is intentional: Conflicts has
+// no tier partitioning to fall back on (it works over a flat "other visible
+// entries" list, not Dedup's per-tier scan), so it implements the
+// architecture doc's literal recall-time contract -- "match OR similarity >=
+// threshold" -- as two independent signals, rather than trying to
+// approximate Dedup's tier-based topic_key suppression.
+func TestConflictsBothSignalsCanFireForSamePair(t *testing.T) {
+	candidate := &Entry{
+		ID: "rig/hook", TopicKey: "shared-hook", Scope: []string{"rig:alpha"},
+		Title:   "Configuring the git pre-commit hook",
+		Summary: "Steps to enable the shared pre-commit hook for this repo",
+	}
+	other := &Entry{
+		ID: "role/hook", TopicKey: "shared-hook", Scope: []string{"role:builder"},
+		Title:   "Enabling the shared pre-commit hook",
+		Summary: "How to configure the git pre-commit hook in this repo",
+	}
+
+	findings := Conflicts(candidate, []*Entry{other})
+
+	require.Len(t, findings, 2)
+	assert.Len(t, dedupFindingsOfKind(findings, "topic_key"), 1)
+	assert.Len(t, dedupFindingsOfKind(findings, "content"), 1)
+}
+
+// TestConflictsNoSignalNoFinding: distinct topic_key, low content overlap ->
+// no conflict at all.
+func TestConflictsNoSignalNoFinding(t *testing.T) {
+	candidate := &Entry{
+		ID: "g/hook", TopicKey: "topic-a",
+		Title:   "Configuring the git pre-commit hook",
+		Summary: "Steps to enable the shared pre-commit hook for this repo",
+	}
+	other := &Entry{
+		ID: "g/deploy", TopicKey: "topic-b",
+		Title:   "Deploying the worker service to production",
+		Summary: "Rolling out a new worker build via the deploy pipeline",
+	}
+
+	assert.Empty(t, Conflicts(candidate, []*Entry{other}))
+}
+
+// TestConflictsSkipsSelf confirms a candidate that also appears in its own
+// "others" list (e.g. because it's visible under the identity used to
+// compute that list -- get's own real call pattern, see cmd/commands.go) is
+// never reported as conflicting with itself.
+func TestConflictsSkipsSelf(t *testing.T) {
+	candidate := &Entry{ID: "g/a", TopicKey: "k", Title: "A"}
+	self := &Entry{ID: "g/a", TopicKey: "k", Title: "A"}
+
+	assert.Empty(t, Conflicts(candidate, []*Entry{self}))
+}
+
+// TestConflictsMultipleOthersSorted confirms results are sorted
+// deterministically by entry-id pair across more than one "other". Scopes
+// are chosen to be genuinely incomparable pairwise (not just both-empty,
+// which would vacuously satisfy the shadow-exemption's scopeSuperset check
+// and suppress the signal entirely) so both pairs actually produce a
+// topic_key finding.
+func TestConflictsMultipleOthersSorted(t *testing.T) {
+	candidate := &Entry{ID: "g/mid", TopicKey: "k", Scope: []string{"tag:a"}}
+	other1 := &Entry{ID: "g/zzz", TopicKey: "k", Scope: []string{"tag:b"}}
+	other2 := &Entry{ID: "g/aaa", TopicKey: "k", Scope: []string{"tag:c"}}
+
+	findings := Conflicts(candidate, []*Entry{other1, other2})
+	require.Len(t, findings, 2)
+	assert.Equal(t, []string{"g/aaa", "g/mid"}, findings[0].EntryIDs)
+	assert.Equal(t, []string{"g/mid", "g/zzz"}, findings[1].EntryIDs)
+}

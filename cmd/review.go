@@ -20,6 +20,9 @@ func init() {
 	reviewMergeCmd.Flags().String("bead", "", "bead id for the merge commit message (default: the --topic-key value)")
 	reviewMergeCmd.Flags().Bool("allow-secret-pattern", false,
 		"override the secret-pattern merge guard, after confirming a false positive via 'review show'")
+	reviewMergeCmd.Flags().String("kind", "", "entry kind to set: remediation|note (default: leave as the contributor wrote it)")
+	reviewMergeCmd.Flags().Bool("auto-actionable", false,
+		"mark the entry auto-actionable (requires --kind remediation, or an entry whose existing kind is already remediation)")
 }
 
 var reviewCmd = &cobra.Command{
@@ -84,10 +87,14 @@ var reviewMergeCmd = &cobra.Command{
 		scopeRaw, _ := cmd.Flags().GetString("scope")
 		bead, _ := cmd.Flags().GetString("bead")
 		allowSecret, _ := cmd.Flags().GetBool("allow-secret-pattern")
+		kind, _ := cmd.Flags().GetString("kind")
+		autoActionable, _ := cmd.Flags().GetBool("auto-actionable")
 
 		opts := cairn.ReviewMergeOptions{
 			TopicKey:           topicKey,
 			AnchorType:         anchorType,
+			Kind:               kind,
+			AutoActionable:     autoActionable,
 			Bead:               bead,
 			AllowSecretPattern: allowSecret,
 		}

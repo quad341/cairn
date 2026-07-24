@@ -177,6 +177,33 @@ func similarity(a, b *Entry) float64 {
 	return float64(inter) / float64(union)
 }
 
+// pairSignals computes Dedup's two duplicate/conflict signals for a single
+// pair, independent of tier: sameTopicKey is an exact, non-empty topic_key
+// match; similarityScore is the Title+Summary Jaccard score (see
+// similarity); shadowExempt is true when the pair qualifies as legitimate
+// ShadowMap-style shadowing (shares a topic_key and one's Scope is a
+// genuine, non-strict superset of the other's) — entry.go's own condition
+// for "this is intentional precedence, not a duplicate"; contentMatch is
+// true iff similarityScore meets dedupSimilarityThreshold and the pair is
+// not shadowExempt.
+//
+// This is the one place both signals are computed (NFR-05): Dedup's
+// whole-store scan calls it per-pair for the content signal
+// (contentSimilarityPairs); Conflicts, the single-candidate-callable entry
+// point `cairn get` uses (and crn-28ge.1.4's capture-time check will reuse),
+// calls it for both. topicKeyCollisions' own same-tier grouping is the same
+// sameTopicKey equality relationship applied across a whole tier at once
+// (an O(n) group-by, not a pairwise scan) — restructuring it into a
+// pairwise loop just to call this function would regress it to O(n²) for no
+// behavioral gain, so it is left as is.
+func pairSignals(a, b *Entry) (sameTopicKey bool, similarityScore float64, shadowExempt bool, contentMatch bool) {
+	sameTopicKey = a.TopicKey != "" && a.TopicKey == b.TopicKey
+	similarityScore = similarity(a, b)
+	shadowExempt = sameTopicKey && (scopeSuperset(a.Scope, b.Scope) || scopeSuperset(b.Scope, a.Scope))
+	contentMatch = !shadowExempt && similarityScore >= dedupSimilarityThreshold
+	return sameTopicKey, similarityScore, shadowExempt, contentMatch
+}
+
 // contentSimilarityPairs reports every pair of shared-tier entries — any
 // tier, including cross-tier — whose Title+Summary Jaccard similarity meets
 // dedupSimilarityThreshold, skipping a pair that shares a non-empty
@@ -187,12 +214,8 @@ func contentSimilarityPairs(entries []*Entry, tierOf map[string]string) []DedupF
 	for i := range entries {
 		for j := i + 1; j < len(entries); j++ {
 			a, b := entries[i], entries[j]
-			if a.TopicKey != "" && a.TopicKey == b.TopicKey &&
-				(scopeSuperset(a.Scope, b.Scope) || scopeSuperset(b.Scope, a.Scope)) {
-				continue
-			}
-			score := similarity(a, b)
-			if score < dedupSimilarityThreshold {
+			sameKey, score, _, contentMatch := pairSignals(a, b)
+			if !contentMatch {
 				continue
 			}
 			lo, hi := a.ID, b.ID
@@ -207,7 +230,7 @@ func contentSimilarityPairs(entries []*Entry, tierOf map[string]string) []DedupF
 				"title+summary Jaccard similarity %.2f (tiers: %s, %s)",
 				score, tierOf[a.ID], tierOf[b.ID],
 			)
-			if a.TopicKey != "" && a.TopicKey == b.TopicKey {
+			if sameKey {
 				detail += fmt.Sprintf(
 					"; also share topic_key %q with incomparable scopes (not ShadowMap-legitimate shadowing)",
 					a.TopicKey,
@@ -227,6 +250,80 @@ func contentSimilarityPairs(entries []*Entry, tierOf map[string]string) []DedupF
 			return out[i].EntryIDs[0] < out[j].EntryIDs[0]
 		}
 		return out[i].EntryIDs[1] < out[j].EntryIDs[1]
+	})
+	return out
+}
+
+// Conflicts reports every Dedup-style finding between candidate and each
+// entry in others — the single-candidate-callable primitive FR-03 needs so
+// `cairn get` can surface an entry's conflicts against other visible
+// entries, and crn-28ge.1.4's capture-time check will reuse (NFR-05: built
+// on pairSignals, the same shared signal computation Dedup's whole-store
+// scan uses, not a second implementation).
+//
+// Unlike Dedup's own topic_key signal (topicKeyCollisions, which only ever
+// compares within a single tier — a cross-tier topic_key match is assumed
+// intentional shadowing), Conflicts has no tier partitioning to fall back
+// on: it works over a flat "other visible entries" list, not a per-tier
+// scan. So it implements the architecture doc's literal recall-time
+// contract — "match OR similarity >= threshold" — as two independent
+// signals, each still exempted when the pair is legitimate ShadowMap-style
+// shadowing (shadowExempt from pairSignals). A candidate can therefore end
+// up with both a topic_key and a content finding against the very same
+// other entry (see TestConflictsBothSignalsCanFireForSamePair). This is a
+// lexical proxy (topic_key/word-similarity), the same one Dedup itself
+// uses, not semantic contradiction detection.
+//
+// others is typically Visible()'s result for some identity; a candidate
+// that happens to also appear there (by ID — Visible() has no reason to
+// exclude the very entry being looked up) is skipped rather than reported
+// as conflicting with itself.
+func Conflicts(candidate *Entry, others []*Entry) []DedupFinding {
+	var out []DedupFinding
+	for _, other := range others {
+		if other.ID == candidate.ID {
+			continue
+		}
+		sameKey, score, shadowExempt, contentMatch := pairSignals(candidate, other)
+		if shadowExempt || (!sameKey && !contentMatch) {
+			continue
+		}
+		lo, hi := candidate.ID, other.ID
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+		if sameKey {
+			out = append(out, DedupFinding{
+				Kind:     "topic_key",
+				TopicKey: candidate.TopicKey,
+				EntryIDs: []string{lo, hi},
+				Detail:   fmt.Sprintf("entries %s and %s share topic_key %q", lo, hi, candidate.TopicKey),
+			})
+		}
+		if contentMatch {
+			detail := fmt.Sprintf("title+summary Jaccard similarity %.2f", score)
+			if sameKey {
+				detail += fmt.Sprintf(
+					"; also share topic_key %q with incomparable scopes (not ShadowMap-legitimate shadowing)",
+					candidate.TopicKey,
+				)
+			}
+			out = append(out, DedupFinding{
+				Kind:       "content",
+				EntryIDs:   []string{lo, hi},
+				Similarity: score,
+				Detail:     detail,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].EntryIDs[0] != out[j].EntryIDs[0] {
+			return out[i].EntryIDs[0] < out[j].EntryIDs[0]
+		}
+		if out[i].EntryIDs[1] != out[j].EntryIDs[1] {
+			return out[i].EntryIDs[1] < out[j].EntryIDs[1]
+		}
+		return out[i].Kind < out[j].Kind
 	})
 	return out
 }

@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -293,8 +294,8 @@ func IterEntries(store string) ([]*Entry, error) {
 // Find returns the entry with the given id, or ErrNotFound. It resolves via
 // the index (one point query) rather than IterEntries' walk-plus-scan, so a
 // lookup costs one SQL query and one file read regardless of store size
-// (crn-6az.6.1.3). On a hit it increments the index's hit_count (FR-4); a
-// miss has no side effect.
+// (crn-6az.6.1.3). On a hit it increments the index's hit_count and stamps
+// last_recalled_at (FR-4, FR-08); a miss has no side effect.
 func Find(ctx context.Context, store, id string) (*Entry, error) {
 	if err := ensureFresh(ctx, store); err != nil {
 		return nil, err
@@ -328,12 +329,15 @@ func Find(ctx context.Context, store, id string) (*Entry, error) {
 		return nil, err
 	}
 
-	// hit_count is index-only state (crn-6az.6.1.1): the freshly-parsed body's
-	// value is stale-by-construction, so it's always overwritten with the
-	// authoritative post-increment count rather than trusted from the file.
+	// hit_count and last_recalled_at are index-only state (crn-6az.6.1.1,
+	// crn-28ge.1.1): the freshly-parsed body's values are stale-by-construction,
+	// so both are always overwritten with the authoritative post-write values
+	// (same transaction, same RETURNING) rather than trusted from the file.
+	now := time.Now().Format(time.RFC3339)
 	err = db.QueryRowContext(ctx,
-		`UPDATE entries SET hit_count = hit_count + 1 WHERE id = ? RETURNING hit_count`, id,
-	).Scan(&e.HitCount)
+		`UPDATE entries SET hit_count = hit_count + 1, last_recalled_at = ? WHERE id = ? RETURNING hit_count, last_recalled_at`,
+		now, id,
+	).Scan(&e.HitCount, &e.LastRecalledAt)
 	if err != nil {
 		return nil, err
 	}
