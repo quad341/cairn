@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -598,6 +599,29 @@ func TestFindIncrementsHitCount(t *testing.T) {
 	assert.Equal(t, 2, hitCount, "the index's own counter must match what Find returned")
 }
 
+func TestFindStampsLastRecalledAt(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
+
+	before := time.Now().Add(-time.Second)
+	e, err := Find(ctx, store, "a")
+	require.NoError(t, err)
+	require.NotEmpty(t, e.LastRecalledAt, "Find must stamp last_recalled_at on a hit")
+
+	stamped, err := time.Parse(time.RFC3339, e.LastRecalledAt)
+	require.NoError(t, err, "last_recalled_at must be RFC3339")
+	assert.False(t, stamped.Before(before), "stamped time must be no earlier than just before the call")
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	var lastRecalledAt string
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT last_recalled_at FROM entries WHERE id = 'a'").Scan(&lastRecalledAt))
+	assert.Equal(t, e.LastRecalledAt, lastRecalledAt, "the index's own column must match what Find returned")
+}
+
 func TestFindUsesIndexPointLookupNotWalk(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
@@ -719,6 +743,33 @@ func TestVisibleNeverTouchesHitCount(t *testing.T) {
 	assert.Equal(t, 7, got, "Visible must never touch hit_count")
 }
 
+func TestVisibleNeverTouchesLastRecalledAt(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	_, err := Visible(t.Context(), dir, nil)
+	require.NoError(t, err)
+
+	// Simulate a prior Find/Get having stamped last_recalled_at independently
+	// of the body -- exactly the index-only state Visible must leave alone,
+	// since it only ever issues SELECTs (same scoping as hit_count).
+	db, err := openDB(dir)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `UPDATE entries SET last_recalled_at = '2026-01-01T00:00:00Z' WHERE id = 'g'`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = Visible(t.Context(), dir, nil)
+	require.NoError(t, err)
+
+	db, err = openDB(dir)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	var got string
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT last_recalled_at FROM entries WHERE id = 'g'`).Scan(&got))
+	assert.Equal(t, "2026-01-01T00:00:00Z", got, "Visible must never touch last_recalled_at")
+}
+
 func TestStatusNeverTouchesHitCount(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "global/g.md", globalEntry)
@@ -741,6 +792,30 @@ func TestStatusNeverTouchesHitCount(t *testing.T) {
 	var got int
 	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT hit_count FROM entries WHERE id = 'g'`).Scan(&got))
 	assert.Equal(t, 7, got, "Status must never touch hit_count")
+}
+
+func TestStatusNeverTouchesLastRecalledAt(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+
+	_, err := Status(t.Context(), dir)
+	require.NoError(t, err)
+
+	db, err := openDB(dir)
+	require.NoError(t, err)
+	_, err = db.ExecContext(t.Context(), `UPDATE entries SET last_recalled_at = '2026-01-01T00:00:00Z' WHERE id = 'g'`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	_, err = Status(t.Context(), dir)
+	require.NoError(t, err)
+
+	db, err = openDB(dir)
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	var got string
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT last_recalled_at FROM entries WHERE id = 'g'`).Scan(&got))
+	assert.Equal(t, "2026-01-01T00:00:00Z", got, "Status must never touch last_recalled_at")
 }
 
 func TestStatusPopulatesAnchorAndScopeFields(t *testing.T) {
