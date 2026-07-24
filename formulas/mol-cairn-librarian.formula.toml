@@ -265,13 +265,25 @@ title = "File a bd bead for every cairn recurrence-promotion candidate, deduplic
 needs = ["dedup-candidate-beads"]
 description = '''
 Run the read-only recurrence-promotion detector (crn-28ge.1.6) and turn every
-finding into exactly one open bd bead proposing a durable fix (FR-07).
+finding into exactly one open bd bead proposing a durable fix (FR-07), then
+immediately persists the promotion via "cairn promote-mark <entry-id> --bead
+<bead-id>" using the ID "bd create" just returned -- mirrors how
+crn-28ge.1.4's capture-time recurrence path calls WriteBackRecurrenceCount
+right after incrementing RecurrenceCount, one layer up in this formula step
+instead of Go code (crn-ghn8.2).
 "Not a duplicate per cycle" comes from checking bd for an already-open bead
 whose title contains this finding's bracket-delimited entry anchor before
-creating a new one -- the same idiom the other steps above already use. This
-step only ever calls "cairn promote-candidates" (read-only) and "bd
-list"/"bd create" (bd's own store) -- it never merges, deletes, or rewrites a
-cairn entry, per crn-xw3 guardrail 8.
+creating a new one -- the same idiom the other steps above already use; that
+same check also keeps "cairn promote-mark" from ever being re-attempted for
+an entry a prior cycle already marked, since an already-tracked finding
+short-circuits the whole iteration before either call runs. This step calls
+"cairn promote-candidates" (read-only), "bd list"/"bd create" (bd's own
+store), and "cairn promote-mark" -- the last of these does mutate the
+entry's promoted_bead_id, but only through the same tier-conditional
+dispatch crn-ghn8.1 shipped for every other automated bookkeeping field: a
+direct commit for private/agent-tier entries, a review-branch proposal for
+shared (rig/global) tier -- never a direct rewrite of a shared-tier entry
+outside that review flow, per crn-xw3 guardrail 8.
 
 Each finding's anchor_repo names the repo/tracker the recurring topic
 actually belongs to, which is very often NOT the repo this sweep happens to
@@ -326,6 +338,11 @@ there if it differs from where this bead landed, then close this proposal
 once the durable fix is tracked in the right place.
 BODY
     )
+
+    if ! cairn promote-mark "$ENTRY_ID" --bead "$NEW_ID" --store "$STORE"; then
+      echo "cairn promote-mark $ENTRY_ID --bead $NEW_ID failed (bead filed; promotion mark not persisted)" >&2
+    fi
+
     echo "filed $NEW_ID for $ENTRY_ID ($TOPIC_KEY -> $ANCHOR_REPO)"
     FILED=$((FILED + 1))
   done < <(cairn promote-candidates --store "$STORE" | jq -c '.[]')
