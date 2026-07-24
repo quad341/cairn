@@ -170,3 +170,46 @@ func sendCullReviewMail(ctx context.Context, reviewer string, e *cairn.Entry, br
 		e.ID, e.TopicKey, strings.Join(e.Scope, " "), branch)
 	return mailSend(ctx, reviewer, subject, body)
 }
+
+// requestPromotionReview hands a promotion mark off for review -- e's scope
+// has already resolved away from the private agent tier, so DESIGN.md §7's
+// curation model applies to a promotion mark exactly as it does to any other
+// shared-tier mutation. Mirrors requestReview/requestCullReview's three-step
+// shape (commit to review branch, resolve a reviewer, mail). Callers must
+// only invoke this for a scope that has already resolved away from the
+// private agent tier.
+func requestPromotionReview(cmd *cobra.Command, e *cairn.Entry) error {
+	tier, value := cairn.ResolvedTier(e.Scope)
+
+	branch, err := e.CommitPromotionToReviewBranch(cmd.Context(), storePath())
+	if err != nil {
+		return fmt.Errorf("commit promotion mark to review branch: %w", err)
+	}
+	fmt.Printf("review branch: %s\n", branch)
+
+	reviewer, err := resolveReviewer(cmd, tier, value)
+	if err != nil {
+		return fmt.Errorf("entry %s committed to review branch %s, but resolving a reviewer to mail failed: %w", e.ID, branch, err)
+	}
+	if err := sendPromotionReviewMail(cmd.Context(), reviewer, e, branch); err != nil {
+		return fmt.Errorf("entry %s committed to review branch %s, but mail to reviewer %q failed: %w", e.ID, branch, reviewer, err)
+	}
+	fmt.Printf("mailed reviewer: %s\n", reviewer)
+	return nil
+}
+
+// sendPromotionReviewMail mirrors sendReviewMail's wording, not
+// sendCullReviewMail's: a promotion-mark branch is a content change to an
+// entry that already exists on the store's default branch, not a deletion,
+// so a reviewer merges it the same way as any other pending remember/
+// recurrence branch -- with `cairn review merge`, which review.go's
+// patchFrontmatterFields never touches promoted_bead_id for, so no
+// special-casing is needed at merge time either.
+func sendPromotionReviewMail(ctx context.Context, reviewer string, e *cairn.Entry, branch string) error {
+	subject := fmt.Sprintf("cairn promotion review: %s", e.TopicKey)
+	body := fmt.Sprintf(
+		"Cairn entry %s (topic %q, scope %s) has been marked promoted to bead %s and is ready for review.\n\n"+
+			"Branch: %s\n\nMerge with `cairn review merge %s --topic-key %s` when satisfied; this branch does not auto-merge.",
+		e.ID, e.TopicKey, strings.Join(e.Scope, " "), e.PromotedBeadID, branch, branch, e.TopicKey)
+	return mailSend(ctx, reviewer, subject, body)
+}
