@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// CullCandidateFinding is one entry disused past the configured threshold
+// (FR-10/NFR-06): DisusedSince is LastRecalledAt if the entry was ever
+// recalled, else CreatedAt.
 type CullCandidateFinding struct {
 	EntryID        string   `json:"entry_id"`
 	TopicKey       string   `json:"topic_key,omitempty"`

@@ -51,7 +51,8 @@ func (e *Entry) EvictDirect(ctx context.Context, store string) (string, error) {
 		return "", fmt.Errorf("git rm %s (entry not evicted -- retry): %w", rel, err)
 	}
 	if _, err := gitRun(ctx, store, "commit", "-m", "cull: evict "+e.ID, "--", rel); err != nil {
-		return "", fmt.Errorf("git commit eviction of %s (removed from working tree and staged but not committed -- retry or restore with `git checkout HEAD -- %s`): %w", rel, rel, err)
+		return "", fmt.Errorf("git commit eviction of %s (removed from working tree and staged but not "+
+			"committed -- retry or restore with `git checkout HEAD -- %s`): %w", rel, rel, err)
 	}
 	sha, err := gitRun(ctx, store, "rev-parse", "HEAD")
 	if err != nil {
