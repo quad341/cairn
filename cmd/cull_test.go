@@ -27,9 +27,9 @@ func gitCommitAll(t *testing.T, dir, msg string) {
 // EvictToReviewBranch operate via `git rm` on an already-tracked file,
 // unlike remember's add-only commit primitives, so the fixture must be
 // committed, not just written.
-func seedCommittedEntry(t *testing.T, store, topic string, scope []string) *cairn.Entry {
+func seedCommittedEntry(t *testing.T, store string, scope []string) *cairn.Entry {
 	t.Helper()
-	e, err := cairn.NewEntry(topic, scope, "a body", "agent:bot")
+	e, err := cairn.NewEntry("old-fact", scope, "a body", "agent:bot")
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	gitCommitAll(t, store, "add "+e.ID)
@@ -62,7 +62,7 @@ func runCullEvict(t *testing.T, store, id string, extraArgs ...string) error {
 func TestCullEvictPrivateTierDeletesDirectlyAndReportsSHA(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
-	e := seedCommittedEntry(t, store, "old-fact", []string{"agent:bot"})
+	e := seedCommittedEntry(t, store, []string{"agent:bot"})
 
 	var runErr error
 	stdout := captureStdout(t, func() {
@@ -85,7 +85,7 @@ func TestCullEvictPrivateTierDeletesDirectlyAndReportsSHA(t *testing.T) {
 func TestCullEvictSharedTierProposesReviewBranchAndDoesNotDeleteDirectly(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
-	e := seedCommittedEntry(t, store, "old-fact", []string{"rig:web"})
+	e := seedCommittedEntry(t, store, []string{"rig:web"})
 
 	var runErr error
 	stdout := captureStdout(t, func() {

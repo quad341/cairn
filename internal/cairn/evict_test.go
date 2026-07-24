@@ -10,12 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestEntryForEvictDoesNotStampRecallTelemetry(t *testing.T) {
+func TestEntryByIDDoesNotStampRecallTelemetry(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
 	writeFile(t, store, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
 
-	e, err := EntryForEvict(ctx, store, "a")
+	e, err := EntryByID(ctx, store, "a")
 	require.NoError(t, err)
 	assert.Equal(t, "a", e.ID)
 	assert.Equal(t, 0, e.HitCount)
@@ -23,13 +23,13 @@ func TestEntryForEvictDoesNotStampRecallTelemetry(t *testing.T) {
 
 	raw, err := os.ReadFile(e.BodyPath)
 	require.NoError(t, err)
-	assert.NotContains(t, string(raw), "hit_count", "EntryForEvict must not stamp recall telemetry (hit_count/last_recalled_at) as a side effect -- it would corrupt the very disuse signal CullCandidates measures")
+	assert.NotContains(t, string(raw), "hit_count", "EntryByID must not stamp recall telemetry (hit_count/last_recalled_at) as a side effect -- it would corrupt the very disuse signal CullCandidates measures")
 }
 
-func TestEntryForEvictNotFound(t *testing.T) {
+func TestEntryByIDNotFound(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
-	_, err := EntryForEvict(ctx, store, "missing")
+	_, err := EntryByID(ctx, store, "missing")
 	require.ErrorIs(t, err, ErrNotFound)
 }
 

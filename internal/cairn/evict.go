@@ -8,12 +8,14 @@ import (
 	"strings"
 )
 
-// EntryForEvict looks up id for eviction, bypassing Find's hit_count/
+// EntryByID looks up id directly, bypassing Find's hit_count/
 // last_recalled_at side effect: stamping recall telemetry while deciding
-// whether to evict an entry would corrupt the very disuse signal
-// CullCandidates measures. Mirrors cmd/remember.go's recurrenceMatch, which
-// bypasses Find for the identical reason.
-func EntryForEvict(ctx context.Context, store, id string) (*Entry, error) {
+// whether to mutate an entry (evict it, or mark it promoted) would corrupt
+// the very disuse signal CullCandidates measures. Mirrors cmd/remember.go's
+// recurrenceMatch, which bypasses Find for the identical reason. Shared by
+// cmd/cull.go's cull-evict and cmd/promote.go's promote-mark -- both look up
+// an entry to mutate, neither should count as a recall.
+func EntryByID(ctx context.Context, store, id string) (*Entry, error) {
 	if err := ensureFresh(ctx, store); err != nil {
 		return nil, err
 	}

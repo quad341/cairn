@@ -506,3 +506,119 @@ func TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch(t *te
 	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
 		"the scratch review worktree must be cleaned up, leaving only the store's own")
 }
+
+// TestCommitPromotionToReviewBranchCreatesBranchWhenAbsent covers
+// CommitPromotionToReviewBranch's fallback-to-create path (crn-ghn8.1): when
+// the entry's own remember/<id> branch does not exist yet, it must behave
+// identically to CommitToReviewBranch itself -- exactly one commit, forked
+// from the store's pre-existing HEAD, the store's own branch/HEAD left
+// untouched. Mirrors TestCommitRecurrenceToReviewBranchCreatesBranchWhenAbsent
+// one field over.
+func TestCommitPromotionToReviewBranchCreatesBranchWhenAbsent(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	headBefore = strings.TrimSpace(headBefore)
+
+	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+	e.PromotedBeadID = "crn-abcd"
+	require.NoError(t, e.WriteBackPromotedBeadID())
+
+	branch, err := e.CommitPromotionToReviewBranch(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, "remember/"+e.ID, branch)
+
+	rel, err := filepath.Rel(store, e.BodyPath)
+	require.NoError(t, err)
+	changed, err := gitRun(ctx, store, "diff-tree", "--no-commit-id", "--name-only", "-r", branch)
+	require.NoError(t, err)
+	assert.Equal(t, []string{rel}, strings.Fields(changed), "the review commit must contain only the entry file")
+
+	parent, err := gitRun(ctx, store, "rev-parse", branch+"~1")
+	require.NoError(t, err)
+	assert.Equal(t, headBefore, strings.TrimSpace(parent),
+		"the fallback-to-create path must fork from the store's pre-existing HEAD and add exactly one commit on top, same as CommitToReviewBranch")
+
+	msg, err := gitRun(ctx, store, "log", "-1", "--format=%B", branch)
+	require.NoError(t, err)
+	assert.Contains(t, msg, e.ID)
+	assert.Contains(t, msg, "promote")
+	assert.Contains(t, msg, "crn-abcd")
+
+	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, headBefore, strings.TrimSpace(headAfter), "the store's own HEAD must be unaffected")
+
+	worktrees, err := gitRun(ctx, store, "worktree", "list")
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1, "the scratch review worktree must be cleaned up")
+}
+
+// TestCommitPromotionToReviewBranchAppendsSecondCommitToExistingBranch covers
+// the ordinary case (crn-ghn8.1): a promotion frequently happens while the
+// entry's original review commit from CommitToReviewBranch is still pending
+// on its remember/<id> branch. CommitPromotionToReviewBranch must append a
+// second commit to that SAME branch rather than fail on "branch already
+// exists" or fork a competing branch -- mirrors
+// TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch one
+// field over.
+func TestCommitPromotionToReviewBranchAppendsSecondCommitToExistingBranch(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	firstBranch, err := e.CommitToReviewBranch(ctx, store)
+	require.NoError(t, err)
+	firstCommit, err := gitRun(ctx, store, "rev-parse", firstBranch)
+	require.NoError(t, err)
+	firstCommit = strings.TrimSpace(firstCommit)
+
+	branchBefore, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	headBefore = strings.TrimSpace(headBefore)
+
+	e.PromotedBeadID = "crn-abcd"
+	require.NoError(t, e.WriteBackPromotedBeadID())
+	branch, err := e.CommitPromotionToReviewBranch(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, firstBranch, branch, "a promotion commit must reuse the entry's existing review branch, not a new one")
+
+	parent, err := gitRun(ctx, store, "rev-parse", branch+"~1")
+	require.NoError(t, err)
+	assert.Equal(t, firstCommit, strings.TrimSpace(parent),
+		"the promotion commit must be appended on top of the original review commit, not replace or precede it, and must be the only new commit")
+
+	msg, err := gitRun(ctx, store, "log", "-1", "--format=%B", branch)
+	require.NoError(t, err)
+	assert.Contains(t, msg, e.ID)
+	assert.Contains(t, msg, "promote")
+	assert.Contains(t, msg, "crn-abcd")
+
+	branchAfter, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(branchBefore), strings.TrimSpace(branchAfter),
+		"CommitPromotionToReviewBranch must not switch the store's checked-out branch")
+	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, headBefore, strings.TrimSpace(headAfter), "the store's own HEAD must be unaffected")
+
+	worktrees, err := gitRun(ctx, store, "worktree", "list")
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
+		"the scratch review worktree must be cleaned up, leaving only the store's own")
+}
