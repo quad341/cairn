@@ -58,6 +58,27 @@ func runRememberWithGC(t *testing.T, stub func(*testing.T), extraArgs ...string)
 	return store, rootCmd.Execute()
 }
 
+// runRememberAgainstStore runs "cairn remember" (plus extraArgs) against an
+// already-existing, already-git-initialized store, for tests that need two
+// remember calls to land in the same store (crn-28ge.1.4's capture-time
+// recurrence detection): runRemember/runRememberWithGC each mint their own
+// fresh store per call, which can't exercise it -- the second call must see
+// the first call's own entry as VISIBLE and already committed. Callers own
+// the store's lifecycle (t.TempDir + gitInit) since, unlike a single-call
+// test, more than one invocation needs to agree on it.
+func runRememberAgainstStore(t *testing.T, store string, extraArgs ...string) error {
+	t.Helper()
+	resetRememberFlags(t)
+	t.Cleanup(func() { resetRememberFlags(t) })
+
+	stubGC(t)
+	args := append([]string{"remember", "--store", store}, extraArgs...)
+	rootCmd.SetArgs(args)
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	return rootCmd.Execute()
+}
+
 // gitInit turns dir into a git repo with a resolvable HEAD -- an empty
 // initial commit, not just `git init`, since a shared-tier remember call's
 // review branch is created via `git worktree add -b branch wt HEAD`, which
@@ -166,7 +187,7 @@ func readStubGCArgs(t *testing.T, captureFile string) []string {
 
 func resetRememberFlags(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"topic", "scope"} {
+	for _, name := range []string{"topic", "scope", "reviewer"} {
 		f := rememberCmd.Flags().Lookup(name)
 		require.NotNil(t, f)
 		require.NoError(t, f.Value.Set(""))
@@ -565,4 +586,251 @@ func TestRememberCLIRoundTripAllFields(t *testing.T) {
 	assert.Equal(t, "rig:alpha agent:bot", e.CreatedBy, "created_by must be the CLI's resolved identity, space-joined -- not collapsed like scope")
 	_, err = time.Parse(time.DateOnly, e.CreatedAt)
 	assert.NoError(t, err, "created_at must be an ISO-8601 date")
+}
+
+// TestRememberCrossCallSharedTierRecurrenceReusesReviewBranch covers
+// crn-28ge.1.4's primary end-to-end path: a second remember call sharing an
+// exact topic_key with an already-visible entry, but an incomparable (not
+// equal, not superset/subset) scope, must be detected as a recurrence of
+// that entry -- not written as a second, separate entry -- and the resulting
+// RecurrenceCount bump must land on the SAME remember/<id> review branch the
+// entry's own first-capture review commit already created, as a second
+// commit, rather than fail on a branch-already-exists collision. That
+// collision isn't a rare edge case: requestReview creates remember/<id> for
+// every shared-tier entry at its own creation time, so it is the
+// deterministic, 100%-of-the-time state for any entry that could ever become
+// a recurrence match. See internal/cairn's
+// TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch for
+// the same fix exercised directly against the git primitive; this proves
+// RunE actually wires it up end to end.
+func TestRememberCrossCallSharedTierRecurrenceReusesReviewBranch(t *testing.T) {
+	t.Setenv("CAIRN_IDENTITY", "rig:web role:reviewer")
+	store := t.TempDir()
+	gitInit(t, store)
+
+	firstOut := captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "rig:web", "configure the shared hook")
+		require.NoError(t, err)
+	})
+	firstLines := strings.Split(strings.TrimSpace(firstOut), "\n")
+	require.Len(t, firstLines, 3, "first call is an ordinary new shared-tier entry: id, review branch, mailed reviewer")
+	e1 := requireSingleEntry(t, filepath.Join(store, "rig", "web"))
+	branch := "remember/" + e1.ID
+	firstCommit := strings.TrimSpace(gitOutput(t, store, "rev-parse", branch))
+
+	secondOut := captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "role:reviewer", "configure the shared hook")
+		require.NoError(t, err)
+	})
+	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
+	require.Len(t, secondLines, 2, "a recurrence hit prints the recurrence line then the review-branch line -- no id line for a discarded candidate, no mailed-reviewer line")
+	assert.Equal(t, "recurrence: "+e1.ID+" (count: 1)", secondLines[0])
+	assert.Equal(t, "review branch: "+branch, secondLines[1])
+
+	entries, err := os.ReadDir(filepath.Join(store, "rig", "web"))
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "a recurrence hit must not write a duplicate entry file")
+
+	e1After, err := cairn.ParseEntry(e1.BodyPath)
+	require.NoError(t, err)
+	assert.Equal(t, 1, e1After.RecurrenceCount, "the matched entry's on-disk RecurrenceCount must be incremented")
+
+	secondParent := strings.TrimSpace(gitOutput(t, store, "rev-parse", branch+"~1"))
+	assert.Equal(t, firstCommit, secondParent, "the recurrence commit must append directly on top of the original review commit, not fail or fork a new one")
+}
+
+// TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly covers
+// crn-28ge.1.4's private-tier path: a second remember call from a different
+// agent, sharing an exact topic_key with an already-visible (cross-agent)
+// private-tier entry, increments that entry's RecurrenceCount and commits
+// the change straight to the store's current branch via CommitDirect -- the
+// private tier's ordinary commit path, exactly as its own first-capture
+// commit used.
+func TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+
+	t.Setenv("CAIRN_IDENTITY", "agent:bob")
+	firstOut := captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:bob", "prefer feature flags over env vars")
+		require.NoError(t, err)
+	})
+	firstLines := strings.Split(strings.TrimSpace(firstOut), "\n")
+	require.Len(t, firstLines, 2, "first call is an ordinary new private-tier entry: id, commit SHA")
+	e1 := requireSingleEntry(t, filepath.Join(store, "agent", "bob"))
+	headBefore := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
+	assert.Equal(t, headBefore, firstLines[1])
+
+	// A second agent, but with an --identity broad enough to also see
+	// agent:bob's entry (Visible is a subset match: every scope tag on the
+	// entry -- here just "agent:bob" -- must be in the resolved identity).
+	t.Setenv("CAIRN_IDENTITY", "agent:bob agent:alice")
+	secondOut := captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:alice", "prefer feature flags over env vars")
+		require.NoError(t, err)
+	})
+	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
+	require.Len(t, secondLines, 2, "a recurrence hit prints the recurrence line then the commit SHA")
+	assert.Equal(t, "recurrence: "+e1.ID+" (count: 1)", secondLines[0])
+
+	headAfter := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
+	assert.Equal(t, headAfter, secondLines[1], "the recurrence commit's SHA must be the store's new HEAD")
+	assert.NotEqual(t, headBefore, headAfter, "a second, real commit must have landed")
+
+	parent := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD~1"))
+	assert.Equal(t, headBefore, parent, "the recurrence commit must land directly on top of the entry's first-capture commit")
+
+	e1After, err := cairn.ParseEntry(e1.BodyPath)
+	require.NoError(t, err)
+	assert.Equal(t, 1, e1After.RecurrenceCount)
+
+	entries, err := os.ReadDir(filepath.Join(store, "agent", "bob"))
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "a recurrence hit must not write a duplicate entry file")
+	assert.NoDirExists(t, filepath.Join(store, "agent", "alice"),
+		"a recurrence hit must never create the discarded candidate's own scope directory, since Create is never called")
+}
+
+// TestRememberSameScopeTopicKeyRepeatDoesNotIncrementRecurrence documents a
+// discovered limitation of reusing Conflicts exactly as crn-28ge.1.4's own
+// AC mandates (NFR-05, no independent equality check): two entries sharing
+// both an exact topic_key AND an equal (or superset/subset) scope are
+// "shadow exempt" in Conflicts' own signal computation (pairSignals,
+// internal/cairn/dedup.go) -- deliberately built for cairn get's
+// shadow-vs-conflict distinction (crn-28ge.1.3) -- which silently suppresses
+// ANY finding for that pair, topic_key included. So the single most
+// intuitive recurrence scenario, an agent re-capturing the exact same fact
+// under its own single private scope, is NOT detected here: the second call
+// falls through to today's unchanged create-new-entry behavior, producing
+// two separate entries rather than one entry with RecurrenceCount
+// incremented. This is a real, deliberately-accepted gap, not a bug in this
+// test or in this bead's own code -- see the bead's notes for the recommended
+// follow-up against crn-28ge.1.3 (tighten pairSignals' shadowExempt to
+// require strict specificity, mirroring bestShadower's moreSpecific
+// tie-break, instead of a bare non-strict scopeSuperset).
+func TestRememberSameScopeTopicKeyRepeatDoesNotIncrementRecurrence(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("CAIRN_IDENTITY", "agent:test")
+
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "prefer feature flags over env vars")
+		require.NoError(t, err)
+	})
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "prefer feature flags over env vars")
+		require.NoError(t, err)
+	})
+
+	entries, err := os.ReadDir(filepath.Join(store, "agent", "test"))
+	require.NoError(t, err)
+	assert.Len(t, entries, 2, "KNOWN LIMITATION: equal-scope same-topic_key repeats are shadow-exempt in Conflicts and so are never detected as a recurrence -- each call creates its own separate entry")
+	for _, ent := range entries {
+		parsed, err := cairn.ParseEntry(filepath.Join(store, "agent", "test", ent.Name()))
+		require.NoError(t, err)
+		assert.Equal(t, 0, parsed.RecurrenceCount, "neither entry's RecurrenceCount is ever incremented on this path")
+	}
+}
+
+// TestRememberNearMissTopicKeyDoesNotIncrementRecurrence proves Conflicts'
+// "content" (Jaccard word-similarity) finding is correctly ignored by
+// recurrenceMatch even when it fires: two calls with different topic_key but
+// identical body text produce a real content-signal finding (the same
+// signal `cairn get` surfaces as a soft "this looks similar" hint), but a
+// similar-but-different topic is a near-miss, not a repeat -- only an exact
+// topic_key match (crn-28ge.1.4's AC) may increment RecurrenceCount. Safe to
+// use the SAME scope for both calls here: shadowExempt requires
+// sameTopicKey as a precondition (internal/cairn/dedup.go's pairSignals), so
+// two different topic_keys are never shadow-exempt regardless of scope, and
+// the content signal is exercised cleanly, unlike
+// TestRememberSameScopeTopicKeyRepeatDoesNotIncrementRecurrence's same-topic_key
+// case where shadow exemption would mask it either way.
+func TestRememberNearMissTopicKeyDoesNotIncrementRecurrence(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("CAIRN_IDENTITY", "agent:test")
+
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "prefer feature flags over env vars")
+		require.NoError(t, err)
+	})
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "build-flags-alt", "--scope", "agent:test", "prefer feature flags over env vars")
+		require.NoError(t, err)
+	})
+
+	entries, err := os.ReadDir(filepath.Join(store, "agent", "test"))
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "a near-miss topic_key must never be treated as a recurrence, even though the content signal fires")
+	for _, ent := range entries {
+		parsed, err := cairn.ParseEntry(filepath.Join(store, "agent", "test", ent.Name()))
+		require.NoError(t, err)
+		assert.Equal(t, 0, parsed.RecurrenceCount)
+	}
+}
+
+// TestRememberEmptyTopicNeverMatchesForRecurrence covers the AC's own edge
+// case: candidate.TopicKey == "" never matches anything, since pairSignals'
+// sameTopicKey requires a non-empty key on both sides -- so an untopiced
+// remember is entirely unaffected by crn-28ge.1.4, matching today's
+// behavior exactly, even for two calls with identical scope and body.
+func TestRememberEmptyTopicNeverMatchesForRecurrence(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("CAIRN_IDENTITY", "agent:test")
+
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--scope", "agent:test", "a body with no topic")
+		require.NoError(t, err)
+	})
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--scope", "agent:test", "a body with no topic")
+		require.NoError(t, err)
+	})
+
+	entries, err := os.ReadDir(filepath.Join(store, "agent", "test"))
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "two topic-less remembers must always create two separate entries")
+	for _, ent := range entries {
+		parsed, err := cairn.ParseEntry(filepath.Join(store, "agent", "test", ent.Name()))
+		require.NoError(t, err)
+		assert.Equal(t, "", parsed.TopicKey)
+		assert.Equal(t, 0, parsed.RecurrenceCount)
+	}
+}
+
+// TestRememberRecurrenceRequiresVisibleMatch proves recurrenceMatch only
+// ever considers entries VISIBLE to the resolved identity (crn-28ge.1.4's
+// AC), not every entry in the store: E1 is captured under scope
+// role:reviewer; an identity of just rig:web can't see it (Visible is a
+// subset match -- every scope tag on the entry must be in the identity's own
+// tag set, and role:reviewer isn't in {rig:web}) -- even though E1's scope
+// IS genuinely incomparable with the second call's rig:web scope, the same
+// mechanism that lets TestRememberCrossCallSharedTierRecurrenceReusesReviewBranch
+// detect a match. This isolates visibility as the one variable under test.
+func TestRememberRecurrenceRequiresVisibleMatch(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+
+	t.Setenv("CAIRN_IDENTITY", "role:reviewer")
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "role:reviewer", "configure the shared hook")
+		require.NoError(t, err)
+	})
+	e1 := requireSingleEntry(t, filepath.Join(store, "role", "reviewer"))
+
+	t.Setenv("CAIRN_IDENTITY", "rig:web")
+	secondOut := captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "rig:web", "configure the shared hook")
+		require.NoError(t, err)
+	})
+	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
+	require.Len(t, secondLines, 3, "invisible to this identity, E1 can't be matched -- the second call is an ordinary new shared-tier entry: id, review branch, mailed reviewer")
+
+	e2 := requireSingleEntry(t, filepath.Join(store, "rig", "web"))
+	assert.NotEqual(t, e1.ID, e2.ID)
+
+	e1After, err := cairn.ParseEntry(e1.BodyPath)
+	require.NoError(t, err)
+	assert.Equal(t, 0, e1After.RecurrenceCount, "E1 must be untouched: it was never visible to the second call's identity")
 }

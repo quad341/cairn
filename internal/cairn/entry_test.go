@@ -365,6 +365,159 @@ func TestWriteBackMissingAnchorTableErrorsWithoutWriting(t *testing.T) {
 	assert.Equal(t, string(before), string(after), "a failed WriteBack must leave the file byte-identical -- no partial write")
 }
 
+func TestWriteBackRecurrenceCountRoundTrip(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", sampleEntry)
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+
+	e.RecurrenceCount = 5
+	require.NoError(t, e.WriteBackRecurrenceCount())
+
+	e2, err := ParseEntry(p)
+	require.NoError(t, err)
+	assert.Equal(t, 5, e2.RecurrenceCount)
+	assert.Equal(t, e.ID, e2.ID)
+	assert.Equal(t, e.Body, e2.Body)
+}
+
+const writeBackFixtureNoRecurrence = `+++
+id = "wb/no-recurrence"
+title = "NoRecurrence"
+summary = "s"
+type = "reference"
+topic_key = "wb/no-recurrence"
+scope = []
+
+[anchor]
+type = "files"
+repo = "/tmp/x"
+paths = ["a.go"]
++++
+
+body text
+`
+
+// TestWriteBackRecurrenceCountFirstIncrementAppendsAndPreservesRest mirrors
+// TestWriteBackFirstVerifyInsertsAndPreservesRest one field over: a first-ever
+// increment (recurrence_count absent) must insert it immediately before
+// [anchor] -- the same insertion point patchVerification uses for
+// verified_at, since both are top-level fields patched via the same
+// [anchor]-boundary-finding shape -- while every other original line
+// survives verbatim.
+func TestWriteBackRecurrenceCountFirstIncrementAppendsAndPreservesRest(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureNoRecurrence)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+	require.Equal(t, 0, e.RecurrenceCount, "fixture must start with no recurrence_count")
+
+	e.RecurrenceCount = 1
+	require.NoError(t, e.WriteBackRecurrenceCount())
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+
+	beforeLines := strings.Split(string(before), "\n")
+	afterLines := strings.Split(string(after), "\n")
+	for _, l := range beforeLines {
+		if l == "" {
+			continue
+		}
+		assert.Contains(t, afterLines, l, "every original line must survive verbatim: %q", l)
+	}
+	assert.Contains(t, string(after), "scope = []", "empty scope must not be dropped or reformatted")
+
+	idx := func(lines []string, target string) int {
+		for i, l := range lines {
+			if l == target {
+				return i
+			}
+		}
+		return -1
+	}
+	anchorAt := idx(afterLines, "[anchor]")
+	rcAt := idx(afterLines, "recurrence_count = 1")
+	require.NotEqual(t, -1, anchorAt)
+	require.NotEqual(t, -1, rcAt)
+	assert.Equal(t, anchorAt-1, rcAt, "recurrence_count must be inserted immediately before [anchor]")
+
+	e2, err := ParseEntry(p)
+	require.NoError(t, err)
+	assert.Equal(t, 1, e2.RecurrenceCount)
+	assert.Equal(t, "body text\n", e2.Body)
+}
+
+const writeBackFixtureRecurrenceAlreadySet = `+++
+id = "wb/recurrence-set"
+title = "RecurrenceSet"
+scope = []
+recurrence_count = 3
+
+[anchor]
+type = "files"
+repo = "/tmp/x"
++++
+
+body text
+`
+
+// TestWriteBackRecurrenceCountSecondIncrementUpdatesInPlace mirrors
+// TestWriteBackSecondVerifyUpdatesInPlace: recurrence_count already present
+// must update in place with zero line-count delta, not grow the file or
+// reorder anything.
+func TestWriteBackRecurrenceCountSecondIncrementUpdatesInPlace(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureRecurrenceAlreadySet)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+	beforeLines := strings.Split(string(before), "\n")
+
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+	require.Equal(t, 3, e.RecurrenceCount)
+
+	e.RecurrenceCount = 4
+	require.NoError(t, e.WriteBackRecurrenceCount())
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	afterLines := strings.Split(string(after), "\n")
+
+	require.Equal(t, len(beforeLines), len(afterLines), "an in-place update must not change the line count")
+	for i := range beforeLines {
+		if strings.Contains(beforeLines[i], "recurrence_count") {
+			continue
+		}
+		assert.Equal(t, beforeLines[i], afterLines[i], "line %d is unrelated to the patched field and must be byte-identical", i)
+	}
+	assert.NotContains(t, string(after), "recurrence_count = 3")
+	assert.Contains(t, string(after), "recurrence_count = 4")
+}
+
+// TestWriteBackRecurrenceCountMissingAnchorTableErrorsWithoutWriting mirrors
+// TestWriteBackMissingAnchorTableErrorsWithoutWriting, reusing the same
+// no-[anchor] fixture: WriteBackRecurrenceCount shares writeBackPatched's
+// same hard-failure path, so it must behave identically -- an error naming
+// the entry id, and the file left exactly as it was, never a partial write.
+func TestWriteBackRecurrenceCountMissingAnchorTableErrorsWithoutWriting(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureNoAnchor)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+
+	e.RecurrenceCount = 1
+	err = e.WriteBackRecurrenceCount()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), e.ID, "the error must name the entry id")
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "a failed WriteBackRecurrenceCount must leave the file byte-identical -- no partial write")
+}
+
 const (
 	globalEntry = "+++\nid = \"g\"\ntitle = \"g\"\nscope = []\n+++\nx\n"
 	alphaEntry  = "+++\nid = \"r\"\ntitle = \"r\"\nscope = [\"rig:alpha\"]\n+++\nx\n"
