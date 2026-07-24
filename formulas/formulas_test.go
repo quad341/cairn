@@ -130,3 +130,64 @@ func TestLibrarianRigFormulaHasSameStepsAsLibrarian(t *testing.T) {
 		}
 	}
 }
+
+// promote-candidate-beads and cull-candidate-beads (crn-28ge.1.8) must follow
+// the same "check bd for an already-tracked bead before creating a new one"
+// idiom the other three sweep steps already use (crn-28ge.1.11) -- otherwise
+// re-running the loop against an unchanged findings set files a duplicate
+// bead every cycle instead of a no-op skip.
+func TestLibrarianPromoteAndCullStepsSkipWhenAlreadyTracked(t *testing.T) {
+	f := decodeFormula(t, "mol-cairn-librarian.formula.toml")
+
+	for _, tc := range []struct {
+		stepID string
+		label  string
+	}{
+		{"promote-candidate-beads", "dim:promote,source:cairn-librarian"},
+		{"cull-candidate-beads", "dim:cull,source:cairn-librarian"},
+	} {
+		s, ok := stepByID(f, tc.stepID)
+		if !ok {
+			t.Fatalf("mol-cairn-librarian.formula.toml: no %q step found", tc.stepID)
+		}
+
+		if !strings.Contains(s.Description, `ANCHOR="[entry:${ENTRY_ID}]"`) {
+			t.Errorf("%s: must build a stable per-entry ANCHOR token, or the dedup check and the eventual bd create could target different findings", tc.stepID)
+		}
+		if !strings.Contains(s.Description, "bd list --label="+tc.label) {
+			t.Errorf("%s: must check `bd list --label=%s --title-contains=$ANCHOR` for an already-tracked bead, or a second sweep pass over an unchanged finding files a duplicate", tc.stepID, tc.label)
+		}
+		if !strings.Contains(s.Description, `if [ -n "$EXISTING" ]; then`) {
+			t.Errorf("%s: must skip once EXISTING is already set, or a second sweep pass over an unchanged finding files a duplicate", tc.stepID)
+		}
+	}
+}
+
+// cairn cull-evict itself is not safely repeatable for the same entry --
+// EvictToReviewBranch hard-errors once a proposal is already pending, since
+// its review branch name is deterministic ("cull/" + entry ID; see
+// internal/cairn.TestEvictToReviewBranchRefusesWhenProposalAlreadyPending).
+// So cull-candidate-beads' idempotency is an ordering property, not just a
+// presence one: the EXISTING dedup-check-and-skip must run BEFORE "cairn
+// cull-evict" is invoked, or a second sweep pass over an unchanged finding
+// hard-errors every cycle instead of quietly skipping.
+func TestLibrarianCullStepChecksExistingBeforeCallingCullEvict(t *testing.T) {
+	f := decodeFormula(t, "mol-cairn-librarian.formula.toml")
+	s, ok := stepByID(f, "cull-candidate-beads")
+	if !ok {
+		t.Fatal(`mol-cairn-librarian.formula.toml: no "cull-candidate-beads" step found`)
+	}
+
+	existingIdx := strings.Index(s.Description, `if [ -n "$EXISTING" ]; then`)
+	cullEvictIdx := strings.Index(s.Description, `cairn cull-evict "$ENTRY_ID"`)
+
+	if existingIdx == -1 {
+		t.Fatal(`cull-candidate-beads: no EXISTING dedup-check found`)
+	}
+	if cullEvictIdx == -1 {
+		t.Fatal(`cull-candidate-beads: no "cairn cull-evict" call found`)
+	}
+	if existingIdx > cullEvictIdx {
+		t.Error(`cull-candidate-beads: the EXISTING dedup-check-and-skip must run BEFORE "cairn cull-evict" is called, since a second call for an already-proposed entry hard-errors instead of no-op'ing`)
+	}
+}
