@@ -132,3 +132,41 @@ func mailSend(ctx context.Context, to, subject, body string) error {
 	}
 	return nil
 }
+
+// requestCullReview proposes e's eviction on a review branch and mails the
+// tier-appropriate reviewer -- mirrors requestReview, applied to a delete
+// instead of an add. Callers must only invoke this for a scope that has
+// already resolved away from the private agent tier.
+func requestCullReview(cmd *cobra.Command, e *cairn.Entry) error {
+	tier, value := cairn.ResolvedTier(e.Scope)
+
+	branch, err := e.EvictToReviewBranch(cmd.Context(), storePath())
+	if err != nil {
+		return fmt.Errorf("propose shared-tier eviction on a review branch: %w", err)
+	}
+	fmt.Printf("cull review branch: %s\n", branch)
+
+	reviewer, err := resolveReviewer(cmd, tier, value)
+	if err != nil {
+		return fmt.Errorf("entry %s proposed for eviction on branch %s, but resolving a reviewer to mail failed: %w", e.ID, branch, err)
+	}
+	if err := sendCullReviewMail(cmd.Context(), reviewer, e, branch); err != nil {
+		return fmt.Errorf("entry %s proposed for eviction on branch %s, but mail to reviewer %q failed: %w", e.ID, branch, reviewer, err)
+	}
+	fmt.Printf("mailed reviewer: %s\n", reviewer)
+	return nil
+}
+
+// sendCullReviewMail mirrors sendReviewMail, with cull-specific wording: the
+// branch deletes the entry rather than adding one, and a reviewer merges it
+// with plain git (cairn review merge cannot handle a pure-deletion branch).
+func sendCullReviewMail(ctx context.Context, reviewer string, e *cairn.Entry, branch string) error {
+	subject := fmt.Sprintf("cairn cull review: %s", e.TopicKey)
+	body := fmt.Sprintf(
+		"Cairn entry %s (topic %q, scope %s) is proposed for eviction (disuse).\n\n"+
+			"Branch: %s\n\nThis branch deletes the entry's file. Merge it with plain git "+
+			"(not `cairn review merge`, which does not handle a pure-deletion branch) when satisfied; "+
+			"it does not auto-merge. Reject by simply not merging (or deleting the branch) to keep the entry.",
+		e.ID, e.TopicKey, strings.Join(e.Scope, " "), branch)
+	return mailSend(ctx, reviewer, subject, body)
+}
