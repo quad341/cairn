@@ -518,6 +518,160 @@ func TestWriteBackRecurrenceCountMissingAnchorTableErrorsWithoutWriting(t *testi
 	assert.Equal(t, string(before), string(after), "a failed WriteBackRecurrenceCount must leave the file byte-identical -- no partial write")
 }
 
+func TestWriteBackPromotedBeadIDRoundTrip(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", sampleEntry)
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+
+	e.PromotedBeadID = "crn-abcd"
+	require.NoError(t, e.WriteBackPromotedBeadID())
+
+	e2, err := ParseEntry(p)
+	require.NoError(t, err)
+	assert.Equal(t, "crn-abcd", e2.PromotedBeadID)
+	assert.Equal(t, e.ID, e2.ID)
+	assert.Equal(t, e.Body, e2.Body)
+}
+
+const writeBackFixtureNoPromotedBeadID = `+++
+id = "wb/no-promoted"
+title = "NoPromoted"
+summary = "s"
+type = "reference"
+topic_key = "wb/no-promoted"
+scope = []
+
+[anchor]
+type = "files"
+repo = "/tmp/x"
+paths = ["a.go"]
++++
+
+body text
+`
+
+// TestWriteBackPromotedBeadIDFirstSetAppendsAndPreservesRest mirrors
+// TestWriteBackRecurrenceCountFirstIncrementAppendsAndPreservesRest one field
+// over: a first-ever promotion (promoted_bead_id absent) must insert it
+// immediately before [anchor] -- the same insertion point patchVerification
+// and patchRecurrenceCount use, since all three are top-level fields patched
+// via the same [anchor]-boundary-finding shape -- while every other original
+// line survives verbatim.
+func TestWriteBackPromotedBeadIDFirstSetAppendsAndPreservesRest(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureNoPromotedBeadID)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+	require.Empty(t, e.PromotedBeadID, "fixture must start with no promoted_bead_id")
+
+	e.PromotedBeadID = "crn-abcd"
+	require.NoError(t, e.WriteBackPromotedBeadID())
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+
+	beforeLines := strings.Split(string(before), "\n")
+	afterLines := strings.Split(string(after), "\n")
+	for _, l := range beforeLines {
+		if l == "" {
+			continue
+		}
+		assert.Contains(t, afterLines, l, "every original line must survive verbatim: %q", l)
+	}
+	assert.Contains(t, string(after), "scope = []", "empty scope must not be dropped or reformatted")
+
+	idx := func(lines []string, target string) int {
+		for i, l := range lines {
+			if l == target {
+				return i
+			}
+		}
+		return -1
+	}
+	anchorAt := idx(afterLines, "[anchor]")
+	pbAt := idx(afterLines, `promoted_bead_id = "crn-abcd"`)
+	require.NotEqual(t, -1, anchorAt)
+	require.NotEqual(t, -1, pbAt)
+	assert.Equal(t, anchorAt-1, pbAt, "promoted_bead_id must be inserted immediately before [anchor]")
+
+	e2, err := ParseEntry(p)
+	require.NoError(t, err)
+	assert.Equal(t, "crn-abcd", e2.PromotedBeadID)
+	assert.Equal(t, "body text\n", e2.Body)
+}
+
+const writeBackFixturePromotedBeadIDAlreadySet = `+++
+id = "wb/promoted-set"
+title = "PromotedSet"
+scope = []
+promoted_bead_id = "crn-old1"
+
+[anchor]
+type = "files"
+repo = "/tmp/x"
++++
+
+body text
+`
+
+// TestWriteBackPromotedBeadIDSecondSetUpdatesInPlace mirrors
+// TestWriteBackRecurrenceCountSecondIncrementUpdatesInPlace: promoted_bead_id
+// already present must update in place with zero line-count delta, not grow
+// the file or reorder anything.
+func TestWriteBackPromotedBeadIDSecondSetUpdatesInPlace(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixturePromotedBeadIDAlreadySet)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+	beforeLines := strings.Split(string(before), "\n")
+
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+	require.Equal(t, "crn-old1", e.PromotedBeadID)
+
+	e.PromotedBeadID = "crn-new2"
+	require.NoError(t, e.WriteBackPromotedBeadID())
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	afterLines := strings.Split(string(after), "\n")
+
+	require.Equal(t, len(beforeLines), len(afterLines), "an in-place update must not change the line count")
+	for i := range beforeLines {
+		if strings.Contains(beforeLines[i], "promoted_bead_id") {
+			continue
+		}
+		assert.Equal(t, beforeLines[i], afterLines[i], "line %d is unrelated to the patched field and must be byte-identical", i)
+	}
+	assert.NotContains(t, string(after), "crn-old1")
+	assert.Contains(t, string(after), `promoted_bead_id = "crn-new2"`)
+}
+
+// TestWriteBackPromotedBeadIDMissingAnchorTableErrorsWithoutWriting mirrors
+// TestWriteBackRecurrenceCountMissingAnchorTableErrorsWithoutWriting, reusing
+// the same no-[anchor] fixture: WriteBackPromotedBeadID shares
+// writeBackPatched's same hard-failure path, so it must behave identically --
+// an error naming the entry id, and the file left exactly as it was, never a
+// partial write.
+func TestWriteBackPromotedBeadIDMissingAnchorTableErrorsWithoutWriting(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureNoAnchor)
+	before, err := os.ReadFile(p)
+	require.NoError(t, err)
+
+	e, err := ParseEntry(p)
+	require.NoError(t, err)
+
+	e.PromotedBeadID = "crn-abcd"
+	err = e.WriteBackPromotedBeadID()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), e.ID, "the error must name the entry id")
+
+	after, err := os.ReadFile(p)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "a failed WriteBackPromotedBeadID must leave the file byte-identical -- no partial write")
+}
+
 const (
 	globalEntry = "+++\nid = \"g\"\ntitle = \"g\"\nscope = []\n+++\nx\n"
 	alphaEntry  = "+++\nid = \"r\"\ntitle = \"r\"\nscope = [\"rig:alpha\"]\n+++\nx\n"
