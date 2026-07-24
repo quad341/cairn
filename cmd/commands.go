@@ -96,7 +96,60 @@ var getCmd = &cobra.Command{
 		}
 		fmt.Printf("%s: %s\n", e.ID, e.Title)
 		fmt.Printf("topic: %s  scope: %s\n", topic, scope)
-		fmt.Printf("freshness: %s — %s\n\n", st, detail)
+		fmt.Printf("freshness: %s — %s\n", st, detail)
+
+		kind := e.Kind
+		if kind == "" {
+			kind = "note"
+		}
+		fmt.Printf("kind: %s  auto_actionable: %t\n", kind, e.AutoActionable)
+
+		identity := resolveIdentity(cmd)
+		visible, err := cairn.Visible(cmd.Context(), storePath(), identity)
+		if err != nil {
+			return err
+		}
+		// Visible only populates the fields shadow/scope resolution needs
+		// (ID, TopicKey, Scope, VerifiedAt, CreatedAt, Anchor) — Title and
+		// Summary are always zero-valued there, which would make Conflicts'
+		// content-similarity signal silently never match. IterEntries fully
+		// parses every entry (the same data source Dedup itself scans), so
+		// resolving the visible ID set against it gives Conflicts real
+		// Title/Summary data without the hit_count side effect a per-ID
+		// Find call would have on every other visible entry.
+		visibleIDs := make(map[string]bool, len(visible))
+		for _, v := range visible {
+			visibleIDs[v.ID] = true
+		}
+		all, err := cairn.IterEntries(storePath())
+		if err != nil {
+			return err
+		}
+		others := make([]*cairn.Entry, 0, len(visibleIDs))
+		for _, full := range all {
+			if visibleIDs[full.ID] {
+				others = append(others, full)
+			}
+		}
+		conflicts := cairn.Conflicts(e, others)
+		if len(conflicts) == 0 {
+			fmt.Println("conflicts: none")
+		} else {
+			fmt.Printf("conflicts: %d\n", len(conflicts))
+			for _, c := range conflicts {
+				other := c.EntryIDs[0]
+				if other == e.ID {
+					other = c.EntryIDs[1]
+				}
+				if c.Kind == "content" {
+					fmt.Printf("  - %s: %s (similarity %.2f)\n", c.Kind, other, c.Similarity)
+				} else {
+					fmt.Printf("  - %s: %s\n", c.Kind, other)
+				}
+			}
+		}
+
+		fmt.Println()
 		fmt.Print(e.Body)
 		return nil
 	},
