@@ -450,3 +450,105 @@ func TestConflictsMultipleOthersSorted(t *testing.T) {
 	assert.Equal(t, []string{"g/aaa", "g/mid"}, findings[0].EntryIDs)
 	assert.Equal(t, []string{"g/mid", "g/zzz"}, findings[1].EntryIDs)
 }
+
+// entryByID pulls one parsed *Entry out of IterEntries' result by ID, for
+// tests that need Conflicts to run against the exact same parsed data a
+// Dedup(dir) call over the same directory just saw -- rather than a
+// hand-typed struct literal that could silently drift from the on-disk
+// fixture.
+func entryByID(t *testing.T, all []*Entry, id string) *Entry {
+	t.Helper()
+	for _, e := range all {
+		if e.ID == id {
+			return e
+		}
+	}
+	require.Failf(t, "entry not found", "no entry with id %q in IterEntries result", id)
+	return nil
+}
+
+// TestConflictsMatchesDedupForContentSignal is NFR-05's regression guard for
+// the content signal: Conflicts and Dedup both derive it from the same
+// pairSignals/similarity core (dedup.go's pairSignals doc comment), so for a
+// pair that trips only the content signal, both entry points must agree on
+// Kind, EntryIDs, and -- the number that actually matters here, since it is
+// the one a silent fork in the math would change -- Similarity.
+//
+// The fixture is deliberately a cross-tier pair with distinct topic_keys, so
+// neither the topic_key signal nor its tier-scoping/shadow-exemption
+// asymmetry between the two functions (TestConflictsBothSignalsCanFireForSamePair)
+// is in play; this isolates the one signal both functions compute the same
+// way. Tier and Detail are not compared: Conflicts has no tier context (see
+// its doc comment), so its Tier is always "" and its Detail omits tier info
+// by design, not by regression -- asserting those equal would test an
+// intentional difference, not the invariant NFR-05 cares about.
+func TestConflictsMatchesDedupForContentSignal(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/a.md", minimalEntry(
+		"g/hook-a", "Configuring the git pre-commit hook",
+		"Steps to enable the shared pre-commit hook for this repo", "topic-a", "[]"))
+	writeFile(t, dir, "global/b.md", minimalEntry(
+		"g/hook-b", "Enabling the shared pre-commit hook",
+		"How to configure the git pre-commit hook in this repo", "topic-b", "[]"))
+
+	dedupFindings, err := Dedup(dir)
+	require.NoError(t, err)
+	dedupContent := dedupFindingsOfKind(dedupFindings, "content")
+	require.Len(t, dedupContent, 1)
+	require.Empty(t, dedupFindingsOfKind(dedupFindings, "topic_key"), "fixture must not also trip the topic_key signal, or it stops isolating the content guard")
+
+	all, err := IterEntries(dir)
+	require.NoError(t, err)
+	a := entryByID(t, all, "g/hook-a")
+	b := entryByID(t, all, "g/hook-b")
+
+	conflictsFindings := Conflicts(a, []*Entry{b})
+	conflictsContent := dedupFindingsOfKind(conflictsFindings, "content")
+	require.Len(t, conflictsContent, 1)
+	require.Empty(t, dedupFindingsOfKind(conflictsFindings, "topic_key"))
+
+	assert.Equal(t, dedupContent[0].Kind, conflictsContent[0].Kind)
+	assert.Equal(t, dedupContent[0].EntryIDs, conflictsContent[0].EntryIDs)
+	assert.Equal(t, dedupContent[0].Similarity, conflictsContent[0].Similarity,
+		"the Jaccard score must agree exactly -- both callers feed it from the same pairSignals/similarity() call (NFR-05); a mismatch here means the extraction silently forked the math")
+}
+
+// TestConflictsMatchesDedupForTopicKeySignal is NFR-05's regression guard for
+// the topic_key signal: a same-tier collision with incomparable (non-superset
+// either way) scopes -- so not legitimate ShadowMap shadowing by either
+// function's own rule -- must be flagged by both Dedup's tier-scoped
+// topicKeyCollisions and Conflicts' pairwise check, both ultimately driven by
+// the sameTopicKey/shadowExempt values pairSignals computes.
+//
+// The fixture is deliberately same-tier: a cross-tier shared key is Dedup's
+// shadowing case (topicKeyCollisions never compares across tiers, so it's
+// never flagged there) but Conflicts, having no tier partitioning, does flag
+// it (TestConflictsBothSignalsCanFireForSamePair) -- a documented,
+// intentional asymmetry, not the regression this test guards against. A
+// same-tier pair is the one place both functions are expected to agree.
+func TestConflictsMatchesDedupForTopicKeySignal(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "rig/alpha/one.md", minimalEntry("rig/one", "One", "s1", "dup-key", `["rig:alpha"]`))
+	writeFile(t, dir, "rig/beta/two.md", minimalEntry("rig/two", "Two", "s2", "dup-key", `["rig:beta"]`))
+
+	dedupFindings, err := Dedup(dir)
+	require.NoError(t, err)
+	dedupTK := dedupFindingsOfKind(dedupFindings, "topic_key")
+	require.Len(t, dedupTK, 1)
+	require.Empty(t, dedupFindingsOfKind(dedupFindings, "content"), "fixture must not also trip the content signal, or it stops isolating the topic_key guard")
+
+	all, err := IterEntries(dir)
+	require.NoError(t, err)
+	a := entryByID(t, all, "rig/one")
+	b := entryByID(t, all, "rig/two")
+
+	conflictsFindings := Conflicts(a, []*Entry{b})
+	conflictsTK := dedupFindingsOfKind(conflictsFindings, "topic_key")
+	require.Len(t, conflictsTK, 1)
+	require.Empty(t, dedupFindingsOfKind(conflictsFindings, "content"))
+
+	assert.Equal(t, dedupTK[0].Kind, conflictsTK[0].Kind)
+	assert.Equal(t, dedupTK[0].TopicKey, conflictsTK[0].TopicKey)
+	assert.ElementsMatch(t, dedupTK[0].EntryIDs, conflictsTK[0].EntryIDs,
+		"both entry points must identify exactly the same colliding pair for this candidate")
+}
