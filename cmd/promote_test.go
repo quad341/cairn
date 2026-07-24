@@ -23,14 +23,13 @@ func resetPromoteMarkFlags(t *testing.T) {
 
 // runPromoteMark executes "cairn promote-mark <id> --bead <bead>" against
 // the shared rootCmd, stubbing gc to always succeed. Mirrors runCullEvict.
-func runPromoteMark(t *testing.T, store, id, bead string, extraArgs ...string) error {
+func runPromoteMark(t *testing.T, store, id, bead string) error {
 	t.Helper()
 	resetPromoteMarkFlags(t)
 	t.Cleanup(func() { resetPromoteMarkFlags(t) })
 
 	stubGC(t)
-	args := append([]string{"promote-mark", "--store", store, id, "--bead", bead}, extraArgs...)
-	rootCmd.SetArgs(args)
+	rootCmd.SetArgs([]string{"promote-mark", "--store", store, id, "--bead", bead})
 	rootCmd.SetOut(&bytes.Buffer{})
 	rootCmd.SetErr(&bytes.Buffer{})
 	return rootCmd.Execute()
@@ -64,6 +63,7 @@ func TestPromoteMarkSharedTierProposesReviewBranchAndDoesNotCommitDirectly(t *te
 	store := t.TempDir()
 	gitInit(t, store)
 	e := seedCommittedEntry(t, store, "old-fact", []string{"rig:web"})
+	headBefore := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
 
 	var runErr error
 	stdout := captureStdout(t, func() {
@@ -71,15 +71,17 @@ func TestPromoteMarkSharedTierProposesReviewBranchAndDoesNotCommitDirectly(t *te
 	})
 	require.NoError(t, runErr)
 
-	e2, err := cairn.ParseEntry(e.BodyPath)
+	headAfter := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
+	assert.Equal(t, headBefore, headAfter, "a shared-tier promote-mark must NOT commit the mutation to the store's own branch")
+
+	rel, err := filepath.Rel(store, e.BodyPath)
 	require.NoError(t, err)
-	assert.Empty(t, e2.PromotedBeadID, "a shared-tier promote-mark must NOT mutate the entry on the store's own branch")
+	committed := gitOutput(t, store, "show", "HEAD:"+filepath.ToSlash(rel))
+	assert.NotContains(t, committed, "promoted_bead_id", "the store's own HEAD must not contain the promotion mark")
 
 	branch := "remember/" + e.ID
 	gitOutput(t, store, "rev-parse", "--verify", branch)
 
-	rel, err := filepath.Rel(store, e.BodyPath)
-	require.NoError(t, err)
 	content := gitOutput(t, store, "show", branch+":"+filepath.ToSlash(rel))
 	assert.Contains(t, content, `promoted_bead_id = "crn-abcd"`, "the review branch's commit must contain the promotion mark")
 
