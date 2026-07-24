@@ -224,3 +224,91 @@ func TestMapRejectsStrayPositionalArgs(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "role:pm")
 }
+
+func TestGetShowsKindAndAutoActionable(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md",
+		"+++\nid = \"g/a\"\ntitle = \"A\"\nkind = \"remediation\"\nauto_actionable = true\nscope = []\n+++\nbody\n")
+
+	out, err := execRoot("get", "g/a", "--store", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "kind: remediation")
+	assert.Contains(t, out, "auto_actionable: true")
+}
+
+func TestGetDefaultsKindToNoteWhenUnset(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md", "+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n+++\nbody\n")
+
+	out, err := execRoot("get", "g/a", "--store", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "kind: note")
+	assert.Contains(t, out, "auto_actionable: false")
+}
+
+func TestGetNoConflictsWhenNoneVisible(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md", "+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n+++\nbody\n")
+
+	out, err := execRoot("get", "g/a", "--store", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "conflicts: none")
+}
+
+// TestGetReportsTopicKeyConflict seeds two entries sharing a topic_key with
+// incomparable scopes (neither a superset of the other -- not legitimate
+// ShadowMap shadowing) and confirms `cairn get` on one reports a conflict
+// against the other. role/hook is the one Visible()'s cruder tag-count
+// shadow() would otherwise drop (it loses the lexical-id tiebreak against
+// rig/hook at equal scope length) -- fetching it directly via get bypasses
+// that (Find doesn't filter by scope/shadow at all), while rig/hook, the
+// shadow "winner", survives into the --identity-scoped Visible() list get
+// uses to compute conflicts against.
+func TestGetReportsTopicKeyConflict(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "rig/alpha/hook.md",
+		"+++\nid = \"rig/hook\"\ntitle = \"Configuring the hook\"\ntopic_key = \"shared-hook\"\nscope = [\"rig:alpha\"]\n+++\nbody\n")
+	seedEntry(t, dir, "role/builder/hook.md",
+		"+++\nid = \"role/hook\"\ntitle = \"Totally unrelated deploy pipeline notes\"\ntopic_key = \"shared-hook\"\nscope = [\"role:builder\"]\n+++\nbody\n")
+
+	out, err := execRoot("get", "role/hook", "--store", dir, "--identity", "rig:alpha,role:builder")
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "conflicts: 1")
+	assert.Contains(t, out, "rig/hook")
+}
+
+// TestGetReportsContentConflict uses TestSimilarityThresholdExamples' own
+// passing pair (distinct topic_keys, so the topic_key signal never engages)
+// to exercise get's content-similarity conflict reporting end to end. Both
+// entries are global (empty scope), so no --identity is needed for either to
+// be visible; g/hook-a is naturally included in its own Visible() output too
+// (get's real call pattern), which is what exercises Conflicts' self-skip.
+func TestGetReportsContentConflict(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md",
+		"+++\nid = \"g/hook-a\"\ntitle = \"Configuring the git pre-commit hook\"\nsummary = \"Steps to enable the shared pre-commit hook for this repo\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nbody\n")
+	seedEntry(t, dir, "global/b.md",
+		"+++\nid = \"g/hook-b\"\ntitle = \"Enabling the shared pre-commit hook\"\nsummary = \"How to configure the git pre-commit hook in this repo\"\ntopic_key = \"topic-b\"\nscope = []\n+++\nbody\n")
+
+	out, err := execRoot("get", "g/hook-a", "--store", dir)
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "conflicts: 1")
+	assert.Contains(t, out, "g/hook-b")
+}
