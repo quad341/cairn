@@ -18,7 +18,7 @@ crn-ghn8.1), cherry-picked as the range `58ffab6..537eb7e` (7 commits) onto
 |---|-----------|--------|----------|
 | 1 | Review PASS present for the deployed commit | PASS | crn-2m8r/crn-ghn8.1: cairn/reviewer PASS, 9 checklist items independently re-verified in an isolated worktree (not trusted from the builder's own claims). Reviewer's PASS cites `537eb7e` explicitly as the deployed commit `R`; deploy SHA `D` (post-cherry-pick tip content) == `R`. |
 | 2 | Acceptance criteria met | PASS | `WriteBackPromotedBeadID`/`patchPromotedBeadID` (`internal/cairn/entry.go`) mirror the shipped `WriteBackRecurrenceCount`/`patchRecurrenceCount` shell exactly. `CommitPromotionToReviewBranch` (`internal/cairn/remember.go`) mirrors `CommitRecurrenceToReviewBranch`'s reuse-if-exists shape. `cmd/promote.go`'s `promote-mark` RunE requires `--bead`, checks same-bead-ID no-op success before different-bead-ID hard error, then dispatches on `cairn.IsPrivateScope(e.Scope)` -> `CommitDirect` else `requestPromotionReview` — matches the bead spec. `EntryForEvict` -> `EntryByID` rename applied cleanly across `internal/cairn/evict.go`, `evict_test.go`, `cmd/cull.go`. |
-| 3 | Tests pass | PASS | Re-run independently on the assembled `deploy/crn-2m8r-gate` branch (not trusted from the reviewer's isolated-worktree claim): `go build ./...` clean, `go vet ./...` clean, `go test ./... -race` — all 5 testable packages green (`cmd`, `formulas`, `internal/cairn`, `internal/critic`, `scripts`). `golangci-lint run ./...` flags 1 issue, `cmd/cull_test.go:30` unparam on `seedCommittedEntry`'s `topic` param — independently re-confirmed pre-existing and unrelated: identical on `origin/main`'s own `4858187:cmd/cull_test.go`, tracked separately as crn-lox2 (P3, open). GitHub's actual CI (`build-test` + `lint`) is green on `origin/main`'s tip (`4858187`), confirming this local-only lint delta does not fail the repo's real gate. |
+| 3 | Tests pass | **FAIL (revised post-push)** | Locally on the assembled `deploy/crn-2m8r-gate` branch: `go build ./...` clean, `go vet ./...` clean, `go test ./... -race` — all 5 testable packages green. `golangci-lint run ./...` flags 1 issue, `cmd/cull_test.go:30` unparam on `seedCommittedEntry`'s `topic` param. Initially assessed as the pre-existing, non-blocking crn-lox2 finding (P3) and recorded PASS here — **that assessment was wrong**. GitHub's actual CI on PR #50 came back `lint: fail` on this exact finding (`build-test: pass`), even though `cmd/cull_test.go` is byte-identical to `origin/main`'s own green `4858187` run (same golangci-lint v2.12.2 both sides — ruled out version drift). Root cause: this bead's own new `cmd/promote_test.go` adds 5 more call sites to the shared `seedCommittedEntry(t, store, topic, scope)` helper, all passing the same literal `"old-fact"` — 7 identical-value call sites total (vs. 2 on `main` alone) is what tips `unparam`'s confidence into flagging the untouched declaration. `lint` is a **required, strictly-enforced** status check on `main` (`enforce_admins: true`) — see Disposition. |
 | 4 | No high-severity findings open | PASS | Reviewer recorded 0 open HIGH findings. One non-blocking signature note (`WriteBackPromotedBeadID()` is parameterless, reading `e.PromotedBeadID` from the receiver rather than the bead spec's sketched `(beadID string) error`) confirmed to be a faithful mirror of the real, also-parameterless `WriteBackRecurrenceCount()` precedent — not a deviation. |
 | 5 | Final branch is clean | PASS | `git status` clean on `deploy/crn-2m8r-gate`, ahead of `origin/main` by exactly 7 commits (the reviewed range), no uncommitted changes. |
 | 6 | Branch diverges cleanly from main | PASS | `deploy/crn-2m8r-gate` cut from `origin/main` (`4858187`, current tip, re-confirmed via `git ls-remote origin main` immediately before cherry-pick) + 7 cherry-picked commits; applied with zero conflicts, matching the reviewer's own `git merge-tree` dry-run verification. |
@@ -26,11 +26,18 @@ crn-ghn8.1), cherry-picked as the range `58ffab6..537eb7e` (7 commits) onto
 
 ## Disposition
 
-PR to be opened from `deploy/crn-2m8r-gate` onto `main`, GitHub-native
-auto-merge armed per cairn's scoped deployer merge authority (squash, per
-fleet memory `cairn-auto-merge-requires-explicit-strategy` — no merge-queue
-ruleset configured on `quad341/cairn`).
+**GATE FAIL (post-push CI check).** PR #50 (https://github.com/quad341/cairn/pull/50)
+was opened from `deploy/crn-2m8r-gate` onto `main`, but the bounded GitHub-CI
+check before arming found `lint` red (see criterion 3) — a required,
+strictly-enforced status check (`required_status_checks.contexts:
+[build-test, lint]`, `enforce_admins: true`), so auto-merge was **not**
+armed. Routed back to `cairn/builder` (`ready-to-build`); PR #50 left open,
+unarmed, for reference. Same underlying finding as crn-lox2 (P3, open) —
+fixing that (drop/justify `seedCommittedEntry`'s now-effectively-unused
+`topic` param) should resolve this gate. A fresh reviewer PASS is required
+at whatever new SHA results before the next deploy attempt; this branch/PR
+will likely need superseding rather than reuse.
 
 Downstream: crn-ghn8.2 (wiring the librarian's promote-candidate-beads step
-to actually call `promote-mark`) is correctly left blocked/unclaimed pending
-this deploy landing.
+to actually call `promote-mark`) remains correctly blocked/unclaimed —
+still pending this deploy actually landing.
