@@ -260,13 +260,191 @@ BODY
 '''
 
 [[steps]]
-id = "loop"
-title = "Log iteration summary, then pour the next cycle no sooner than cooldown"
+id = "promote-candidate-beads"
+title = "File a bd bead for every cairn recurrence-promotion candidate, deduplicated across cycles"
 needs = ["dedup-candidate-beads"]
 description = '''
+Run the read-only recurrence-promotion detector (crn-28ge.1.6) and turn every
+finding into exactly one open bd bead proposing a durable fix (FR-07).
+"Not a duplicate per cycle" comes from checking bd for an already-open bead
+whose title contains this finding's bracket-delimited entry anchor before
+creating a new one -- the same idiom the other steps above already use. This
+step only ever calls "cairn promote-candidates" (read-only) and "bd
+list"/"bd create" (bd's own store) -- it never merges, deletes, or rewrites a
+cairn entry, per crn-xw3 guardrail 8.
+
+Each finding's anchor_repo names the repo/tracker the recurring topic
+actually belongs to, which is very often NOT the repo this sweep happens to
+be running in (crn-78d precedent: get the tracker right, don't default to
+wherever the librarian runs). Cairn/bd have no general mechanism to file a
+bead directly into an arbitrary named repo's own tracker ("bd create --repo"
+only overrides auto-routing among repos already registered in *this* store's
+own .beads/config.yaml via "bd repo add", which anchor_repo is not expected
+to be) -- so this step files the proposal locally, with anchor_repo made
+unmissable in the title and a machine-readable target-repo label, and
+explicit body text that it still needs routing to that repo's own tracker.
+This mirrors both cmd/critic_filebead.go's FileCriticBead (files locally,
+leaves routing beyond that to the fleet's normal ready-to-build/needs-pm
+pipeline) and this fleet's own cairn-bead-fix-lives-in-different-rig
+convention: label clearly, let a human/PM route cross-repo, never guess an
+unsupported cross-store write.
+
+  STORE="${CAIRN_STORE:?CAIRN_STORE must be set}"
+  FILED=0
+  SKIPPED=0
+
+  while IFS= read -r finding; do
+    ENTRY_ID=$(printf '%s' "$finding" | jq -r '.entry_id')
+    TOPIC_KEY=$(printf '%s' "$finding" | jq -r '.topic_key')
+    COUNT=$(printf '%s' "$finding" | jq -r '.recurrence_count')
+    ANCHOR_REPO=$(printf '%s' "$finding" | jq -r '.anchor_repo')
+    ANCHOR="[entry:${ENTRY_ID}]"
+
+    EXISTING=$(bd list --label=dim:promote,source:cairn-librarian \
+      --title-contains="$ANCHOR" --json --no-pager 2>/dev/null | jq -r '.[0].id // empty')
+
+    if [ -n "$EXISTING" ]; then
+      echo "skip $ENTRY_ID: already tracked as $EXISTING"
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
+
+    NEW_ID=$(bd create \
+        --title="cairn librarian: recurring topic \"$TOPIC_KEY\" needs a fix in $ANCHOR_REPO $ANCHOR" \
+        --stdin --type=task --priority=3 \
+        --labels="dim:promote,source:cairn-librarian,target-repo:$ANCHOR_REPO" --silent <<BODY
+Cairn entry $ENTRY_ID (topic "$TOPIC_KEY") has recurred $COUNT time(s),
+crossing the promote threshold (FR-07).
+
+This proposes a durable fix in $ANCHOR_REPO -- NOT necessarily this repo.
+Filed by the mol-cairn-librarian promote-candidate-beads step (crn-28ge.1.8),
+which files locally and leaves cross-repo routing to the fleet's normal
+triage pipeline (no general mechanism exists here to bd-create directly into
+an arbitrary named repo/tracker -- see this step's own description). To
+resolve: confirm $ANCHOR_REPO is the right tracker, route/refile this bead
+there if it differs from where this bead landed, then close this proposal
+once the durable fix is tracked in the right place.
+BODY
+    )
+    echo "filed $NEW_ID for $ENTRY_ID ($TOPIC_KEY -> $ANCHOR_REPO)"
+    FILED=$((FILED + 1))
+  done < <(cairn promote-candidates --store "$STORE" | jq -c '.[]')
+
+  echo "librarian promote sweep: $FILED bead(s) filed, $SKIPPED already tracked"
+'''
+
+[[steps]]
+id = "cull-candidate-beads"
+title = "Propose review-branch eviction for every rig/global-tier cairn cull-candidate, deduplicated across cycles"
+needs = ["promote-candidate-beads"]
+description = '''
+Run the read-only disuse detector (crn-28ge.1.7) and, for every rig- or
+global-tier finding, trigger a review-branch eviction proposal via "cairn
+cull-evict" -- never a direct delete. Role-tier is out of scope for the same
+reason it's out of scope for the rest of this formula (see the top-level
+description); agent-tier is private and handled by each agent's own
+opportunistic self-sweep, not this shared-tier formula. Tier is resolved
+from each finding's scope array with the same rig > role > agent precedence
+(global as the fallback) as internal/cairn/remember.go's ResolvedTier,
+replicated here in shell since this step has no access to the Go binary's
+internals.
+
+"cairn cull-evict" is where the never-a-direct-delete guarantee actually
+lives (cmd/cull.go: any non-private scope always takes the review-branch
+path, via EvictToReviewBranch plus a mail to the tier's reviewer) -- this
+step's own job is only to decide which findings are in scope (rig/global
+tier) and avoid re-triggering an eviction proposal already made. That
+dedup check must run BEFORE calling "cairn cull-evict", not after:
+EvictToReviewBranch's review branch is named deterministically ("cull/" +
+entry ID) and a second call for the same entry is a hard error, not a
+no-op, so re-invoking it once a proposal already exists would fail loudly
+every cycle instead of skipping quietly. This step only ever calls "cairn
+cull-candidates" (read-only), "cairn cull-evict" (opens a review branch and
+mails a reviewer, never a direct delete for rig/global scope), and "bd
+list"/"bd create" (bd's own store) -- it never merges, deletes, or rewrites
+a cairn entry directly, per crn-xw3 guardrail 8: nothing is evicted until a
+human reviewer merges the proposal branch.
+
+  STORE="${CAIRN_STORE:?CAIRN_STORE must be set}"
+  FILED=0
+  SKIPPED=0
+
+  # Mirrors internal/cairn/remember.go's ResolvedTier: rig beats role beats
+  # agent; no scope tag at all resolves to "global".
+  resolve_tier() {
+    scope_json="$1"
+    for t in rig role agent; do
+      match=$(printf '%s' "$scope_json" | jq -r --arg t "$t" \
+        'map(select(startswith($t + ":"))) | .[0] // empty')
+      if [ -n "$match" ]; then
+        echo "$t"
+        return
+      fi
+    done
+    echo "global"
+  }
+
+  while IFS= read -r finding; do
+    ENTRY_ID=$(printf '%s' "$finding" | jq -r '.entry_id')
+    TOPIC_KEY=$(printf '%s' "$finding" | jq -r '.topic_key')
+    SCOPE_JSON=$(printf '%s' "$finding" | jq -c '.scope // []')
+    DISUSED_SINCE=$(printf '%s' "$finding" | jq -r '.disused_since')
+    ANCHOR="[entry:${ENTRY_ID}]"
+
+    TIER=$(resolve_tier "$SCOPE_JSON")
+    if [ "$TIER" != "rig" ] && [ "$TIER" != "global" ]; then
+      echo "skip $ENTRY_ID: tier=$TIER out of scope for this sweep (rig/global only)"
+      continue
+    fi
+
+    EXISTING=$(bd list --label=dim:cull,source:cairn-librarian \
+      --title-contains="$ANCHOR" --json --no-pager 2>/dev/null | jq -r '.[0].id // empty')
+
+    if [ -n "$EXISTING" ]; then
+      echo "skip $ENTRY_ID: already tracked as $EXISTING"
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
+
+    CULL_OUTPUT=$(cairn cull-evict "$ENTRY_ID" --store "$STORE" 2>&1) || {
+      echo "cairn cull-evict $ENTRY_ID failed: $CULL_OUTPUT" >&2
+      continue
+    }
+    BRANCH=$(printf '%s' "$CULL_OUTPUT" | sed -n 's/^cull review branch: //p')
+
+    NEW_ID=$(bd create \
+        --title="cairn librarian: disuse cull proposed for \"$TOPIC_KEY\" ($TIER) $ANCHOR" \
+        --stdin --type=task --priority=3 \
+        --labels=dim:cull,source:cairn-librarian --silent <<BODY
+Cairn entry $ENTRY_ID (topic "$TOPIC_KEY", tier $TIER) has been disused since
+$DISUSED_SINCE, past the configured cull threshold (FR-10/NFR-06).
+
+"cairn cull-evict" already opened a review-branch eviction proposal
+(branch: ${BRANCH:-see cull-evict output above}) and mailed the tier's
+reviewer -- this bead exists only to track that a proposal was made and
+avoid re-triggering it every cycle. This is a proposal only: nothing is
+evicted until a human reviewer merges the branch (crn-xw3 guardrail 8). To
+resolve, the reviewer should merge the branch (entry evicted) or reject it
+by not merging (entry kept; close this bead noting why, e.g. a
+pinned/rare-but-critical entry).
+BODY
+    )
+    echo "filed $NEW_ID for $ENTRY_ID ($TIER, disused since $DISUSED_SINCE)"
+    FILED=$((FILED + 1))
+  done < <(cairn cull-candidates --store "$STORE" | jq -c '.[]')
+
+  echo "librarian cull sweep: $FILED bead(s) filed, $SKIPPED already tracked"
+'''
+
+[[steps]]
+id = "loop"
+title = "Log iteration summary, then pour the next cycle no sooner than cooldown"
+needs = ["cull-candidate-beads"]
+description = '''
 Librarian sweep cycle complete (tier={{tier}}, rig={{rig}}). Log a one-line
-summary of this cycle's outcome across all three steps (beads filed/skipped
-for stale branches, freshness drift, and dedup candidates).
+summary of this cycle's outcome across all five steps (beads filed/skipped
+for stale branches, freshness drift, dedup candidates, promote candidates,
+and cull candidates).
 
 Do NOT pour the next cycle immediately. This formula has no timer of its
 own -- {{cooldown}} (default 24h) is a documented convention for whoever
