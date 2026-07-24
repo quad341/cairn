@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -119,6 +120,32 @@ func ParseEntry(path string) (*Entry, error) {
 // (cmd/commands.go verifyCmd) always patches an existing file, and a
 // `cairn verify` diff should show only what actually changed.
 func (e *Entry) WriteBack() error {
+	return e.writeBackPatched(func(front string) (string, error) {
+		return patchVerification(front, e.VerifiedAt, e.Anchor.Fingerprint)
+	})
+}
+
+// WriteBackRecurrenceCount surgically patches recurrence_count into the
+// on-disk frontmatter -- the same "patch, don't re-encode" contract
+// WriteBack uses for verified_at/fingerprint above. cmd/remember.go's
+// capture-time recurrence path (crn-28ge.1.4) increments e.RecurrenceCount
+// in memory on an exact topic_key match and calls this to persist it,
+// without disturbing any other field a curator or a prior WriteBack already
+// wrote. As with WriteBack, incrementing the field is the caller's
+// responsibility; this only persists whatever value is already there.
+func (e *Entry) WriteBackRecurrenceCount() error {
+	return e.writeBackPatched(func(front string) (string, error) {
+		return patchRecurrenceCount(front, e.RecurrenceCount)
+	})
+}
+
+// writeBackPatched is the read/split/patch/reassemble/write shell shared by
+// WriteBack and WriteBackRecurrenceCount: read the on-disk file, split it
+// into frontmatter and body, hand the frontmatter to patch, and write the
+// merged result back. Every line patch itself doesn't touch survives
+// byte-for-byte, matching WriteBack's own "surgical patch, not a full
+// re-encode" contract.
+func (e *Entry) writeBackPatched(patch func(front string) (string, error)) error {
 	raw, err := os.ReadFile(e.BodyPath)
 	if err != nil {
 		return err
@@ -131,7 +158,7 @@ func (e *Entry) WriteBack() error {
 		return fmt.Errorf("%s: %w", e.BodyPath, errNotEntry)
 	}
 
-	patched, err := patchVerification(front, e.VerifiedAt, e.Anchor.Fingerprint)
+	patched, err := patch(front)
 	if err != nil {
 		return fmt.Errorf("%s (id %s): %w", e.BodyPath, e.ID, err)
 	}
@@ -186,6 +213,39 @@ func patchVerification(front, verifiedAt, fingerprint string) (string, error) {
 	out := make([]string, 0, len(top)+len(anchor)+len(rest))
 	out = append(out, top...)
 	out = append(out, anchor...)
+	out = append(out, rest...)
+	return strings.Join(out, "\n"), nil
+}
+
+// patchRecurrenceCount patches recurrence_count -- a top-level field
+// alongside verified_at, not one of anchor's -- into front, in place, using
+// the same [anchor]-boundary-finding approach as patchVerification: every
+// line at or after [anchor] passes through completely unchanged, since
+// recurrence_count never lives there.
+func patchRecurrenceCount(front string, count int) (string, error) {
+	lines := strings.Split(front, "\n")
+
+	anchorAt := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "[anchor]" {
+			anchorAt = i
+			break
+		}
+	}
+	if anchorAt < 0 {
+		return "", errors.New("no [anchor] table in frontmatter")
+	}
+
+	// Three-index slice caps capacity at the region's own length, so
+	// setTOMLLine's append (when the key is absent) always allocates a fresh
+	// backing array instead of writing through into rest.
+	top := lines[:anchorAt:anchorAt]
+	rest := lines[anchorAt:]
+
+	top = setTOMLLine(top, "recurrence_count", strconv.Itoa(count))
+
+	out := make([]string, 0, len(top)+len(rest))
+	out = append(out, top...)
 	out = append(out, rest...)
 	return strings.Join(out, "\n"), nil
 }

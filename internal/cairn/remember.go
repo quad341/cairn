@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -202,30 +203,53 @@ func reviewBranchName(e *Entry) string {
 // tree -- cannot. Returns the branch name on success.
 func (e *Entry) CommitToReviewBranch(ctx context.Context, store string) (string, error) {
 	branch := reviewBranchName(e)
+	msg := fmt.Sprintf("remember: %s\n\nscope: %s", e.ID, strings.Join(e.Scope, " "))
+	if err := e.commitToReviewWorktree(ctx, store, branch, true, msg); err != nil {
+		return "", err
+	}
+	return branch, nil
+}
+
+// commitToReviewWorktree is the worktree-isolation mechanics shared by
+// CommitToReviewBranch and CommitRecurrenceToReviewBranch: create a
+// throwaway worktree checked out to branch -- freshly created from the
+// store's current HEAD when create is true, or an already-existing local
+// branch reused as-is when false -- copy e's current on-disk body into it at
+// the same relative path, stage, and commit with msg. See
+// CommitToReviewBranch's doc comment for why a throwaway worktree is used
+// instead of an in-place checkout; that reasoning applies identically to
+// both callers.
+func (e *Entry) commitToReviewWorktree(ctx context.Context, store, branch string, create bool, msg string) error {
 	rel, err := filepath.Rel(store, e.BodyPath)
 	if err != nil {
-		return "", fmt.Errorf("resolve entry path: %w", err)
+		return fmt.Errorf("resolve entry path: %w", err)
 	}
 
 	scratch, err := os.MkdirTemp("", "cairn-review-*")
 	if err != nil {
-		return "", fmt.Errorf("create review worktree scratch dir: %w", err)
+		return fmt.Errorf("create review worktree scratch dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(scratch) }()
 
 	wt := filepath.Join(scratch, "wt")
-	if _, err := gitRun(ctx, store, "worktree", "add", "-b", branch, wt, "HEAD"); err != nil {
-		return "", fmt.Errorf("create review branch %q: %w", branch, err)
+	if create {
+		if _, err := gitRun(ctx, store, "worktree", "add", "-b", branch, wt, "HEAD"); err != nil {
+			return fmt.Errorf("create review branch %q: %w", branch, err)
+		}
+	} else {
+		if _, err := gitRun(ctx, store, "worktree", "add", wt, branch); err != nil {
+			return fmt.Errorf("open existing review branch %q: %w", branch, err)
+		}
 	}
 	defer func() { _, _ = gitRun(ctx, store, "worktree", "remove", "--force", wt) }()
 
 	content, err := os.ReadFile(e.BodyPath)
 	if err != nil {
-		return "", fmt.Errorf("read entry for review commit: %w", err)
+		return fmt.Errorf("read entry for review commit: %w", err)
 	}
 	dst := filepath.Join(wt, rel)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
-		return "", fmt.Errorf("prepare review worktree dir: %w", err)
+		return fmt.Errorf("prepare review worktree dir: %w", err)
 	}
 	// dst stays under wt, a throwaway worktree this function created above;
 	// rel is the same relative path Create already used to write e.BodyPath,
@@ -233,15 +257,56 @@ func (e *Entry) CommitToReviewBranch(ctx context.Context, store string) (string,
 	// any Entry is ever constructed.
 	//nolint:gosec // dst is confined to a temp worktree, not attacker-controlled
 	if err := os.WriteFile(dst, content, 0o600); err != nil {
-		return "", fmt.Errorf("copy entry into review worktree: %w", err)
+		return fmt.Errorf("copy entry into review worktree: %w", err)
 	}
 
 	if _, err := gitRun(ctx, wt, "add", "--", rel); err != nil {
-		return "", fmt.Errorf("stage entry in review worktree: %w", err)
+		return fmt.Errorf("stage entry in review worktree: %w", err)
 	}
-	msg := fmt.Sprintf("remember: %s\n\nscope: %s", e.ID, strings.Join(e.Scope, " "))
 	if _, err := gitRun(ctx, wt, "commit", "-q", "-m", msg); err != nil {
-		return "", fmt.Errorf("commit entry to review branch: %w", err)
+		return fmt.Errorf("commit entry to review branch: %w", err)
+	}
+	return nil
+}
+
+// reviewBranchExists reports whether branch already exists as a local
+// branch in store, distinguishing "the ref just doesn't exist" (git
+// rev-parse's own --quiet exit-1 signal) from a real git failure (repo
+// missing, git not runnable, etc.), which is returned as an error rather
+// than folded into a false "doesn't exist".
+func reviewBranchExists(ctx context.Context, store, branch string) (bool, error) {
+	_, err := gitRun(ctx, store, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("check for existing review branch %q: %w", branch, err)
+}
+
+// CommitRecurrenceToReviewBranch commits e -- an existing shared-tier entry
+// whose RecurrenceCount cmd/remember.go's capture-time recurrence path
+// (crn-28ge.1.4) just incremented in place -- onto its own remember/<id>
+// review branch, the same namespace CommitToReviewBranch uses. Unlike
+// CommitToReviewBranch, the branch may already exist: the entry's original
+// review (from its first capture) is often still pending exactly when a
+// recurrence fires again, since a recurring topic tends to recur before
+// anyone has reviewed the first report, not only after. Rather than fail
+// with a branch-already-exists error on that ordinary case, this reuses the
+// existing branch -- appending a second commit to the same pending review --
+// falling back to creating it fresh (identical to CommitToReviewBranch)
+// only when no such branch exists yet.
+func (e *Entry) CommitRecurrenceToReviewBranch(ctx context.Context, store string) (string, error) {
+	branch := reviewBranchName(e)
+	exists, err := reviewBranchExists(ctx, store, branch)
+	if err != nil {
+		return "", err
+	}
+	msg := fmt.Sprintf("remember: recurrence %s (count %d)\n\nscope: %s", e.ID, e.RecurrenceCount, strings.Join(e.Scope, " "))
+	if err := e.commitToReviewWorktree(ctx, store, branch, !exists, msg); err != nil {
+		return "", err
 	}
 	return branch, nil
 }
