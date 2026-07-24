@@ -145,6 +145,7 @@ func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (*cairn.Entry, 
 		}
 		return byID[other], nil
 	}
+	//nolint:nilnil // (nil,nil) = "no match"; sole caller checks matched != nil before use
 	return nil, nil
 }
 
