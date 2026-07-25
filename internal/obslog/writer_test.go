@@ -93,7 +93,7 @@ func TestRotatingWriterKeepsOnlyConfiguredSiblings(t *testing.T) {
 		t.Fatalf("newRotatingWriter: %v", err)
 	}
 	line := []byte("aaaaaa\n") // 7 bytes, exceeds maxBytes=6 on every write after the first
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if _, err := w.Write(line); err != nil {
 			t.Fatalf("Write %d: %v", i, err)
 		}

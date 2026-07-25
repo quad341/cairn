@@ -20,7 +20,7 @@ import (
 // invoke it. Without this, `go test ./cmd/...` would append to the
 // developer's actual ~/.local/state/cairn/debug.jsonl on every run.
 func TestMain(m *testing.M) {
-	os.Setenv("XDG_STATE_HOME", filepath.Join(os.TempDir(), "cairn-cmd-test-state"))
+	_ = os.Setenv("XDG_STATE_HOME", filepath.Join(os.TempDir(), "cairn-cmd-test-state"))
 	os.Exit(m.Run())
 }
 
@@ -164,4 +164,8 @@ func TestTraceFlagMirrorsContextRecordToStderr(t *testing.T) {
 	})
 
 	assert.Contains(t, stderr, `"kind":"context"`)
+}
+
+func TestRootHelpDocumentsLogPath(t *testing.T) {
+	assert.Contains(t, rootCmd.Long, filepath.Join("cairn", "debug.jsonl"))
 }

@@ -521,7 +521,7 @@ func TestEnsureFreshWithLogsIndexDriftOnReindexError(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
 		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
 
-	failingReindex := func(ctx context.Context, store string) (int, error) {
+	failingReindex := func(_ context.Context, _ string) (int, error) {
 		return 0, errors.New("boom")
 	}
 
@@ -546,7 +546,7 @@ func TestEnsureFreshWithRedactsSecretsInReindexError(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
 		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
 
-	failingReindex := func(ctx context.Context, store string) (int, error) {
+	failingReindex := func(_ context.Context, _ string) (int, error) {
 		return 0, fmt.Errorf("db error near token %s", testAWSKeyExample)
 	}
 

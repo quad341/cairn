@@ -32,11 +32,25 @@ func storePath() string {
 	return path
 }
 
+// longDescription builds rootCmd's --help text, appending the resolved
+// debug log path (deliverable: cairn doctor/rage need a well-known path to
+// find without guessing, and --help/version are the cheapest place to
+// surface it). Omitted if the path can't be resolved -- matching obslog's
+// own fail-open philosophy, --help must never error over a logging
+// concern.
+func longDescription() string {
+	desc := "cairn — markers left by the agent who solved it, so the next one\n" +
+		"doesn't re-walk the trail. Scoped per rig/role/agent, freshness-anchored."
+	if path, err := obslog.LogPath(); err == nil {
+		desc += "\n\nDebug log: " + path + " (add --trace to also mirror it to stderr)"
+	}
+	return desc
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "cairn",
 	Short: "A scoped, freshness-tracked knowledge cache for AI agent fleets",
-	Long: "cairn — markers left by the agent who solved it, so the next one\n" +
-		"doesn't re-walk the trail. Scoped per rig/role/agent, freshness-anchored.",
+	Long:  longDescription(),
 	// PersistentPreRunE runs for every subcommand invocation (it fires with
 	// cmd set to the leaf command actually being executed, not rootCmd
 	// itself), wiring an obslog.Logger into the command's context before any

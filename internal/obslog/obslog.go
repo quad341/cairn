@@ -134,6 +134,7 @@ type ContextFields struct {
 	IdentitySource string // "flag" | "env" | "default"
 }
 
+// Context logs a "context" record.
 func (l *Logger) Context(f ContextFields) {
 	l.sl.Info("", slog.String("kind", "context"),
 		slog.String("version", f.Version),
@@ -160,6 +161,7 @@ type ShadowDecisionFields struct {
 	Rule     string
 }
 
+// ShadowDecision logs a "shadow_decision" record.
 func (l *Logger) ShadowDecision(f ShadowDecisionFields) {
 	l.sl.Info("", slog.String("kind", "shadow_decision"),
 		slog.String("mode", f.Mode),
@@ -179,6 +181,7 @@ type FreshnessCheckFields struct {
 	Detail     string
 }
 
+// FreshnessCheck logs a "freshness_check" record.
 func (l *Logger) FreshnessCheck(f FreshnessCheckFields) {
 	l.sl.Info("", slog.String("kind", "freshness_check"),
 		slog.String("entry_id", f.EntryID),
@@ -198,6 +201,7 @@ type IndexDriftFields struct {
 	DurationMS   int64
 }
 
+// IndexDrift logs an "index_drift" record.
 func (l *Logger) IndexDrift(f IndexDriftFields) {
 	l.sl.Info("", slog.String("kind", "index_drift"),
 		slog.Bool("stale", f.Stale),
@@ -218,6 +222,7 @@ type WritePathFields struct {
 	Private   bool
 }
 
+// WritePath logs a "write_path" record.
 func (l *Logger) WritePath(f WritePathFields) {
 	l.sl.Info("", slog.String("kind", "write_path"),
 		slog.String("operation", f.Operation),
@@ -238,6 +243,7 @@ type WritePathStepFields struct {
 	DurationMS int64
 }
 
+// WritePathStep logs a "write_path_step" record.
 func (l *Logger) WritePathStep(f WritePathStepFields) {
 	l.sl.Info("", slog.String("kind", "write_path_step"),
 		slog.String("operation", f.Operation),

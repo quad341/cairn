@@ -37,7 +37,7 @@ func newRotatingWriter(path string, maxBytes int64, keep int) (*rotatingWriter, 
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, err
 	}
 	return &rotatingWriter{path: path, maxBytes: maxBytes, keep: keep, f: f, size: info.Size()}, nil

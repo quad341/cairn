@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -95,4 +96,19 @@ func TestUnknownSubcommandStillErrors(t *testing.T) {
 	_, err := execRoot("bogus-command")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown command")
+}
+
+func TestVersionCommandPrintsLogPath(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+
+	rootCmd.SetArgs([]string{"version"})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+
+	out := captureStdout(t, func() {
+		require.NoError(t, rootCmd.Execute())
+	})
+
+	assert.Contains(t, out, filepath.Join(xdg, "cairn", "debug.jsonl"))
 }
