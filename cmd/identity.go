@@ -38,9 +38,12 @@ func identityRequested(cmd *cobra.Command) bool {
 // input hygiene, not access control, so a malformed --identity/$CAIRN_IDENTITY
 // tag classifies as invalid_input under --json rather than falling through
 // to whatever error its first downstream use happens to produce. Wired into
-// get/map/prime only -- status rejects --identity outright
-// (identityRequested), and remember validates its own --scope directly
-// rather than resolving identity for scope purposes.
+// get/map/prime/remember -- status rejects --identity outright
+// (identityRequested). remember calls this after its own --topic/--scope
+// validation, which already catches an unsafe identity-derived default scope
+// tag as a "scope tag" error; this covers what that loop can't: an identity
+// tag that never becomes a scope tag at all (e.g. carried only into
+// created_by, or present alongside an explicit --scope override).
 func resolveIdentityValidated(cmd *cobra.Command) ([]string, error) {
 	identity := resolveIdentity(cmd)
 	for _, tag := range identity {
