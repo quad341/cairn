@@ -317,11 +317,12 @@ func TestDiagnoseCleanStoreExitCodeZero(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
 	gitCommitAll(t, repo, "init")
 
-	fp := ComputeFingerprint(ctx, Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	fp, err := ComputeFingerprint(ctx, Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	require.NoError(t, err)
 	require.NotEmpty(t, fp)
 	writeFile(t, dir, "global/fresh.md", filesEntry("fresh-1", repo, []string{"a.go"}, fp))
 
-	_, err := Reindex(ctx, dir)
+	_, err = Reindex(ctx, dir)
 	require.NoError(t, err)
 
 	report, err := Diagnose(ctx, dir)

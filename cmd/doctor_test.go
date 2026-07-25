@@ -97,11 +97,12 @@ func seedPrewarmedCleanStore(t *testing.T) string {
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
 	gitCommitAll(t, repo, "init")
 
-	fp := cairn.ComputeFingerprint(ctx, cairn.Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	fp, err := cairn.ComputeFingerprint(ctx, cairn.Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	require.NoError(t, err)
 	require.NotEmpty(t, fp)
 	seedEntry(t, dir, "global/fresh.md", filesAnchorEntry("fresh-1", repo, "a.go", fp))
 
-	_, err := cairn.Reindex(ctx, dir)
+	_, err = cairn.Reindex(ctx, dir)
 	require.NoError(t, err)
 	return dir
 }
