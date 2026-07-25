@@ -44,13 +44,18 @@ func Sweep(ctx context.Context, store string) ([]SweepFinding, error) {
 		}
 		status, detail := Check(ctx, e)
 		if e.Anchor.Type == "files" {
-			if bad := untrackedPaths(ctx, e.Anchor); len(bad) > 0 {
+			bad, incomplete := untrackedPaths(ctx, e.Anchor)
+			if !incomplete && len(bad) > 0 {
 				detail = fmt.Sprintf(
 					"anchor path(s) not tracked at HEAD in %s: %s (Check reported %s: %s)",
 					e.Anchor.Repo, strings.Join(bad, ", "), status, detail,
 				)
 				status = Unknown
 			}
+			// incomplete: leave status/detail exactly as Check already set them --
+			// Check derived Incomplete from this same anchor/repo/ctx, so
+			// re-deriving a second message here would be redundant, not more
+			// correct.
 		}
 		out = append(out, SweepFinding{
 			ID:         e.ID,
@@ -78,8 +83,10 @@ func entryTier(store string, e *Entry) string {
 	return parts[0]
 }
 
-// untrackedPaths returns the subset of a's configured paths that do not
-// resolve to a tracked object at a.Repo's HEAD. It reuses expand() and
+// untrackedPaths returns the subset of a's configured paths that are
+// confirmed to not resolve to a tracked object at a.Repo's HEAD, plus
+// whether the check was incomplete (a genuine git invocation failure part
+// way through, as distinct from a confirmed miss). It reuses expand() and
 // objectHash() directly — the same two calls ComputeFingerprint makes —
 // rather than re-deriving an equivalent check: an earlier version re-derived
 // this via a separate index-based `git ls-files` probe, which diverged from
@@ -90,16 +97,25 @@ func entryTier(store string, e *Entry) string {
 // value — the exact crn-6az.8.2 failure mode this guardrail exists to catch,
 // reached through a different door than the never-added case (crn-8x4).
 // Calling objectHash here instead of reimplementing its resolution keeps the
-// two permanently in sync.
-func untrackedPaths(ctx context.Context, a Anchor) []string {
+// two permanently in sync. incomplete must short-circuit "bad" entirely
+// (crn-fdjc.1, FR-3): a genuine invocation failure must never be asserted as
+// a confirmed untracked-path finding.
+func untrackedPaths(ctx context.Context, a Anchor) (bad []string, incomplete bool) {
 	if a.Repo == "" {
-		return a.Paths
+		return a.Paths, false
 	}
-	var bad []string
-	for _, p := range expand(ctx, a.Repo, a.Paths) {
-		if objectHash(ctx, a.Repo, p) == "?" {
+	paths, err := expand(ctx, a.Repo, a.Paths)
+	if err != nil {
+		return nil, true // can't even enumerate -- assert nothing about tracked/untracked
+	}
+	for _, p := range paths {
+		_, ok, err := objectHash(ctx, a.Repo, p)
+		switch {
+		case err != nil:
+			incomplete = true // don't add to bad -- we don't know
+		case !ok:
 			bad = append(bad, p)
 		}
 	}
-	return bad
+	return bad, incomplete
 }

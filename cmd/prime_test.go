@@ -21,6 +21,12 @@ func TestPrimeRejectsStrayPositionalArgs(t *testing.T) {
 	assert.Contains(t, err.Error(), "extra")
 }
 
+func TestPrimeAcceptsBudgetBytesFlag(t *testing.T) {
+	out, err := execRoot("prime", "--store", t.TempDir(), "--budget-bytes", "100")
+	require.NoError(t, err)
+	assert.NotEmpty(t, out)
+}
+
 func TestPrimeJSONOutputsResult(t *testing.T) {
 	dir := t.TempDir()
 	seedEntry(t, dir, "global/a.md",

@@ -71,12 +71,40 @@ func TestFileAnchorNonexistentPathFingerprintEmpty(t *testing.T) {
 	gitCommitAll(t, repo, "init")
 
 	a := Anchor{Type: "files", Repo: repo, Paths: []string{"does-not-exist.go"}}
-	assert.Empty(t, ComputeFingerprint(ctx, a),
-		"a files anchor path untracked at HEAD must not produce a fingerprint")
+	fp, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	assert.Empty(t, fp, "a files anchor path untracked at HEAD must not produce a fingerprint")
 
 	e := &Entry{ID: "x", Anchor: a}
 	st, detail := Check(ctx, e)
 	assert.Equalf(t, Unknown, st, "detail: %s", detail)
+}
+
+// TestCheckNeverVerifiedIsFreeEvenWhenAnchorUnresolvable pins crn-0vqk.2's
+// in-scope Check() reorder: a never-verified files anchor must report "never
+// verified", not "not verifiable", even when the repo path can't actually be
+// resolved -- proving the answer came from the free Fingerprint=="" check,
+// not from a git shell-out that happened to come back empty. Before the
+// reorder, ComputeFingerprint ran first, so an unresolvable repo produced
+// "not verifiable" and silently threw away the (free, already-known)
+// never-verified signal.
+func TestCheckNeverVerifiedIsFreeEvenWhenAnchorUnresolvable(t *testing.T) {
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Repo: t.TempDir(), Paths: []string{"a.go"}}}
+	st, detail := Check(t.Context(), e)
+	assert.Equal(t, Unknown, st)
+	assert.Contains(t, detail, "never verified")
+}
+
+// TestCheckFilesAnchorMissingRepoReportsNotVerifiableEvenWhenNeverVerified
+// pins the reorder's ordering the other way: an anchor that isn't even
+// shape-checkable (files with no repo configured) must still report "not
+// verifiable", not "never verified", regardless of whether Fingerprint is
+// also empty -- the shape check wins over the never-verified check.
+func TestCheckFilesAnchorMissingRepoReportsNotVerifiableEvenWhenNeverVerified(t *testing.T) {
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Paths: []string{"a.go"}}}
+	st, detail := Check(t.Context(), e)
+	assert.Equal(t, Unknown, st)
+	assert.Contains(t, detail, "not verifiable")
 }
 
 func TestFileAnchorDrift(t *testing.T) {
@@ -88,7 +116,8 @@ func TestFileAnchorDrift(t *testing.T) {
 	gitCommitAll(t, repo, "init")
 
 	a := Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}
-	fp1 := ComputeFingerprint(ctx, a)
+	fp1, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
 	require.NotEmpty(t, fp1)
 
 	a.Fingerprint = fp1
@@ -101,7 +130,117 @@ func TestFileAnchorDrift(t *testing.T) {
 
 	st, _ = Check(ctx, e)
 	assert.Equal(t, Stale, st)
-	assert.NotEqual(t, fp1, ComputeFingerprint(ctx, a), "fingerprint should change after the source changed")
+	fp2, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	assert.NotEqual(t, fp1, fp2, "fingerprint should change after the source changed")
+}
+
+// TestCheckMissingRepositoryIsUnknown covers FR-5 class 1: an anchor
+// repo path that doesn't exist on disk at all. git -C on a nonexistent
+// directory still exits non-zero from git itself (a confirmed negative, not
+// a Go-level invocation failure), so this must stay Unknown, not Incomplete.
+func TestCheckMissingRepositoryIsUnknown(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Repo: missing, Paths: []string{"a.go"}}}
+	st, detail := Check(t.Context(), e)
+	assert.Equalf(t, Unknown, st, "detail: %s", detail)
+}
+
+// TestCheckNoCommitsYetIsUnknown covers FR-5 class 2: a real repo with zero
+// commits. `git rev-parse HEAD:path` fails with a confirmed non-zero exit
+// (ambiguous/unknown revision), so this must stay Unknown.
+func TestCheckNoCommitsYetIsUnknown(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo) // repo exists, but has zero commits
+
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}}
+	st, detail := Check(t.Context(), e)
+	assert.Equalf(t, Unknown, st, "detail: %s", detail)
+}
+
+// TestCheckUnmatchedGlobIsUnknown covers FR-5 class 3: a glob pattern that
+// matches nothing tracked. `git ls-files` still exits 0 with empty output
+// (a confirmed "no matches"), so the literal pattern falls through to
+// objectHash's own confirmed-negative path — Unknown, not Incomplete.
+func TestCheckUnmatchedGlobIsUnknown(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Repo: repo, Paths: []string{"*.nonexistent"}}}
+	st, detail := Check(t.Context(), e)
+	assert.Equalf(t, Unknown, st, "detail: %s", detail)
+}
+
+// TestCheckInvalidRevisionIsUnknown covers FR-5 class 4: a path staged
+// (git add) but not yet committed, mirroring the crn-8x4 regression one
+// layer up from sweep_test.go's Sweep-level coverage — Check alone must
+// already report Unknown for this case.
+func TestCheckInvalidRevisionIsUnknown(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "staged.go"), []byte("package a\n"), 0o600))
+	gitAdd(t, repo, "staged.go") // staged, deliberately not committed
+
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Repo: repo, Paths: []string{"staged.go"}}}
+	st, detail := Check(t.Context(), e)
+	assert.Equalf(t, Unknown, st, "detail: %s", detail)
+}
+
+// TestCheckGitInvocationFailureIsIncomplete covers FR-5 class 5 at the Check
+// level: a genuine invocation failure (git unreachable via PATH) must
+// surface as Incomplete, distinct from every confirmed-negative class above.
+func TestCheckGitInvocationFailureIsIncomplete(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	t.Setenv("PATH", t.TempDir()) // git binary now unreachable
+
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}}
+	st, detail := Check(t.Context(), e)
+	assert.Equalf(t, Incomplete, st, "detail: %s", detail)
+}
+
+// TestCheckContextCanceledIsIncomplete covers FR-5 class 6 at the Check
+// level: a canceled context is the operationally realistic failure mode
+// (a request-scoped timeout), distinct from every confirmed-negative class
+// above.
+func TestCheckContextCanceledIsIncomplete(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}}
+	st, detail := Check(ctx, e)
+	assert.Equalf(t, Incomplete, st, "detail: %s", detail)
+}
+
+// TestComputeFingerprintGitInvocationFailureReturnsError is the
+// ComputeFingerprint-level counterpart to TestCheckGitInvocationFailureIsIncomplete
+// (mirrors the existing git()-level test one layer up, per crn-fdjc.1's test
+// plan).
+func TestComputeFingerprintGitInvocationFailureReturnsError(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	t.Setenv("PATH", t.TempDir()) // git binary now unreachable
+
+	a := Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}
+	fp, err := ComputeFingerprint(t.Context(), a)
+	require.Error(t, err)
+	assert.Empty(t, fp)
 }
 
 func TestGitConfirmedNonRepoIsNotAnError(t *testing.T) {

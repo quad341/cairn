@@ -13,9 +13,10 @@ import (
 
 // Freshness statuses.
 const (
-	Fresh   = "fresh"
-	Stale   = "stale"
-	Unknown = "unknown"
+	Fresh      = "fresh"
+	Stale      = "stale"
+	Unknown    = "unknown"
+	Incomplete = "incomplete"
 )
 
 // git runs a git subcommand against repo and returns (output, found, err).
@@ -42,19 +43,27 @@ func git(ctx context.Context, repo string, args ...string) (string, bool, error)
 	return strings.TrimSpace(string(out)), true, nil
 }
 
-// objectHash is the git object id of a path at HEAD (blob for files, tree for dirs).
-func objectHash(ctx context.Context, repo, path string) string {
-	if h, ok, _ := git(ctx, repo, "rev-parse", "HEAD:"+path); ok {
-		return h
-	}
-	return "?"
+// objectHash is the git object id of a path at HEAD (blob for files, tree for
+// dirs). ok is false only on a confirmed negative (path not resolvable at
+// HEAD); err is non-nil only for a genuine git invocation failure -- a
+// direct passthrough of git()'s own (result, ok, err) classification.
+func objectHash(ctx context.Context, repo, path string) (hash string, ok bool, err error) {
+	return git(ctx, repo, "rev-parse", "HEAD:"+path)
 }
 
-// expand resolves globs to tracked paths via git ls-files; literals pass through.
-func expand(ctx context.Context, repo string, paths []string) []string {
+// expand resolves globs to tracked paths via git ls-files; literals pass
+// through. Returns a non-nil error only for a genuine invocation failure,
+// short-circuiting on the first one -- a broken PATH fails identically for
+// every remaining path, so there is no value in collecting N duplicate
+// errors.
+func expand(ctx context.Context, repo string, paths []string) ([]string, error) {
 	set := map[string]struct{}{}
 	for _, p := range paths {
-		if out, ok, _ := git(ctx, repo, "ls-files", "--", p); ok && strings.TrimSpace(out) != "" {
+		out, ok, err := git(ctx, repo, "ls-files", "--", p)
+		if err != nil {
+			return nil, err
+		}
+		if ok && strings.TrimSpace(out) != "" {
 			for _, ln := range strings.Split(out, "\n") {
 				if strings.TrimSpace(ln) != "" {
 					set[ln] = struct{}{}
@@ -69,34 +78,42 @@ func expand(ctx context.Context, repo string, paths []string) []string {
 		files = append(files, f)
 	}
 	sort.Strings(files)
-	return files
+	return files, nil
 }
 
 // ComputeFingerprint returns a deterministic fingerprint of the anchored
-// source, or "" if it cannot be computed: none/query/external in v1, or a
-// files anchor with a path that doesn't resolve to a real tracked object at
-// repo's HEAD (objectHash's "?" sentinel -- the same one untrackedPaths in
-// sweep.go checks for).
-func ComputeFingerprint(ctx context.Context, a Anchor) string {
+// source. A confirmed negative -- none/query/external in v1, or a files
+// anchor with a path that doesn't resolve to a real tracked object at
+// repo's HEAD -- returns ("", nil), unchanged from before crn-fdjc.1. A
+// genuine git invocation failure returns ("", err); callers must not fold
+// this into the same empty string as a confirmed negative.
+func ComputeFingerprint(ctx context.Context, a Anchor) (string, error) {
 	switch a.Type {
 	case "commit":
-		return a.Spec
+		return a.Spec, nil
 	case "files":
 		if a.Repo == "" || len(a.Paths) == 0 {
-			return ""
+			return "", nil
 		}
-		parts := make([]string, 0, len(a.Paths))
-		for _, p := range expand(ctx, a.Repo, a.Paths) {
-			h := objectHash(ctx, a.Repo, p)
-			if h == "?" {
-				return ""
+		expanded, err := expand(ctx, a.Repo, a.Paths)
+		if err != nil {
+			return "", err
+		}
+		parts := make([]string, 0, len(expanded))
+		for _, p := range expanded {
+			h, ok, err := objectHash(ctx, a.Repo, p)
+			if err != nil {
+				return "", err
+			}
+			if !ok {
+				return "", nil
 			}
 			parts = append(parts, p+":"+h)
 		}
 		sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
-		return hex.EncodeToString(sum[:])[:16]
+		return hex.EncodeToString(sum[:])[:16], nil
 	default:
-		return ""
+		return "", nil
 	}
 }
 
@@ -106,12 +123,37 @@ func Check(ctx context.Context, e *Entry) (string, string) {
 	if a.Type == "" || a.Type == "none" {
 		return Unknown, "no source anchor (time-based freshness only)"
 	}
-	cur := ComputeFingerprint(ctx, a)
-	if cur == "" {
+	// Anchor shape (type + presence of the fields the type needs) decides
+	// verifiability without any git call -- ComputeFingerprint's own switch
+	// makes exactly this same free decision internally. Checking it here
+	// first keeps "not verifiable" winning over "never verified" for a
+	// fundamentally unverifiable anchor (crn-0vqk.2), with no shell-out
+	// either way.
+	if a.Type != "commit" && (a.Type != "files" || a.Repo == "" || len(a.Paths) == 0) {
 		return Unknown, fmt.Sprintf("anchor type %q not verifiable in v1", a.Type)
 	}
+	// The shell-out (inside ComputeFingerprint, for a files anchor with
+	// repo+paths set) must run before the never-verified check below, not
+	// after: a genuine git-invocation failure (PATH broken, context
+	// canceled) has to surface as Incomplete even when the anchor has never
+	// been fingerprinted (crn-fdjc.1.1) -- an anchor that happens to have no
+	// stored fingerprint yet is not a reason to mask a live infrastructure
+	// failure behind "never verified".
+	cur, err := ComputeFingerprint(ctx, a)
+	if err != nil {
+		return Incomplete, fmt.Sprintf("git check did not complete: %v", err)
+	}
+	// Never-verified is checked here, after the call succeeds: an anchor
+	// with no stored fingerprint has nothing to compare cur against, so
+	// without this it would either false-match two empty strings as Fresh
+	// (when cur is also a confirmed-negative "") or false-report Stale
+	// (when cur is non-empty) -- neither is meaningful for an entry that's
+	// simply never been checked before (crn-0vqk.2).
 	if a.Fingerprint == "" {
 		return Unknown, "never verified (no stored fingerprint)"
+	}
+	if cur == "" {
+		return Unknown, fmt.Sprintf("anchor type %q not verifiable in v1", a.Type)
 	}
 	if cur == a.Fingerprint {
 		return Fresh, fmt.Sprintf("anchor matches (%s)", cur)

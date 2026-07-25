@@ -1131,6 +1131,8 @@ func TestStatusPopulatesAnchorAndScopeFields(t *testing.T) {
 	body := "+++\n" +
 		"id = \"a\"\n" +
 		"title = \"A\"\n" +
+		"summary = \"a short summary\"\n" +
+		"hit_count = 5\n" +
 		"topic_key = \"t/a\"\n" +
 		"scope = [\"rig:alpha\", \"role:investigator\"]\n" +
 		"verified_at = \"2026-07-01\"\n" +
@@ -1161,6 +1163,13 @@ func TestStatusPopulatesAnchorAndScopeFields(t *testing.T) {
 	assert.Equal(t, []string{"a.go", "b.go"}, e.Anchor.Paths)
 	assert.Equal(t, "main", e.Anchor.Spec)
 	assert.Equal(t, "abc123", e.Anchor.Fingerprint)
+
+	// crn-0vqk.2: Status's SELECT was extended to also cover these three --
+	// already-indexed at zero marginal query cost (reindexTx populates them
+	// unconditionally) -- so Prime can render entries without a body read.
+	assert.Equal(t, "A", e.Title)
+	assert.Equal(t, "a short summary", e.Summary)
+	assert.Equal(t, 5, e.HitCount)
 }
 
 // TestIterEntriesWrapsParseFailureAsMalformedEntryError covers crn-od2x.2:

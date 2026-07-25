@@ -47,7 +47,8 @@ func TestSweepMatchesCheckForHealthyAnchors(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
 	gitCommitAll(t, repo, "init")
 
-	fp := ComputeFingerprint(ctx, Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	fp, err := ComputeFingerprint(ctx, Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	require.NoError(t, err)
 	require.NotEmpty(t, fp)
 
 	writeFile(t, dir, "global/fresh.md", filesEntry("fresh-1", repo, []string{"a.go"}, fp))
@@ -74,7 +75,8 @@ func TestSweepMatchesCheckForDriftedAnchor(t *testing.T) {
 	require.NoError(t, os.WriteFile(src, []byte("package a\n"), 0o600))
 	gitCommitAll(t, repo, "init")
 
-	fp := ComputeFingerprint(ctx, Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	fp, err := ComputeFingerprint(ctx, Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	require.NoError(t, err)
 	require.NotEmpty(t, fp)
 	writeFile(t, dir, "global/stale.md", filesEntry("stale-1", repo, []string{"a.go"}, fp))
 
@@ -101,8 +103,9 @@ func TestSweepOverridesUntrackedAnchorToUnknown(t *testing.T) {
 	gitCommitAll(t, repo, "init")
 
 	brokenAnchor := Anchor{Type: "files", Repo: repo, Paths: []string{"gone.txt"}}
-	require.Empty(t, ComputeFingerprint(ctx, brokenAnchor),
-		"crn-6az.8.2: an untracked path must never produce a fingerprint")
+	brokenFP, err := ComputeFingerprint(ctx, brokenAnchor)
+	require.NoError(t, err)
+	require.Empty(t, brokenFP, "crn-6az.8.2: an untracked path must never produce a fingerprint")
 
 	writeFile(t, dir, "global/broken.md", filesEntry("broken-1", repo, []string{"gone.txt"}, ""))
 
@@ -138,8 +141,9 @@ func TestSweepOverridesStagedUncommittedAnchorToUnknown(t *testing.T) {
 	gitAdd(t, repo, "staged.go") // staged, deliberately not committed
 
 	stagedAnchor := Anchor{Type: "files", Repo: repo, Paths: []string{"staged.go"}}
-	require.Empty(t, ComputeFingerprint(ctx, stagedAnchor),
-		"crn-8x4/crn-6az.8.2: a path staged but not resolvable at HEAD must never produce a fingerprint")
+	stagedFP, err := ComputeFingerprint(ctx, stagedAnchor)
+	require.NoError(t, err)
+	require.Empty(t, stagedFP, "crn-8x4/crn-6az.8.2: a path staged but not resolvable at HEAD must never produce a fingerprint")
 
 	writeFile(t, dir, "global/staged.md", filesEntry("staged-1", repo, []string{"staged.go"}, ""))
 
@@ -154,6 +158,32 @@ func TestSweepOverridesStagedUncommittedAnchorToUnknown(t *testing.T) {
 	assert.Equal(t, Unknown, f.Status)
 	assert.Contains(t, f.Detail, "staged.go", "the detail should name the untracked-at-HEAD path")
 	assert.NotEqual(t, naiveDetail, f.Detail, "Sweep should enrich Check's generic detail with the specific untracked path")
+}
+
+// TestSweepGitInvocationFailureIsIncomplete guards against Sweep's
+// independent untrackedPaths enrichment mistaking a genuine git invocation
+// failure (git unreachable via PATH) for a confirmed untracked path: the
+// finding must surface as Incomplete with Check's own detail, not get
+// overwritten to Unknown with an "anchor path(s) not tracked at HEAD"
+// message implying a confirmed verdict that was never actually reached.
+func TestSweepGitInvocationFailureIsIncomplete(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	writeFile(t, dir, "global/broken.md", filesEntry("broken-1", repo, []string{"a.go"}, ""))
+
+	t.Setenv("PATH", t.TempDir()) // git binary now unreachable
+
+	findings, err := Sweep(ctx, dir)
+	require.NoError(t, err)
+	f := findingFor(t, findings, "broken-1")
+	assert.Equal(t, Incomplete, f.Status)
+	assert.NotContains(t, f.Detail, "not tracked at HEAD",
+		"an invocation failure must never be reported as a confirmed untracked-path finding")
 }
 
 // TestSweepTierScoping is acceptance criterion 5: global/rig/role are in
@@ -190,7 +220,8 @@ func TestSweepNeverWrites(t *testing.T) {
 	require.NoError(t, os.WriteFile(src, []byte("package a\n"), 0o600))
 	gitCommitAll(t, repo, "init")
 
-	fp := ComputeFingerprint(ctx, Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	fp, err := ComputeFingerprint(ctx, Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	require.NoError(t, err)
 	require.NotEmpty(t, fp)
 	entryPath := writeFile(t, dir, "global/stale.md", filesEntry("stale-1", repo, []string{"a.go"}, fp))
 

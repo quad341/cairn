@@ -14,6 +14,8 @@ import (
 // contract: once shipped, a category must never be renamed or repurposed.
 type ErrorCategory string
 
+// The four stable ErrorCategory values in cairn --json's error envelope —
+// see ErrorCategory's doc for the stability contract.
 const (
 	CategoryNotFound       ErrorCategory = "not_found"
 	CategoryInvalidInput   ErrorCategory = "invalid_input"
