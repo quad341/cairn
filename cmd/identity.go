@@ -9,16 +9,25 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// identityWithSource returns the agent's scope tags from the --identity flag
+// or the CAIRN_IDENTITY env var (space-separated), e.g. "rig:web
+// role:reviewer agent:bot", along with which source they came from ("flag",
+// "env", or "default").
+func identityWithSource(cmd *cobra.Command) (tags []string, source string) {
+	if f, _ := cmd.Flags().GetStringSlice("identity"); len(f) > 0 {
+		return f, "flag"
+	}
+	if e := strings.TrimSpace(os.Getenv("CAIRN_IDENTITY")); e != "" {
+		return strings.Fields(e), "env"
+	}
+	return nil, "default"
+}
+
 // resolveIdentity returns the agent's scope tags from the --identity flag or the
 // CAIRN_IDENTITY env var (space-separated), e.g. "rig:web role:reviewer agent:bot".
 func resolveIdentity(cmd *cobra.Command) []string {
-	if f, _ := cmd.Flags().GetStringSlice("identity"); len(f) > 0 {
-		return f
-	}
-	if e := strings.TrimSpace(os.Getenv("CAIRN_IDENTITY")); e != "" {
-		return strings.Fields(e)
-	}
-	return nil
+	tags, _ := identityWithSource(cmd)
+	return tags
 }
 
 // identityRequested reports whether --identity or $CAIRN_IDENTITY was
