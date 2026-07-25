@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
+	"github.com/quad341/cairn/internal/cairn"
 	"github.com/spf13/cobra"
 )
 
@@ -29,4 +31,22 @@ func identityRequested(cmd *cobra.Command) bool {
 		return true
 	}
 	return strings.TrimSpace(os.Getenv("CAIRN_IDENTITY")) != ""
+}
+
+// resolveIdentityValidated is resolveIdentity, but validates each resolved
+// tag via cairn.ValidatePathSegment first: scope/identity validation is
+// input hygiene, not access control, so a malformed --identity/$CAIRN_IDENTITY
+// tag classifies as invalid_input under --json rather than falling through
+// to whatever error its first downstream use happens to produce. Wired into
+// get/map/prime only -- status rejects --identity outright
+// (identityRequested), and remember validates its own --scope directly
+// rather than resolving identity for scope purposes.
+func resolveIdentityValidated(cmd *cobra.Command) ([]string, error) {
+	identity := resolveIdentity(cmd)
+	for _, tag := range identity {
+		if err := cairn.ValidatePathSegment(tag); err != nil {
+			return nil, classifiedErr(CategoryInvalidInput, tag, fmt.Errorf("invalid identity tag %q: %w", tag, err))
+		}
+	}
+	return identity, nil
 }
