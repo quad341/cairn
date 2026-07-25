@@ -30,49 +30,79 @@ var rememberCmd = &cobra.Command{
 		topic, _ := cmd.Flags().GetString("topic")
 		if topic != "" {
 			if err := cairn.ValidatePathSegment(topic); err != nil {
-				return fmt.Errorf("invalid --topic: %w", err)
+				return emitError(cmd, classifiedErr(CategoryInvalidInput, topic, fmt.Errorf("invalid --topic: %w", err)))
 			}
 		}
 
 		scope, err := rememberScope(cmd)
 		if err != nil {
-			return err
+			return emitError(cmd, classifiedErr(CategoryInvalidInput, "", err))
 		}
 		for _, tag := range scope {
 			if err := cairn.ValidatePathSegment(tag); err != nil {
-				return fmt.Errorf("invalid scope tag %q: %w", tag, err)
+				return emitError(cmd, classifiedErr(CategoryInvalidInput, tag, fmt.Errorf("invalid scope tag %q: %w", tag, err)))
 			}
 		}
 
-		createdBy := strings.Join(resolveIdentity(cmd), " ")
+		identity, err := resolveIdentityValidated(cmd)
+		if err != nil {
+			return emitError(cmd, err)
+		}
+
+		createdBy := strings.Join(identity, " ")
 		e, err := cairn.NewEntry(topic, scope, args[0], createdBy)
 		if err != nil {
-			return fmt.Errorf("construct entry: %w", err)
+			return emitError(cmd, fmt.Errorf("construct entry: %w", err))
 		}
 
 		matched, err := recurrenceMatch(cmd, e)
 		if err != nil {
-			return err
+			return emitError(cmd, err)
 		}
 		if matched != nil {
 			return recordRecurrence(cmd, matched)
 		}
 
 		if err := e.Create(storePath()); err != nil {
-			return fmt.Errorf("write entry: %w", err)
+			return emitError(cmd, fmt.Errorf("write entry: %w", err))
 		}
-		fmt.Printf("%s\n", e.ID)
+		if !wantsJSON(cmd) {
+			fmt.Printf("%s\n", e.ID)
+		}
 
 		if cairn.IsPrivateScope(e.Scope) {
 			sha, err := e.CommitDirect(cmd.Context(), storePath())
 			if err != nil {
-				return fmt.Errorf("commit entry: %w", err)
+				return emitError(cmd, fmt.Errorf("commit entry: %w", err))
+			}
+			if wantsJSON(cmd) {
+				return emitJSON(cmd.OutOrStdout(), RememberResult{
+					ID:     e.ID,
+					Scope:  nonNil(e.Scope),
+					Commit: sha,
+				})
 			}
 			fmt.Printf("%s\n", sha)
 			return nil
 		}
 		return requestReview(cmd, e, scope)
 	},
+}
+
+// RememberResult is cairn remember --json's top-level shape: the entry a
+// call resulted in -- freshly created, or an existing entry whose
+// RecurrenceCount was bumped instead (recordRecurrence) -- how it was
+// committed, and who (if anyone) was mailed for review. Commit and
+// ReviewBranch are mutually exclusive (private tier vs. shared tier);
+// Reviewer is only ever set alongside ReviewBranch.
+type RememberResult struct {
+	ID              string   `json:"id"`
+	Scope           []string `json:"scope"`
+	Commit          string   `json:"commit,omitempty"`
+	ReviewBranch    string   `json:"review_branch,omitempty"`
+	Reviewer        string   `json:"reviewer,omitempty"`
+	Recurrence      bool     `json:"recurrence"`
+	RecurrenceCount int      `json:"recurrence_count,omitempty"`
 }
 
 // recurrenceMatch checks candidate against every entry VISIBLE to the
@@ -165,21 +195,41 @@ func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (*cairn.Entry, 
 func recordRecurrence(cmd *cobra.Command, matched *cairn.Entry) error {
 	matched.RecurrenceCount++
 	if err := matched.WriteBackRecurrenceCount(); err != nil {
-		return fmt.Errorf("record recurrence for %s: %w", matched.ID, err)
+		return emitError(cmd, fmt.Errorf("record recurrence for %s: %w", matched.ID, err))
 	}
-	fmt.Printf("recurrence: %s (count: %d)\n", matched.ID, matched.RecurrenceCount)
+	if !wantsJSON(cmd) {
+		fmt.Printf("recurrence: %s (count: %d)\n", matched.ID, matched.RecurrenceCount)
+	}
 
 	if cairn.IsPrivateScope(matched.Scope) {
 		sha, err := matched.CommitDirect(cmd.Context(), storePath())
 		if err != nil {
-			return fmt.Errorf("commit recurrence for %s: %w", matched.ID, err)
+			return emitError(cmd, fmt.Errorf("commit recurrence for %s: %w", matched.ID, err))
+		}
+		if wantsJSON(cmd) {
+			return emitJSON(cmd.OutOrStdout(), RememberResult{
+				ID:              matched.ID,
+				Scope:           nonNil(matched.Scope),
+				Commit:          sha,
+				Recurrence:      true,
+				RecurrenceCount: matched.RecurrenceCount,
+			})
 		}
 		fmt.Printf("%s\n", sha)
 		return nil
 	}
 	branch, err := matched.CommitRecurrenceToReviewBranch(cmd.Context(), storePath())
 	if err != nil {
-		return fmt.Errorf("commit recurrence for %s to review branch: %w", matched.ID, err)
+		return emitError(cmd, fmt.Errorf("commit recurrence for %s to review branch: %w", matched.ID, err))
+	}
+	if wantsJSON(cmd) {
+		return emitJSON(cmd.OutOrStdout(), RememberResult{
+			ID:              matched.ID,
+			Scope:           nonNil(matched.Scope),
+			ReviewBranch:    branch,
+			Recurrence:      true,
+			RecurrenceCount: matched.RecurrenceCount,
+		})
 	}
 	fmt.Printf("review branch: %s\n", branch)
 	return nil

@@ -2,6 +2,7 @@ package cairn
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1169,4 +1170,23 @@ func TestStatusPopulatesAnchorAndScopeFields(t *testing.T) {
 	assert.Equal(t, "A", e.Title)
 	assert.Equal(t, "a short summary", e.Summary)
 	assert.Equal(t, 5, e.HitCount)
+}
+
+// TestIterEntriesWrapsParseFailureAsMalformedEntryError covers crn-od2x.2:
+// a real parse failure (as opposed to errNotEntry, silently skipped) must be
+// classifiable by cmd/format.go's malformed_store category without changing
+// IterEntries' existing abort-the-walk behavior -- so the returned error
+// must still satisfy errors.Is-style propagation (it's still a non-nil error
+// that aborts the walk) while also exposing the offending path via
+// errors.As(&MalformedEntryError{}).
+func TestIterEntriesWrapsParseFailureAsMalformedEntryError(t *testing.T) {
+	dir := t.TempDir()
+	bad := writeFile(t, dir, "global/broken.md", "+++\nid = \"broken\"\nno closing fence\n")
+
+	_, err := IterEntries(dir)
+	require.Error(t, err)
+
+	var malformed *MalformedEntryError
+	require.True(t, errors.As(err, &malformed), "IterEntries' parse-failure error must be a *MalformedEntryError")
+	assert.Equal(t, bad, malformed.Path, "MalformedEntryError.Path must name the offending file")
 }

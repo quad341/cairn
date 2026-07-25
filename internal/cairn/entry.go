@@ -33,6 +33,21 @@ const ErrNotFound constError = "entry not found"
 // errNotEntry marks a markdown file that carries no cairn frontmatter.
 const errNotEntry constError = "not a cairn entry"
 
+// MalformedEntryError marks a real ParseEntry failure IterEntries hit while
+// walking the store -- distinct from errNotEntry (a file that simply isn't a
+// cairn entry, silently skipped). It exists purely so a caller can classify a
+// partially-corrupt store as a structured, stable condition (cmd/format.go's
+// malformed_store category) without changing IterEntries' existing
+// abort-the-walk behavior on this error: Error() renders identically to the
+// unwrapped error, so this is a legibility-only addition.
+type MalformedEntryError struct {
+	Path string
+	Err  error
+}
+
+func (e *MalformedEntryError) Error() string { return e.Err.Error() }
+func (e *MalformedEntryError) Unwrap() error { return e.Err }
+
 // Anchor records what an entry was derived from, so drift is detectable.
 type Anchor struct {
 	Type        string   `toml:"type"` // none | files | commit | query | external
@@ -383,7 +398,7 @@ func IterEntries(store string) ([]*Entry, error) {
 				if errors.Is(perr, errNotEntry) {
 					return nil // not an entry — skip it
 				}
-				return perr
+				return &MalformedEntryError{Path: p, Err: perr}
 			}
 			out = append(out, e)
 			return nil
@@ -646,15 +661,16 @@ func scopeSuperset(super, sub []string) bool {
 // prints, reading index columns only instead of walking + parsing every body
 // (crn-6az.6.1.5). It also backs Visible (via visibleFrom) and Prime (both
 // its scope-mismatch diagnostic via scopeMismatchWarnings, crn-ln1, and its
-// budgeted item list, which needs Title/Summary/HitCount to render entries
-// without a body read, crn-0vqk.2). Check only ever reads e.Anchor, ShadowMap
-// only ever reads ID, TopicKey, Scope, VerifiedAt, and CreatedAt, and Prime
-// additionally reads Title, Summary, and HitCount -- so those are the only
-// fields populated here; Type, CreatedBy, Body, and BodyPath are left
-// zero-valued for every caller. Adding a column here is a deliberate,
-// reviewed cost trade-off (these three were already indexed and populated by
-// reindexTx at zero marginal query cost) -- not a precedent for extending
-// this list on request; any future addition needs the same analysis.
+// budgeted item list, which backs both text and --json rendering and needs
+// Title/Summary/HitCount to render entries without a body read, crn-0vqk.2/
+// crn-od2x.2). Check only ever reads e.Anchor, ShadowMap only ever reads ID,
+// TopicKey, Scope, VerifiedAt, and CreatedAt, and Prime additionally reads
+// Title, Summary, and HitCount -- so those are the only fields populated
+// here; Type, CreatedBy, Body, and BodyPath are left zero-valued for every
+// caller. Adding a column here is a deliberate, reviewed cost trade-off
+// (these three were already indexed and populated by reindexTx at zero
+// marginal query cost) -- not a precedent for extending this list on
+// request; any future addition needs the same analysis.
 func Status(ctx context.Context, store string) ([]*Entry, error) {
 	if err := ensureFresh(ctx, store); err != nil {
 		return nil, err

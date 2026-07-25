@@ -24,16 +24,28 @@ func requestReview(cmd *cobra.Command, e *cairn.Entry, scope []string) error {
 
 	branch, err := e.CommitToReviewBranch(cmd.Context(), storePath())
 	if err != nil {
-		return fmt.Errorf("commit shared-tier entry to review branch: %w", err)
+		return emitError(cmd, fmt.Errorf("commit shared-tier entry to review branch: %w", err))
 	}
-	fmt.Printf("review branch: %s\n", branch)
+	if !wantsJSON(cmd) {
+		fmt.Printf("review branch: %s\n", branch)
+	}
 
 	reviewer, err := resolveReviewer(cmd, tier, value)
 	if err != nil {
-		return fmt.Errorf("entry %s committed to review branch %s, but resolving a reviewer to mail failed: %w", e.ID, branch, err)
+		return emitError(cmd, fmt.Errorf("entry %s committed to review branch %s, but resolving a reviewer to mail failed: %w",
+			e.ID, branch, err))
 	}
 	if err := sendReviewMail(cmd.Context(), reviewer, e, branch); err != nil {
-		return fmt.Errorf("entry %s committed to review branch %s, but mail to reviewer %q failed: %w", e.ID, branch, reviewer, err)
+		return emitError(cmd, fmt.Errorf("entry %s committed to review branch %s, but mail to reviewer %q failed: %w",
+			e.ID, branch, reviewer, err))
+	}
+	if wantsJSON(cmd) {
+		return emitJSON(cmd.OutOrStdout(), RememberResult{
+			ID:           e.ID,
+			Scope:        nonNil(e.Scope),
+			ReviewBranch: branch,
+			Reviewer:     reviewer,
+		})
 	}
 	fmt.Printf("mailed reviewer: %s\n", reviewer)
 	return nil

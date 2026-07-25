@@ -52,7 +52,7 @@ type PrimeResult struct {
 	StaleCount     int         `json:"stale_count"`
 	UnknownCount   int         `json:"unknown_count"`
 	ChecksCapped   bool        `json:"checks_capped"`
-	Warnings       []string    `json:"warnings,omitempty"`
+	Warnings       []string    `json:"warnings"`
 }
 
 // Prime computes an agent's always-in-context payload: a budget-bounded,
