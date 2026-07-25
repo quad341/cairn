@@ -644,14 +644,17 @@ func scopeSuperset(super, sub []string) bool {
 
 // Status returns every entry for the freshness/shadow report `cairn status`
 // prints, reading index columns only instead of walking + parsing every body
-// (crn-6az.6.1.5). It also backs Visible (via visibleFrom) and Prime's
-// scope-mismatch diagnostic (via scopeMismatchWarnings, crn-ln1), which need
-// the same bulk index read pre- and post-identity-filtering respectively.
-// Check only ever reads e.Anchor, ShadowMap only ever reads ID, TopicKey,
-// Scope, VerifiedAt, and CreatedAt, and Visible/scopeMismatchWarnings only
-// ever read those same five -- so those are the only fields populated here;
-// Title, Summary, Type, CreatedBy, HitCount, Body, and BodyPath are left
-// zero-valued for every caller.
+// (crn-6az.6.1.5). It also backs Visible (via visibleFrom) and Prime (both
+// its scope-mismatch diagnostic via scopeMismatchWarnings, crn-ln1, and its
+// budgeted item list, which needs Title/Summary/HitCount to render entries
+// without a body read, crn-0vqk.2). Check only ever reads e.Anchor, ShadowMap
+// only ever reads ID, TopicKey, Scope, VerifiedAt, and CreatedAt, and Prime
+// additionally reads Title, Summary, and HitCount -- so those are the only
+// fields populated here; Type, CreatedBy, Body, and BodyPath are left
+// zero-valued for every caller. Adding a column here is a deliberate,
+// reviewed cost trade-off (these three were already indexed and populated by
+// reindexTx at zero marginal query cost) -- not a precedent for extending
+// this list on request; any future addition needs the same analysis.
 func Status(ctx context.Context, store string) ([]*Entry, error) {
 	if err := ensureFresh(ctx, store); err != nil {
 		return nil, err
@@ -668,7 +671,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 	}
 
 	rows, err := db.QueryContext(ctx, `SELECT
-		id, topic_key, verified_at, created_at,
+		id, title, summary, hit_count, topic_key, verified_at, created_at,
 		anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint
 		FROM entries ORDER BY id`)
 	if err != nil {
@@ -681,7 +684,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 		e := &Entry{}
 		var anchorPaths string
 		if err := rows.Scan(
-			&e.ID, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt,
+			&e.ID, &e.Title, &e.Summary, &e.HitCount, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt,
 			&e.Anchor.Type, &e.Anchor.Repo, &anchorPaths, &e.Anchor.Spec, &e.Anchor.Fingerprint,
 		); err != nil {
 			return nil, err
