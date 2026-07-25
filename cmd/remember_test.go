@@ -185,6 +185,29 @@ func readStubGCArgs(t *testing.T, captureFile string) []string {
 	return args
 }
 
+// withStdin redirects os.Stdin to a real temp file containing body for the
+// duration of fn, restoring the original afterward. FR-1's stdin-piped
+// detection relies on os.ModeCharDevice: go test's own os.Stdin is reliably a
+// char device (a real terminal, or the test runner's own attached input), so
+// an in-memory substitute wouldn't exercise the same code path a real pipe
+// does -- a plain regular file has none of the special mode bits set, which
+// is what makes it read as "redirected" rather than "interactive".
+func withStdin(t *testing.T, body string, fn func()) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "stdin")
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+
+	f, err := os.Open(path)
+	require.NoError(t, err)
+	defer f.Close()
+
+	orig := os.Stdin
+	os.Stdin = f
+	defer func() { os.Stdin = orig }()
+
+	fn()
+}
+
 func resetRememberFlags(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{"topic", "scope", "reviewer"} {
@@ -691,24 +714,23 @@ func TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly(t *testing.T) {
 		"a recurrence hit must never create the discarded candidate's own scope directory, since Create is never called")
 }
 
-// TestRememberSameScopeTopicKeyRepeatDoesNotIncrementRecurrence documents a
-// discovered limitation of reusing Conflicts exactly as crn-28ge.1.4's own
-// AC mandates (NFR-05, no independent equality check): two entries sharing
-// both an exact topic_key AND an equal (or superset/subset) scope are
-// "shadow exempt" in Conflicts' own signal computation (pairSignals,
-// internal/cairn/dedup.go) -- deliberately built for cairn get's
-// shadow-vs-conflict distinction (crn-28ge.1.3) -- which silently suppresses
-// ANY finding for that pair, topic_key included. So the single most
-// intuitive recurrence scenario, an agent re-capturing the exact same fact
-// under its own single private scope, is NOT detected here: the second call
-// falls through to today's unchanged create-new-entry behavior, producing
-// two separate entries rather than one entry with RecurrenceCount
-// incremented. This is a real, deliberately-accepted gap, not a bug in this
-// test or in this bead's own code -- see the bead's notes for the recommended
-// follow-up against crn-28ge.1.3 (tighten pairSignals' shadowExempt to
-// require strict specificity, mirroring bestShadower's moreSpecific
-// tie-break, instead of a bare non-strict scopeSuperset).
-func TestRememberSameScopeTopicKeyRepeatDoesNotIncrementRecurrence(t *testing.T) {
+// TestRememberSameScopeTopicKeyRepeatIncrementsRecurrence covers crn-lzn4.1.1's
+// FR-6 fix. This test used to document a KNOWN LIMITATION: two entries
+// sharing both an exact topic_key AND an equal scope were "shadow exempt" in
+// Conflicts' own signal computation (pairSignals, internal/cairn/dedup.go),
+// because an equal scope is a mutual superset of itself in both directions
+// and the old shadowExempt check was non-strict (either direction, not
+// exclusive). That silently suppressed ANY finding for such a pair, topic_key
+// included, so the single most intuitive recurrence scenario -- an agent
+// re-capturing the exact same fact under its own single private scope -- was
+// never detected: each call created its own separate entry. pairSignals'
+// shadowExempt is now a strict (exclusive-or) superset check, so an equal
+// scope no longer counts as legitimate shadowing, and this now behaves like
+// every other recurrence match: the second call increments the first entry's
+// RecurrenceCount instead of creating a second entry. See
+// internal/cairn/dedup_test.go's TestConflictsEqualScopeSameTopicKeyIsNotShadowing
+// for the same fix exercised directly against pairSignals/Conflicts.
+func TestRememberSameScopeTopicKeyRepeatIncrementsRecurrence(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
 	t.Setenv("CAIRN_IDENTITY", "agent:test")
@@ -717,19 +739,22 @@ func TestRememberSameScopeTopicKeyRepeatDoesNotIncrementRecurrence(t *testing.T)
 		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "prefer feature flags over env vars")
 		require.NoError(t, err)
 	})
-	captureStdout(t, func() {
+	secondOut := captureStdout(t, func() {
 		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "prefer feature flags over env vars")
 		require.NoError(t, err)
 	})
 
 	entries, err := os.ReadDir(filepath.Join(store, "agent", "test"))
 	require.NoError(t, err)
-	assert.Len(t, entries, 2, "KNOWN LIMITATION: equal-scope same-topic_key repeats are shadow-exempt in Conflicts and so are never detected as a recurrence -- each call creates its own separate entry")
-	for _, ent := range entries {
-		parsed, err := cairn.ParseEntry(filepath.Join(store, "agent", "test", ent.Name()))
-		require.NoError(t, err)
-		assert.Equal(t, 0, parsed.RecurrenceCount, "neither entry's RecurrenceCount is ever incremented on this path")
-	}
+	require.Len(t, entries, 1, "an equal-scope same-topic_key repeat must now be detected as a recurrence, not written as a second separate entry")
+
+	parsed, err := cairn.ParseEntry(filepath.Join(store, "agent", "test", entries[0].Name()))
+	require.NoError(t, err)
+	assert.Equal(t, 1, parsed.RecurrenceCount)
+
+	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
+	require.Len(t, secondLines, 2, "a private-tier recurrence hit prints the recurrence line then the commit SHA")
+	assert.Equal(t, "recurrence: "+parsed.ID+" (count: 1)", secondLines[0])
 }
 
 // TestRememberNearMissTopicKeyDoesNotIncrementRecurrence proves Conflicts'
@@ -833,4 +858,222 @@ func TestRememberRecurrenceRequiresVisibleMatch(t *testing.T) {
 	e1After, err := cairn.ParseEntry(e1.BodyPath)
 	require.NoError(t, err)
 	assert.Equal(t, 0, e1After.RecurrenceCount, "E1 must be untouched: it was never visible to the second call's identity")
+}
+
+// TestRememberReadsBodyFromStdinWhenNoPositionalArg covers crn-lzn4.1.1's
+// FR-1: with no positional body argument and no --file, a piped (non-TTY)
+// stdin is read as the body.
+func TestRememberReadsBodyFromStdinWhenNoPositionalArg(t *testing.T) {
+	var store string
+	var runErr error
+	withStdin(t, "a body from stdin", func() {
+		store, runErr = runRemember(t, "--topic", "valid-topic", "--scope", "agent:test")
+	})
+	require.NoError(t, runErr)
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Equal(t, "a body from stdin", e.Body)
+}
+
+// TestRememberFileFlagReadsBody covers crn-lzn4.1.1's FR-2: --file reads the
+// body from the named file when no positional body argument is given.
+func TestRememberFileFlagReadsBody(t *testing.T) {
+	bodyFile := filepath.Join(t.TempDir(), "body.txt")
+	require.NoError(t, os.WriteFile(bodyFile, []byte("a body from a file"), 0o600))
+
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test", "--file", bodyFile)
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Equal(t, "a body from a file", e.Body)
+}
+
+// TestRememberRejectsPositionalAndFileTogether covers crn-lzn4.1.1's FR-1/NFR-1:
+// two or more input sources (here, a positional body and --file) must be
+// rejected as ambiguous, with nothing written.
+func TestRememberRejectsPositionalAndFileTogether(t *testing.T) {
+	bodyFile := filepath.Join(t.TempDir(), "body.txt")
+	require.NoError(t, os.WriteFile(bodyFile, []byte("file body"), 0o600))
+
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test", "--file", bodyFile, "positional body")
+	require.Error(t, err, "a positional body and --file together must be rejected as ambiguous")
+	assert.Contains(t, err.Error(), "ambiguous")
+	assertNoFilesWritten(t, store)
+}
+
+// TestRememberRejectsPositionalAndStdinTogether is
+// TestRememberRejectsPositionalAndFileTogether's stdin counterpart: a
+// positional body plus piped stdin is the same NFR-1 ambiguity, through a
+// different pair of sources.
+func TestRememberRejectsPositionalAndStdinTogether(t *testing.T) {
+	var store string
+	var runErr error
+	withStdin(t, "stdin body", func() {
+		store, runErr = runRemember(t, "--topic", "valid-topic", "--scope", "agent:test", "positional body")
+	})
+	require.Error(t, runErr, "a positional body and piped stdin together must be rejected as ambiguous")
+	assert.Contains(t, runErr.Error(), "ambiguous")
+	assertNoFilesWritten(t, store)
+}
+
+// TestRememberTitleAndSummaryFlagsOverrideAutoDerivation covers crn-lzn4.1.1's
+// FR-3 at the CLI layer: --title/--summary must win over titleAndSummary's
+// auto-derivation from the body.
+func TestRememberTitleAndSummaryFlagsOverrideAutoDerivation(t *testing.T) {
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test",
+		"--title", "explicit title", "--summary", "explicit summary",
+		"auto-derived title line\nrest of the body")
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Equal(t, "explicit title", e.Title)
+	assert.Equal(t, "explicit summary", e.Summary)
+}
+
+// TestRememberAnchorFlagsBuildFilesAnchor covers crn-lzn4.1.1's FR-4:
+// --anchor-repo plus one or more repeatable --anchor-path flags build a
+// "files"-type Anchor, without requiring --verify.
+func TestRememberAnchorFlagsBuildFilesAnchor(t *testing.T) {
+	anchorRepo := t.TempDir()
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test",
+		"--anchor-repo", anchorRepo, "--anchor-path", "a.go", "--anchor-path", "b.go", "a body")
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Equal(t, "files", e.Anchor.Type)
+	assert.Equal(t, anchorRepo, e.Anchor.Repo)
+	assert.Equal(t, []string{"a.go", "b.go"}, e.Anchor.Paths)
+}
+
+// gitCommitFile writes relPath under repo (an already gitInit'd directory)
+// with content, then git-adds and commits it -- the tracked-object fixture
+// FR-5's --verify tests need, distinct from gitInit's own empty initial
+// commit and gitCommitAll's "add everything" mode.
+func gitCommitFile(t *testing.T, repo, relPath, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(repo, relPath), []byte(content), 0o600))
+	out, err := exec.CommandContext(t.Context(), "git", "-C", repo, "add", relPath).CombinedOutput()
+	require.NoErrorf(t, err, "git add: %s", out)
+	out, err = exec.CommandContext(t.Context(), "git", "-C", repo, "commit", "-q", "-m", "add "+relPath).CombinedOutput()
+	require.NoErrorf(t, err, "git commit: %s", out)
+}
+
+// TestRememberVerifyFlagComputesFingerprintOnSuccess covers crn-lzn4.1.1's
+// FR-5 success path: --verify against a files anchor that resolves to a real
+// tracked object at the anchor repo's HEAD computes and persists a
+// fingerprint, and stamps the entry's VerifiedAt.
+func TestRememberVerifyFlagComputesFingerprintOnSuccess(t *testing.T) {
+	anchorRepo := t.TempDir()
+	gitInit(t, anchorRepo)
+	gitCommitFile(t, anchorRepo, "a.go", "package a\n")
+
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test",
+		"--anchor-repo", anchorRepo, "--anchor-path", "a.go", "--verify", "a body")
+	require.NoError(t, err)
+
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Equal(t, "files", e.Anchor.Type)
+	assert.NotEmpty(t, e.Anchor.Fingerprint, "--verify must compute and persist a fingerprint when the anchor resolves")
+	assert.NotEmpty(t, e.VerifiedAt, "--verify must stamp VerifiedAt on success")
+}
+
+// TestRememberVerifySoftFailsToStderrWhenAnchorUnresolvable covers
+// crn-lzn4.1.1's FR-5 soft-fail path: --verify against an anchor path that
+// doesn't resolve to a real tracked object must warn on stderr and continue
+// -- not abort the command or leave Fingerprint/VerifiedAt set.
+func TestRememberVerifySoftFailsToStderrWhenAnchorUnresolvable(t *testing.T) {
+	anchorRepo := t.TempDir()
+	gitInit(t, anchorRepo)
+
+	var store string
+	var runErr error
+	stderr := captureStderr(t, func() {
+		store, runErr = runRemember(t, "--topic", "valid-topic", "--scope", "agent:test",
+			"--anchor-repo", anchorRepo, "--anchor-path", "does-not-exist.go", "--verify", "a body")
+	})
+	require.NoError(t, runErr, "an unverifiable anchor must soft-fail, not abort the whole command")
+	assert.NotEmpty(t, stderr, "a soft-fail must warn on stderr")
+
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Empty(t, e.Anchor.Fingerprint)
+	assert.Empty(t, e.VerifiedAt)
+}
+
+// TestRememberForceOverridesRecurrenceMatchPrivateTier covers crn-lzn4.1.1's
+// FR-7/FR-8 on the private tier: --force against a candidate that would
+// otherwise match an existing entry as a recurrence instead creates a new
+// entry, records OverriddenDuplicateOf on it, and prints the override line
+// between the id and the commit SHA.
+func TestRememberForceOverridesRecurrenceMatchPrivateTier(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("CAIRN_IDENTITY", "agent:test")
+
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "prefer feature flags over env vars")
+		require.NoError(t, err)
+	})
+	first := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+
+	secondOut := captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "--force", "prefer feature flags over env vars")
+		require.NoError(t, err)
+	})
+
+	entries, err := os.ReadDir(filepath.Join(store, "agent", "test"))
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "--force must create a new entry even though a recurrence match exists, not increment the matched entry")
+
+	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
+	require.Len(t, secondLines, 3, "a forced-override private-tier create prints the id, the override line, then the commit SHA")
+	assert.Equal(t, "override: forced past duplicate of "+first.ID, secondLines[1])
+
+	var second *cairn.Entry
+	for _, ent := range entries {
+		parsed, err := cairn.ParseEntry(filepath.Join(store, "agent", "test", ent.Name()))
+		require.NoError(t, err)
+		if parsed.ID != first.ID {
+			second = parsed
+		}
+	}
+	require.NotNil(t, second)
+	assert.Equal(t, first.ID, second.OverriddenDuplicateOf, "the forced entry must record which entry it overrode")
+}
+
+// TestRememberForceOverridesRecurrenceMatchSharedTier is
+// TestRememberForceOverridesRecurrenceMatchPrivateTier's shared-tier
+// counterpart: the override line is followed by the review-branch and
+// mailed-reviewer lines instead of a commit SHA.
+func TestRememberForceOverridesRecurrenceMatchSharedTier(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("CAIRN_IDENTITY", "rig:web")
+
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "rig:web", "configure the shared hook")
+		require.NoError(t, err)
+	})
+	first := requireSingleEntry(t, filepath.Join(store, "rig", "web"))
+
+	secondOut := captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "rig:web", "--force", "configure the shared hook")
+		require.NoError(t, err)
+	})
+
+	entries, err := os.ReadDir(filepath.Join(store, "rig", "web"))
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "--force must create a new entry even for a shared-tier recurrence match")
+
+	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
+	require.Len(t, secondLines, 4, "a forced-override shared-tier create prints the id, override line, review branch, and mailed reviewer")
+	assert.Equal(t, "override: forced past duplicate of "+first.ID, secondLines[1])
+	assert.True(t, strings.HasPrefix(secondLines[2], "review branch: "))
+	assert.True(t, strings.HasPrefix(secondLines[3], "mailed reviewer: "))
+}
+
+// TestRememberForceWithNoMatchBehavesLikeOrdinaryCreate covers crn-lzn4.1.1's
+// §7 Output Contract note: --force with no actual duplicate found is
+// indistinguishable from an ordinary create -- no override line, no
+// OverriddenDuplicateOf.
+func TestRememberForceWithNoMatchBehavesLikeOrdinaryCreate(t *testing.T) {
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test", "--force", "a body")
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Empty(t, e.OverriddenDuplicateOf, "--force with no actual duplicate match must behave like an ordinary create -- nothing to override")
 }

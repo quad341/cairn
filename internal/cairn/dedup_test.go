@@ -376,6 +376,28 @@ func TestConflictsIncomparableScopesSharedKeyStillFlagged(t *testing.T) {
 	assert.Equal(t, []string{"rig/hook", "role/hook"}, tk[0].EntryIDs)
 }
 
+// TestConflictsEqualScopeSameTopicKeyIsNotShadowing covers crn-lzn4.1.1's
+// FR-6 fix: pairSignals' shadowExempt used to be a non-strict either-direction
+// check (scopeSuperset(a,b) || scopeSuperset(b,a)), and an EQUAL scope is a
+// mutual superset of itself in both directions, so two entries sharing both
+// topic_key and scope were treated as legitimate shadowing -- indistinguishable
+// from a real default/override pair -- and silently suppressed. That's wrong:
+// equal scope plus equal topic_key is a genuine repeat, not shadowing (there's
+// no specificity difference for ShadowMap's bestShadower to have picked a
+// winner from), and must still be flagged. The fix tightens shadowExempt to a
+// strict (exclusive-or) superset check, so only a genuine specificity
+// difference (one side strictly more specific than the other) is exempt.
+func TestConflictsEqualScopeSameTopicKeyIsNotShadowing(t *testing.T) {
+	candidate := &Entry{ID: "agent/one", TopicKey: "build-flags", Scope: []string{"agent:test"}}
+	other := &Entry{ID: "agent/two", TopicKey: "build-flags", Scope: []string{"agent:test"}}
+
+	findings := Conflicts(candidate, []*Entry{other})
+
+	tk := dedupFindingsOfKind(findings, "topic_key")
+	require.Len(t, tk, 1, "an equal-scope same-topic_key pair is a real repeat, not legitimate shadowing, and must be flagged")
+	assert.Equal(t, []string{"agent/one", "agent/two"}, tk[0].EntryIDs)
+}
+
 // TestConflictsBothSignalsCanFireForSamePair confirms Conflicts is
 // deliberately NOT tier-scoped for its topic_key signal (unlike Dedup's own
 // topicKeyCollisions, which only ever compares within a single tier): a

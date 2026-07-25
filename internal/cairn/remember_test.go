@@ -54,6 +54,59 @@ func TestNewEntryAnchorIsNone(t *testing.T) {
 	assert.Equal(t, "none", e.Anchor.Type)
 }
 
+// TestNewEntryParamsTitleSummaryOverride covers crn-lzn4.1.1's FR-3: an
+// explicit Title/Summary in NewEntryParams must win over titleAndSummary's
+// auto-derivation from Body, not merely supplement it.
+func TestNewEntryParamsTitleSummaryOverride(t *testing.T) {
+	e, err := NewEntry(NewEntryParams{
+		TopicKey: "t",
+		Body:     "auto title\nauto summary from body",
+		Title:    "explicit title",
+		Summary:  "explicit summary",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "explicit title", e.Title)
+	assert.Equal(t, "explicit summary", e.Summary)
+}
+
+// TestNewEntryParamsTitleSummaryDefaultToAutoDerivation covers the omitted
+// side of FR-3: leaving Title/Summary unset must fall back to exactly
+// titleAndSummary's existing auto-derivation, unchanged from today.
+func TestNewEntryParamsTitleSummaryDefaultToAutoDerivation(t *testing.T) {
+	e, err := NewEntry(NewEntryParams{
+		TopicKey: "t",
+		Body:     "auto title\nauto title\nauto summary from body",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "auto title", e.Title)
+	assert.Equal(t, "auto title\nauto title\nauto summary from body", e.Summary)
+}
+
+// TestNewEntryParamsCallerSuppliedAnchorIsUsedVerbatim covers crn-lzn4.1.1's
+// FR-4: a caller-supplied Anchor (built from --anchor-repo/--anchor-path at
+// the CLI layer) must be stored on the entry exactly as given.
+func TestNewEntryParamsCallerSuppliedAnchorIsUsedVerbatim(t *testing.T) {
+	e, err := NewEntry(NewEntryParams{
+		TopicKey: "t",
+		Body:     "body",
+		Anchor:   Anchor{Type: "files", Repo: "/tmp/repo", Paths: []string{"a.go", "b.go"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "files", e.Anchor.Type)
+	assert.Equal(t, "/tmp/repo", e.Anchor.Repo)
+	assert.Equal(t, []string{"a.go", "b.go"}, e.Anchor.Paths)
+}
+
+// TestNewEntryParamsAnchorDefaultsToNoneWhenZeroValue confirms an omitted
+// Anchor field (the zero value, Type == "") still defaults to {Type: "none"},
+// matching today's hardcoded behavior -- capture without any anchor flags
+// must be unaffected by FR-4.
+func TestNewEntryParamsAnchorDefaultsToNoneWhenZeroValue(t *testing.T) {
+	e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: "body"})
+	require.NoError(t, err)
+	assert.Equal(t, "none", e.Anchor.Type)
+}
+
 func TestNewEntryStampsCreatedAtAsDateOnly(t *testing.T) {
 	e, err := NewEntry("t", nil, "body", "")
 	require.NoError(t, err)
