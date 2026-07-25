@@ -126,25 +126,31 @@ func Check(ctx context.Context, e *Entry) (string, string) {
 	// Anchor shape (type + presence of the fields the type needs) decides
 	// verifiability without any git call -- ComputeFingerprint's own switch
 	// makes exactly this same free decision internally. Checking it here
-	// first, before the never-verified check below, keeps "not verifiable"
-	// winning over "never verified" for a fundamentally unverifiable anchor
-	// (crn-0vqk.2).
+	// first keeps "not verifiable" winning over "never verified" for a
+	// fundamentally unverifiable anchor (crn-0vqk.2), with no shell-out
+	// either way.
 	if a.Type != "commit" && (a.Type != "files" || a.Repo == "" || len(a.Paths) == 0) {
 		return Unknown, fmt.Sprintf("anchor type %q not verifiable in v1", a.Type)
 	}
-	// Once the anchor is at least shape-checkable, "never verified" is also
-	// knowable for free from a.Fingerprint alone -- check it before paying
-	// for ComputeFingerprint's git shell-out (the only expensive branch,
-	// reached only for a files anchor with repo+paths set). This benefits
-	// every Check() caller (status/freshness/get/verify), not just Prime's
-	// budgeted classifier, and is a currently-live inefficiency fixed in
-	// scope for crn-0vqk.2 rather than filed separately.
-	if a.Fingerprint == "" {
-		return Unknown, "never verified (no stored fingerprint)"
-	}
+	// The shell-out (inside ComputeFingerprint, for a files anchor with
+	// repo+paths set) must run before the never-verified check below, not
+	// after: a genuine git-invocation failure (PATH broken, context
+	// canceled) has to surface as Incomplete even when the anchor has never
+	// been fingerprinted (crn-fdjc.1.1) -- an anchor that happens to have no
+	// stored fingerprint yet is not a reason to mask a live infrastructure
+	// failure behind "never verified".
 	cur, err := ComputeFingerprint(ctx, a)
 	if err != nil {
 		return Incomplete, fmt.Sprintf("git check did not complete: %v", err)
+	}
+	// Never-verified is checked here, after the call succeeds: an anchor
+	// with no stored fingerprint has nothing to compare cur against, so
+	// without this it would either false-match two empty strings as Fresh
+	// (when cur is also a confirmed-negative "") or false-report Stale
+	// (when cur is non-empty) -- neither is meaningful for an entry that's
+	// simply never been checked before (crn-0vqk.2).
+	if a.Fingerprint == "" {
+		return Unknown, "never verified (no stored fingerprint)"
 	}
 	if cur == "" {
 		return Unknown, fmt.Sprintf("anchor type %q not verifiable in v1", a.Type)
