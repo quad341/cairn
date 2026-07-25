@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -537,6 +538,26 @@ func TestEnsureFreshWithLogsIndexDriftOnReindexError(t *testing.T) {
 	assert.Equal(t, false, rec["reindexed"])
 	assert.Equal(t, float64(0), rec["reindex_count"])
 	assert.Equal(t, "boom", rec["reindex_error"])
+}
+
+func TestEnsureFreshWithRedactsSecretsInReindexError(t *testing.T) {
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+
+	failingReindex := func(ctx context.Context, store string) (int, error) {
+		return 0, fmt.Errorf("db error near token %s", testAWSKeyExample)
+	}
+
+	recs := testLogRecords(t, func(ctx context.Context) {
+		require.Error(t, ensureFreshWith(ctx, store, failingReindex))
+	})
+
+	require.Len(t, recs, 1)
+	rec := recs[0]
+	assert.NotContains(t, rec["reindex_error"], testAWSKeyExample, "a secret-shaped string must never reach the log verbatim")
+	assert.Contains(t, rec["reindex_error"], "[redacted:AWS access key ID]")
 }
 
 func TestOpenDBAppliesBusyTimeoutAndWALPragmas(t *testing.T) {

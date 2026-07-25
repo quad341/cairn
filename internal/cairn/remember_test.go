@@ -2,6 +2,7 @@ package cairn
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -680,6 +681,21 @@ func TestCommitDirectFailureLogsStepOutcome(t *testing.T) {
 	assert.Equal(t, "git_add", step["name"])
 	assert.Equal(t, "error", step["outcome"])
 	assert.NotEmpty(t, step["detail"], "a failed step must record what went wrong")
+}
+
+func TestGitStepRedactsSecretsInErrorDetail(t *testing.T) {
+	recs := testLogRecords(t, func(ctx context.Context) {
+		_, err := gitStep(ctx, "test_op", "test_step", func() (string, error) {
+			return "", fmt.Errorf("remote rejected: token %s invalid", testAWSKeyExample)
+		})
+		require.Error(t, err)
+	})
+
+	require.Len(t, recs, 1)
+	step := recs[0]
+	assert.Equal(t, "error", step["outcome"])
+	assert.NotContains(t, step["detail"], testAWSKeyExample, "a secret-shaped string must never reach the log verbatim")
+	assert.Contains(t, step["detail"], "[redacted:AWS access key ID]")
 }
 
 func TestCommitToReviewBranchLogsWritePathAndSteps(t *testing.T) {

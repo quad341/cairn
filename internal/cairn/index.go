@@ -279,7 +279,7 @@ func ensureFreshWith(ctx context.Context, store string, reindex func(context.Con
 		DurationMS:   time.Since(start).Milliseconds(),
 	}
 	if reindexErr != nil {
-		fields.ReindexError = reindexErr.Error()
+		fields.ReindexError = redactSecrets(reindexErr.Error())
 	}
 	obslog.FromContext(ctx).IndexDrift(fields)
 	return reindexErr

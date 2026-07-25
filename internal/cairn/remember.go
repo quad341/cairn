@@ -167,7 +167,7 @@ func gitStep(ctx context.Context, operation, name string, fn func() (string, err
 	}
 	if err != nil {
 		fields.Outcome = "error"
-		fields.Detail = err.Error()
+		fields.Detail = redactSecrets(err.Error())
 	}
 	obslog.FromContext(ctx).WritePathStep(fields)
 	return out, err

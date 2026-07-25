@@ -220,6 +220,19 @@ func detectSecretPattern(text string) string {
 	return ""
 }
 
+// redactSecrets is obslog's defense-in-depth scrub over freeform string
+// fields (git command stderr, error messages) before logging: a git auth
+// failure or similar could theoretically echo a credential-bearing string
+// into text that would otherwise be written verbatim to the debug log.
+// Reuses secretPatterns -- the same regex set already guarding
+// MergeReviewBranch -- rather than a separate list to keep the two in sync.
+func redactSecrets(s string) string {
+	for _, p := range secretPatterns {
+		s = p.re.ReplaceAllString(s, "[redacted:"+p.name+"]")
+	}
+	return s
+}
+
 // ReviewMergeOptions carries what a reviewer supplies at merge time. TopicKey
 // is required: DESIGN.md §6 assigns the canonical topic_key at merge time,
 // not from the contributor's `remember --topic` hint. AnchorType, Scope, and
