@@ -275,7 +275,8 @@ func TestPrimeCapsFreshnessChecksAndFailsTowardUnknown(t *testing.T) {
 	gitInit(t, repo)
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
 	gitCommitAll(t, repo, "init")
-	fp := ComputeFingerprint(t.Context(), Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	fp, err := ComputeFingerprint(t.Context(), Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	require.NoError(t, err)
 	require.NotEmpty(t, fp)
 
 	writeFile(t, dir, "global/a.md", "+++\nid = \"a\"\ntitle = \"a\"\nhit_count = 5\nscope = []\n\n"+

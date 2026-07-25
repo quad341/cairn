@@ -154,12 +154,12 @@ func itemByteCost(item PrimeItem) int {
 }
 
 // freshnessBudget gates Check's git shell-out behind a bounded per-Prime-call
-// cap (crn-0vqk FR-5). Check's own branch order (after the never-verified
-// reorder in freshness.go) is already free for every case except a files
-// anchor with repo+paths+fingerprint all set -- the one branch that actually
-// calls ComputeFingerprint's git shell-out -- so that is the only case this
-// gates; every other classification just delegates straight to Check at no
-// budget cost.
+// cap (crn-0vqk FR-5). Check always attempts the shell-out for a files anchor
+// with repo+paths set -- regardless of whether a fingerprint was ever stored,
+// since a genuine invocation failure must surface as Incomplete even for a
+// never-verified anchor (crn-fdjc.1.1) -- so that shape is the only case this
+// gates; every other classification (including a bare "commit" anchor, which
+// never shells out) just delegates straight to Check at no budget cost.
 type freshnessBudget struct {
 	remaining int
 	capped    bool
@@ -167,7 +167,7 @@ type freshnessBudget struct {
 
 func (b *freshnessBudget) classify(ctx context.Context, e *Entry) (string, string) {
 	a := e.Anchor
-	if a.Type == "files" && a.Repo != "" && len(a.Paths) > 0 && a.Fingerprint != "" {
+	if a.Type == "files" && a.Repo != "" && len(a.Paths) > 0 {
 		if b.remaining <= 0 {
 			b.capped = true
 			return Unknown, freshnessCappedDetail
