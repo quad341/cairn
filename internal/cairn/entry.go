@@ -33,6 +33,21 @@ const ErrNotFound constError = "entry not found"
 // errNotEntry marks a markdown file that carries no cairn frontmatter.
 const errNotEntry constError = "not a cairn entry"
 
+// MalformedEntryError marks a real ParseEntry failure IterEntries hit while
+// walking the store -- distinct from errNotEntry (a file that simply isn't a
+// cairn entry, silently skipped). It exists purely so a caller can classify a
+// partially-corrupt store as a structured, stable condition (cmd/format.go's
+// malformed_store category) without changing IterEntries' existing
+// abort-the-walk behavior on this error: Error() renders identically to the
+// unwrapped error, so this is a legibility-only addition.
+type MalformedEntryError struct {
+	Path string
+	Err  error
+}
+
+func (e *MalformedEntryError) Error() string { return e.Err.Error() }
+func (e *MalformedEntryError) Unwrap() error { return e.Err }
+
 // Anchor records what an entry was derived from, so drift is detectable.
 type Anchor struct {
 	Type        string   `toml:"type"` // none | files | commit | query | external
@@ -383,7 +398,7 @@ func IterEntries(store string) ([]*Entry, error) {
 				if errors.Is(perr, errNotEntry) {
 					return nil // not an entry — skip it
 				}
-				return perr
+				return &MalformedEntryError{Path: p, Err: perr}
 			}
 			out = append(out, e)
 			return nil
