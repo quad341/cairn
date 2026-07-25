@@ -23,13 +23,24 @@ var primeCmd = &cobra.Command{
 	Short: "Emit the agent's scoped knowledge map + usage (for a SessionStart hook)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		budgetBytes, _ := cmd.Flags().GetInt("budget-bytes")
-		store := storePath()
-		identity := resolveIdentity(cmd)
-		result, err := cairn.Prime(cmd.Context(), store, identity, budgetBytes)
+		identity, err := resolveIdentityValidated(cmd)
 		if err != nil {
-			return err
+			return emitError(cmd, err)
 		}
+
+		budgetBytes, _ := cmd.Flags().GetInt("budget-bytes")
+		result, err := cairn.Prime(cmd.Context(), storePath(), identity, budgetBytes)
+		if err != nil {
+			return emitError(cmd, err)
+		}
+
+		if wantsJSON(cmd) {
+			result.Identity = nonNil(result.Identity)
+			result.Items = nonNil(result.Items)
+			result.Warnings = nonNil(result.Warnings)
+			return emitJSON(cmd.OutOrStdout(), result)
+		}
+
 		fmt.Print(cairn.RenderPrimeText(result))
 		return nil
 	},
