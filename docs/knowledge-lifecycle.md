@@ -9,8 +9,9 @@ reviewed, curated, and re-verified for freshness.
 
 cairn is a **scoped, freshness-tracked knowledge cache for a fleet of AI agents.**
 It lets agents stop re-solving problems that were already solved and re-deriving
-infrastructure that's already understood — while **guaranteeing a cached answer
-is either known-fresh or flagged stale, never silently wrong.**
+infrastructure that's already understood. Supported source anchors report
+whether their source has drifted; unanchored or unverifiable entries are marked
+`unknown`.
 
 It targets three failure modes of ad-hoc memory (a big prose file, scattered notes):
 
@@ -19,8 +20,11 @@ It targets three failure modes of ad-hoc memory (a big prose file, scattered not
 - **Unmanaged staleness** — a note referencing code that has since changed
   silently misleads. cairn *anchors* entries to their source so drift is
   mechanically detectable; a stale entry is served ⚠, never as fresh.
-- **All-or-nothing sharing** — cairn *scopes* each fact to everyone / a project /
-  a role / a single agent, so a fact lands exactly where it's useful.
+- **All-or-nothing context** — cairn *scopes* each fact to everyone / a project /
+  a role / a single agent, so a fact lands where it is likely to be useful.
+
+Scope is not a security boundary. Cairn assumes one trusted fleet and store;
+scope only controls relevance, shadow precedence, and curation friction.
 
 ## How cairn relates to MEMORY.md and `bd remember`
 
@@ -31,17 +35,17 @@ Use the smallest one that fits.
 |---|---|---|---|
 | **Whose memory** | one agent's own | one rig / project | the whole fleet, *scoped* |
 | **Scope model** | single agent, private | flat, rig-local | tags: global / rig / role / agent, with **precedence by specificity** |
-| **Sharing** | none (personal) | shared within a rig's beads DB | cross-agent + cross-project (global tier) |
+| **Sharing / relevance** | one agent | shared within a rig's beads DB | cross-agent + cross-project, filtered by relevance tags |
 | **Freshness** | none | none | **anchored** — drift-detected, stale-flagged, re-verified |
 | **Curation / review** | you edit your own files | key-value, overwrite in place | **shared tiers reviewed like a PR**; a librarian dedups/re-scopes |
-| **Recall** | whole index loaded each session | `bd memories <kw>` / `bd prime` | bounded **scoped map** + bodies-on-demand by id |
-| **Storage** | markdown files + an index line | rows in the Dolt beads DB | markdown+TOML bodies on disk (git), SQLite index (disposable) |
+| **Recall** | whole index loaded each session | `bd memories <kw>` / `bd prime` | bounded **scoped map** + bodies-on-demand by exact id |
+| **Storage** | markdown files + an index line | rows in the Dolt beads DB | markdown+TOML source bodies (git) + self-healing SQLite operational index |
 | **Reach for it when…** | *your own* working notes, prefs, corrections | task/project knowledge tied to the **tracker** | knowledge worth **sharing across agents** that must **not go silently stale** |
 
 Rule of thumb: **MEMORY.md** is your private notebook, **`bd remember`** is the
 project's shared scratchpad tied to its issue tracker, and **cairn** is the
-fleet's curated, freshness-guaranteed library — the one place a fact can be
-scoped to exactly the right audience and trusted not to be quietly out of date.
+fleet's curated, freshness-aware library — the place a fact can be routed to
+the most relevant agents and supported source drift can be detected.
 
 ## The lifecycle of an entry
 
@@ -68,7 +72,7 @@ agent/<agent>/     # one agent, private
 ```
 
 - `--scope` sets the entry's tier tags. **Default is private** (the
-  `agent:<id>` tag from the resolved identity) — cheap and safe.
+  `agent:<id>` tag from the resolved identity) — the narrowest relevance tier.
 - `--topic` is a *hint* for the canonical topic key; a curator normalizes it when
   the entry is promoted to a shared scope (consistency needs one naming authority).
 - Bodies are the **source of truth** — human-readable, git-versioned, diffable,
@@ -97,15 +101,20 @@ identity.**
 cairn get <id>         # full body + freshness, direct by-id (bypasses scope)
 ```
 
-The map shows what exists; `get` pulls the full body of a specific entry on
+The map shows topic names and counts; it does not currently show entry IDs.
+`get` pulls the full body of a specific entry on
 demand (plus its freshness verdict), so context isn't bloated by entries the task
 doesn't need. On a conflict for the same `topic_key`, **precedence = specificity**
 — a `{rig, role}` entry shadows a `{rig}` entry shadows a global one, CSS-style.
 
+Because scope is relevance filtering rather than authorization, direct by-ID
+lookup deliberately bypasses identity. Exact topic lookup and semantic retrieval
+are not implemented yet.
+
 ### 4. Review — shared-tier gate (friction ∝ blast radius)
 
-Curation cost scales with blast radius, because a bad global note poisons everyone
-while a bad private note hurts one agent:
+Curation cost scales with efficiency blast radius, because a bad global note can
+mislead everyone while a bad narrowly scoped note wastes one agent's effort:
 
 | Scope | Flow |
 |---|---|
@@ -113,18 +122,17 @@ while a bad private note hurts one agent:
 | `role/…` | light — the role's own agents curate |
 | `rig/…`, `global/…` | **owned**: propose on a branch → the layer's curator reviews the diff (sets anchor + tags + topic key) → merge |
 
-Because bodies are just files in a git repo, **the shared-scope review *is* a pull
-request** — no separate forge. (The `cairn review` verb wraps the list/show/merge
-of these review branches.)
+Because bodies are just files in a git repo, shared-scope review uses local Git
+branches rather than requiring a hosted pull request. The `cairn review` verb
+wraps list/show/merge for those branches.
 
 ### 5. Curate — the librarian
 
 A recurring, tier-parameterized **librarian** sweep keeps the shared corpus
-healthy: it recovers stale review branches, re-verifies freshness and files drift
-beads, and flags **dedup / re-scope** candidates. Today it is **proposal-only** —
-it mails a reviewer or files a bead, never merges/deletes/rewrites a curated entry.
-(The design intent is a path to autonomy: proposal → agent-reviewed → autonomous
-with the critic loop verifying that a curation didn't break recall/scope/freshness.)
+healthy: it recovers stale review branches, reports freshness, flags dedup and
+re-scope candidates, proposes promotion of recurring entries, and identifies
+disused entries for culling. Shared-tier changes remain review-branch proposals;
+private-tier promotion marks and eviction can commit directly.
 
 ### 6. Freshness — anchors, lazy verify, write-back
 
@@ -142,22 +150,22 @@ mechanically detectable:
 - **`commit`** — pinned to a specific commit.
 - **`query` / `external`** — re-run or TTL *(roadmap)*.
 
-`confidence = f(age-since-verified, anchor-drift)`. An anchored entry whose source
-is untouched stays high-confidence for a long TTL; an un-anchored note decays on
-time alone. Three loops keep it honest:
+The current freshness states are `fresh`, `stale`, and `unknown`. Time-based
+confidence decay is not implemented. The implemented loops are:
 
 - **Lazy verify on read** — a read cheaply re-checks the anchor; if it drifted, the
   entry is served **⚠-stale** ("true as of X; re-derive"). Stale is never served as fresh.
-- **Write-back on miss** — re-deriving an entry re-stamps its fingerprint, so the
-  next reader gets it fresh for free.
-- **Prioritized sweep** — a background pass re-verifies high-traffic, low-confidence
-  entries first; the cold tail is re-verified lazily on next read.
+- **Explicit write-back** — after re-deriving an entry, `cairn verify` re-stamps
+  its supported anchor.
+- **Shared-tier reporting** — `cairn sweep` emits JSON findings for a librarian
+  workflow. The caller owns scheduling and prioritization.
 
 ## Storage & index, in one line
 
-**Bodies** (markdown+TOML, on disk by scope) are the git-versioned source of truth;
-the **SQLite index** is a disposable materialized view rebuilt from them with
-`cairn reindex`. It holds no state that isn't in a body.
+**Bodies** (markdown+TOML, on disk by scope) are the git-versioned source of truth
+for entry content and curated metadata. The self-healing **SQLite index** supports
+reads and also stores operational recall/curation fields. `cairn reindex` is an
+explicit repair command and preserves index-only state for surviving entries.
 
 ## Keeping cairn honest — the dogfood loops
 
@@ -179,6 +187,13 @@ Two recurring loops dogfood cairn itself (see [`../formulas/README.md`](../formu
 | `get <id>` | pull an entry's full body + freshness (bypasses scope) |
 | `freshness <id>` / `status` | freshness of one / of every entry |
 | `verify <id>` | recompute + write back an entry's anchor fingerprint |
+| `sweep` | shared-tier freshness findings (JSON) |
+| `review list/show/merge` | inspect and merge shared-tier review branches |
+| `stale-branches` | report and re-notify aging review branches (JSON) |
+| `dedup` | duplicate/re-scope candidates (JSON) |
+| `promote-candidates` / `promote-mark` | promote recurring knowledge into tracked work |
+| `recall-stats` | per-entry recall telemetry (JSON) |
+| `cull-candidates` / `cull-evict` | identify and evict disused entries |
 | `reindex` | rebuild the SQLite index from the bodies |
 
 Global flags: `--identity` (recall scope, or `$CAIRN_IDENTITY`), `--store` (store
