@@ -95,7 +95,7 @@ func DedupEntries(store string, all []*Entry) ([]DedupFinding, error) {
 		byTier[tierOf[e.ID]] = append(byTier[tierOf[e.ID]], e)
 	}
 
-	var out []DedupFinding //nolint:prealloc // final size is data-dependent (collision/similarity count), no cheap upper bound
+	out := make([]DedupFinding, 0, len(shared))
 	for _, tier := range []string{"global", "rig", "role"} {
 		out = append(out, topicKeyCollisions(tier, byTier[tier])...)
 	}
