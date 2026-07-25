@@ -31,7 +31,7 @@ func branchStore(t *testing.T) string {
 // age computation is deterministic instead of racing the wall clock.
 func commitReviewBranchAt(t *testing.T, store, topicKey string, scope []string, at time.Time) *Entry {
 	t.Helper()
-	e, err := NewEntry(topicKey, scope, "body text", "tester")
+	e, err := NewEntry(NewEntryParams{TopicKey: topicKey, Scope: scope, Body: "body text", CreatedBy: "tester"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 

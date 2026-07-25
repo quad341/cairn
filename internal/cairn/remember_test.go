@@ -12,9 +12,9 @@ import (
 )
 
 func TestNewEntryIDIncludesTopicKeyButIsUnique(t *testing.T) {
-	a, err := NewEntry("shared-topic", []string{"agent:bot"}, "a body", "agent:bot")
+	a, err := NewEntry(NewEntryParams{TopicKey: "shared-topic", Scope: []string{"agent:bot"}, Body: "a body", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
-	b, err := NewEntry("shared-topic", []string{"agent:bot"}, "a body", "agent:bot")
+	b, err := NewEntry(NewEntryParams{TopicKey: "shared-topic", Scope: []string{"agent:bot"}, Body: "a body", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 
 	assert.Equal(t, "shared-topic", a.TopicKey)
@@ -40,7 +40,7 @@ func TestNewEntryTitleAndSummary(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			e, err := NewEntry("t", nil, tc.body, "")
+			e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: tc.body})
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantTitle, e.Title)
 			assert.Equal(t, strings.TrimSpace(tc.body), e.Summary)
@@ -49,7 +49,7 @@ func TestNewEntryTitleAndSummary(t *testing.T) {
 }
 
 func TestNewEntryAnchorIsNone(t *testing.T) {
-	e, err := NewEntry("t", nil, "body", "")
+	e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: "body"})
 	require.NoError(t, err)
 	assert.Equal(t, "none", e.Anchor.Type)
 }
@@ -108,7 +108,7 @@ func TestNewEntryParamsAnchorDefaultsToNoneWhenZeroValue(t *testing.T) {
 }
 
 func TestNewEntryStampsCreatedAtAsDateOnly(t *testing.T) {
-	e, err := NewEntry("t", nil, "body", "")
+	e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: "body"})
 	require.NoError(t, err)
 	_, err = time.Parse(time.DateOnly, e.CreatedAt)
 	assert.NoError(t, err, "created_at must be an ISO-8601 date so lexical and chronological order agree, see moreSpecific")
@@ -135,7 +135,7 @@ func TestScopeDirPicksTierByPriorityWhenScopeSpansMultiple(t *testing.T) {
 }
 
 func TestEntryCreateRoundTrip(t *testing.T) {
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 
 	store := t.TempDir()
@@ -156,7 +156,7 @@ func TestEntryCreateRoundTrip(t *testing.T) {
 }
 
 func TestEntryCreateGlobalTier(t *testing.T) {
-	e, err := NewEntry("t", nil, "body", "")
+	e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: "body"})
 	require.NoError(t, err)
 
 	store := t.TempDir()
@@ -169,7 +169,7 @@ func TestEntryCreateGlobalTier(t *testing.T) {
 }
 
 func TestEntryCreateMakesParentDirs(t *testing.T) {
-	e, err := NewEntry("t", []string{"agent:brand-new"}, "body", "")
+	e, err := NewEntry(NewEntryParams{TopicKey: "t", Scope: []string{"agent:brand-new"}, Body: "body"})
 	require.NoError(t, err)
 
 	store := t.TempDir() // store/agent/brand-new does not exist yet
@@ -180,7 +180,7 @@ func TestEntryCreateMakesParentDirs(t *testing.T) {
 }
 
 func TestEntryCreateRetriesOnIDCollision(t *testing.T) {
-	e, err := NewEntry("shared-topic", []string{"agent:bot"}, "body", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "shared-topic", Scope: []string{"agent:bot"}, Body: "body", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	firstID := e.ID
 
@@ -205,7 +205,7 @@ func TestEntryCreateRetriesOnIDCollision(t *testing.T) {
 }
 
 func TestEntryCreateOmitsZeroHitCount(t *testing.T) {
-	e, err := NewEntry("t", nil, "body", "")
+	e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: "body"})
 	require.NoError(t, err)
 	require.Equal(t, 0, e.HitCount, "a freshly constructed entry must start at the zero value")
 
@@ -219,7 +219,7 @@ func TestEntryCreateOmitsZeroHitCount(t *testing.T) {
 }
 
 func TestEntryCreateSerializesNonZeroHitCount(t *testing.T) {
-	e, err := NewEntry("t", nil, "body", "")
+	e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: "body"})
 	require.NoError(t, err)
 	e.HitCount = 7
 
@@ -272,7 +272,7 @@ func TestCommitDirectCommitsOnlyTheEntryFile(t *testing.T) {
 	branchBefore, err := gitRun(ctx, store, "branch", "--show-current")
 	require.NoError(t, err)
 
-	e, err := NewEntry("build-flags", []string{"agent:bot"}, "prefer feature flags over env vars", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"agent:bot"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 
@@ -314,7 +314,7 @@ func TestCommitDirectFailureLeavesEntryUncommittedAndReportsError(t *testing.T) 
 	ctx := t.Context()
 	store := t.TempDir() // deliberately not a git repo
 
-	e, err := NewEntry("build-flags", []string{"agent:bot"}, "body", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"agent:bot"}, Body: "body", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 
@@ -348,7 +348,7 @@ func TestCommitToReviewBranchCreatesIsolatedBranchLeavingDefaultUntouched(t *tes
 	require.NoError(t, err)
 	headBefore = strings.TrimSpace(headBefore)
 
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 
@@ -414,7 +414,7 @@ func TestCommitToReviewBranchFailureLeavesEntryWrittenButUncommittedAndReportsEr
 	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
 	require.NoError(t, err)
 
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "body", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "body", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 
@@ -461,7 +461,7 @@ func TestCommitRecurrenceToReviewBranchCreatesBranchWhenAbsent(t *testing.T) {
 	require.NoError(t, err)
 	headBefore = strings.TrimSpace(headBefore)
 
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	e.RecurrenceCount = 1
@@ -513,7 +513,7 @@ func TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch(t *te
 	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
 	gitCommitAll(t, store, "seed")
 
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 
@@ -578,7 +578,7 @@ func TestCommitPromotionToReviewBranchCreatesBranchWhenAbsent(t *testing.T) {
 	require.NoError(t, err)
 	headBefore = strings.TrimSpace(headBefore)
 
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	e.PromotedBeadID = "crn-abcd"
@@ -629,7 +629,7 @@ func TestCommitPromotionToReviewBranchAppendsSecondCommitToExistingBranch(t *tes
 	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
 	gitCommitAll(t, store, "seed")
 
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 

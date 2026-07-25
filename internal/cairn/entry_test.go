@@ -956,14 +956,14 @@ func TestFindAfterSequentialCreateOnNonGitStore(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
 
-	e1, err := NewEntry("dbg-topic-1", nil, "body 1", "tester")
+	e1, err := NewEntry(NewEntryParams{TopicKey: "dbg-topic-1", Body: "body 1", CreatedBy: "tester"})
 	require.NoError(t, err)
 	require.NoError(t, e1.Create(store))
 
 	_, err = Find(ctx, store, e1.ID)
 	require.NoError(t, err, "first Find must succeed")
 
-	e2, err := NewEntry("dbg-topic-2", nil, "body 2", "tester")
+	e2, err := NewEntry(NewEntryParams{TopicKey: "dbg-topic-2", Body: "body 2", CreatedBy: "tester"})
 	require.NoError(t, err)
 	require.NoError(t, e2.Create(store))
 

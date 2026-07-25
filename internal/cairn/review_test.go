@@ -33,7 +33,7 @@ func reviewStore(t *testing.T) string {
 // left behind in store's own working tree.
 func fixtureBranch(t *testing.T, store, topicKey string, scope []string, body string) (branch string, e *Entry) {
 	t.Helper()
-	e, err := NewEntry(topicKey, scope, body, "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: topicKey, Scope: scope, Body: body, CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	branch, err = e.CommitToReviewBranch(t.Context(), store)
@@ -189,7 +189,7 @@ func TestParseEntryContentRejectsNonEntryContent(t *testing.T) {
 }
 
 func TestParseEntryContentRoundTrip(t *testing.T) {
-	e, err := NewEntry("tk", []string{"rig:web"}, "body line", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "tk", Scope: []string{"rig:web"}, Body: "body line", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	raw, err := e.marshal()
 	require.NoError(t, err)
@@ -398,7 +398,7 @@ func TestMergeReviewBranchAutoActionableRejectedWithoutRemediationKind(t *testin
 // remediation cannot be merged with --kind note --auto-actionable together.
 func TestMergeReviewBranchAutoActionableRejectedWhenKindExplicitlySetToNote(t *testing.T) {
 	store := reviewStore(t)
-	e, err := NewEntry("draft-topic", []string{"rig:web"}, "a note", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "draft-topic", Scope: []string{"rig:web"}, Body: "a note", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	e.Kind = "remediation"
 	require.NoError(t, e.Create(store))
@@ -439,7 +439,7 @@ func TestMergeReviewBranchAutoActionableSucceedsWhenKindSetToRemediationInSameIn
 // but the entry's existing (pre-merge) kind is already "remediation".
 func TestMergeReviewBranchAutoActionableSucceedsWhenEntryAlreadyHasRemediationKind(t *testing.T) {
 	store := reviewStore(t)
-	e, err := NewEntry("draft-topic", []string{"rig:web"}, "a note", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "draft-topic", Scope: []string{"rig:web"}, Body: "a note", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	e.Kind = "remediation"
 	require.NoError(t, e.Create(store))
@@ -583,7 +583,7 @@ func TestMergeReviewBranchRejectsInvalidAnchorType(t *testing.T) {
 // patch, not a full re-encode" guarantee (crn-6az.5.1): every line not named
 // by opts survives byte for byte, in place, including the body.
 func TestPatchFrontmatterFieldsOnlyTouchesRequestedFields(t *testing.T) {
-	e, err := NewEntry("draft", []string{"agent:bot"}, "body text", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "draft", Scope: []string{"agent:bot"}, Body: "body text", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	raw, err := e.marshal()
 	require.NoError(t, err)
@@ -600,7 +600,7 @@ func TestPatchFrontmatterFieldsOnlyTouchesRequestedFields(t *testing.T) {
 }
 
 func TestPatchFrontmatterFieldsAppliesScopeAndAnchorTypeWhenGiven(t *testing.T) {
-	e, err := NewEntry("draft", []string{"agent:bot"}, "body text", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "draft", Scope: []string{"agent:bot"}, Body: "body text", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	raw, err := e.marshal()
 	require.NoError(t, err)
@@ -618,7 +618,7 @@ func TestPatchFrontmatterFieldsAppliesScopeAndAnchorTypeWhenGiven(t *testing.T) 
 }
 
 func TestPatchFrontmatterFieldsAppliesKindAndAutoActionableWhenGiven(t *testing.T) {
-	e, err := NewEntry("draft", []string{"agent:bot"}, "body text", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "draft", Scope: []string{"agent:bot"}, Body: "body text", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	raw, err := e.marshal()
 	require.NoError(t, err)
@@ -639,7 +639,7 @@ func TestPatchFrontmatterFieldsAppliesKindAndAutoActionableWhenGiven(t *testing.
 // extends TestPatchFrontmatterFieldsOnlyTouchesRequestedFields's guarantee to
 // the two new fields: omitted, neither line is added to the frontmatter.
 func TestPatchFrontmatterFieldsLeavesKindAndAutoActionableUntouchedWhenOmitted(t *testing.T) {
-	e, err := NewEntry("draft", []string{"agent:bot"}, "body text", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "draft", Scope: []string{"agent:bot"}, Body: "body text", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	raw, err := e.marshal()
 	require.NoError(t, err)
@@ -657,7 +657,7 @@ func TestPatchFrontmatterFieldsLeavesKindAndAutoActionableUntouchedWhenOmitted(t
 // exactly that one line, and every other line -- including line count and
 // order -- is untouched.
 func TestPatchFrontmatterFieldsIsLineForLineSurgical(t *testing.T) {
-	e, err := NewEntry("draft", []string{"agent:bot"}, "body text\nsecond line", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "draft", Scope: []string{"agent:bot"}, Body: "body text\nsecond line", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	raw, err := e.marshal()
 	require.NoError(t, err)
