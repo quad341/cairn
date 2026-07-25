@@ -18,3 +18,9 @@ func TestPrimeRejectsStrayPositionalArgs(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "extra")
 }
+
+func TestPrimeAcceptsBudgetBytesFlag(t *testing.T) {
+	out, err := execRoot("prime", "--store", t.TempDir(), "--budget-bytes", "100")
+	require.NoError(t, err)
+	assert.NotEmpty(t, out)
+}

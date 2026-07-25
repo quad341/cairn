@@ -155,19 +155,12 @@ func runMap(t *testing.T, dir string, extraArgs ...string) error {
 	return rootCmd.Execute()
 }
 
-var (
-	// mapLineRE matches mapCmd's "  %s  (%d)\n" per-topic line format.
-	mapLineRE = regexp.MustCompile(`(?m)^  (\S+)  \((\d+)\)$`)
-	// primeLineRE matches Prime's "  %-44s %d\n" per-topic line format. \s+
-	// absorbs the %-44s padding regardless of its exact width.
-	primeLineRE = regexp.MustCompile(`(?m)^  (\S+)\s+(\d+)$`)
-)
+// mapLineRE matches mapCmd's "  %s  (%d)\n" per-topic line format.
+var mapLineRE = regexp.MustCompile(`(?m)^  (\S+)  \((\d+)\)$`)
 
-// topicCounts parses a map/prime rendering's per-topic lines into a plain
-// topic->count map using re (which accounts for the two commands'
-// different column formatting), so the two surfaces' shared underlying
-// computation can be compared for exact agreement independent of
-// presentation.
+// topicCounts parses a map rendering's per-topic lines into a plain
+// topic->count map, so it can be compared against prime's own tally for
+// exact agreement independent of presentation.
 func topicCounts(t *testing.T, out string, re *regexp.Regexp) map[string]int {
 	t.Helper()
 	counts := map[string]int{}
@@ -175,6 +168,21 @@ func topicCounts(t *testing.T, out string, re *regexp.Regexp) map[string]int {
 		n, err := strconv.Atoi(m[2])
 		require.NoError(t, err)
 		counts[m[1]] = n
+	}
+	return counts
+}
+
+// primeItemTopicCounts tallies a PrimeResult's items by topic key -- the
+// structured-API equivalent of topicCounts, used for prime's side of the
+// comparison below. crn-0vqk.2 changed prime's text rendering from a
+// per-topic grouped summary (matching map's format) to a per-entry itemized
+// list, since budget truncation, freshness, and hit_count are all per-entry
+// concepts; the map/prime agreement check now reads prime's structured
+// PrimeResult directly instead of regex-scraping its rendered text.
+func primeItemTopicCounts(items []cairn.PrimeItem) map[string]int {
+	counts := map[string]int{}
+	for _, it := range items {
+		counts[it.TopicKey]++
 	}
 	return counts
 }
@@ -198,12 +206,13 @@ func TestMapAndPrimeAgreeOnTopicCounts(t *testing.T) {
 	})
 	require.NoError(t, mapErr)
 
-	primeOut, err := cairn.Prime(t.Context(), dir, []string{"rig:alpha", "role:investigator"})
+	const generousBudget = 1 << 20
+	primeResult, err := cairn.Prime(t.Context(), dir, []string{"rig:alpha", "role:investigator"}, generousBudget)
 	require.NoError(t, err)
 
 	want := map[string]int{"shared": 1, "topic-a": 1, "topic-b": 1}
 	assert.Equal(t, want, topicCounts(t, mapOut, mapLineRE), "map's topic counts")
-	assert.Equal(t, want, topicCounts(t, primeOut, primeLineRE), "prime's topic counts")
+	assert.Equal(t, want, primeItemTopicCounts(primeResult.Items), "prime's topic counts")
 }
 
 func TestReindexRejectsStrayPositionalArgs(t *testing.T) {
