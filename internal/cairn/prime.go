@@ -78,9 +78,9 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 			return a.HitCount > b.HitCount
 		}
 		if a.CreatedAt != b.CreatedAt {
-			// CreatedAt is an RFC3339 string; lexicographic order matches
-			// chronological order for that format, so no time parsing is
-			// needed here.
+			// CreatedAt is stamped with time.DateOnly (see remember.go);
+			// lexicographic order matches chronological order for that
+			// format, so no time parsing is needed here.
 			return a.CreatedAt > b.CreatedAt
 		}
 		return a.ID < b.ID
@@ -95,6 +95,7 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 
 	budget := &freshnessBudget{remaining: maxFreshnessChecksPerPrime}
 	usedBytes := 0
+	truncating := false
 	for _, e := range ordered {
 		status, detail := budget.classify(ctx, e)
 		switch status {
@@ -105,6 +106,12 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 		default:
 			result.UnknownCount++
 		}
+		// Truncation never affects the aggregate counts above -- they're
+		// computed over every visible entry regardless of whether it's
+		// itemized below, even after truncating has latched true.
+		if truncating {
+			continue
+		}
 
 		item := PrimeItem{
 			ID:        e.ID,
@@ -114,13 +121,17 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 			HitCount:  e.HitCount,
 			Freshness: FreshnessInfo{Status: status, Detail: detail},
 		}
-		// Truncation never affects the aggregate counts above -- they're
-		// computed over every visible entry regardless of whether it's
-		// itemized below. Always itemize at least one entry (the len==0
-		// guard) so a budget too small for even one item doesn't leave a
-		// caller with zero items despite a nonzero visible count.
+		// Once an entry doesn't fit in the remaining budget, stop itemizing
+		// entirely rather than skipping ahead to try later, lower-priority
+		// entries -- otherwise a later entry with a smaller byte cost could
+		// slip into Items past a pricier, higher-priority one that got
+		// skipped, silently violating the priority order truncation is
+		// supposed to respect. Always itemize at least one entry (the
+		// len==0 guard) so a budget too small for even one item doesn't
+		// leave a caller with zero items despite a nonzero visible count.
 		cost := itemByteCost(item)
 		if usedBytes+cost > budgetBytes && len(result.Items) > 0 {
+			truncating = true
 			continue
 		}
 		usedBytes += cost
@@ -169,11 +180,10 @@ func (b *freshnessBudget) classify(ctx context.Context, e *Entry) (string, strin
 // RenderPrimeText renders a PrimeResult as the human-readable text `cairn
 // prime` prints by default. All truncation and freshness-check decisions are
 // already baked into r by Prime; this only formats.
-func RenderPrimeText(r PrimeResult, store string, identity []string) string {
-	_ = store // reserved for parity with Prime's argument list; r.Store already carries this
+func RenderPrimeText(r PrimeResult) string {
 	scope := "global"
-	if len(identity) > 0 {
-		scope = strings.Join(identity, " ")
+	if len(r.Identity) > 0 {
+		scope = strings.Join(r.Identity, " ")
 	}
 
 	var b strings.Builder

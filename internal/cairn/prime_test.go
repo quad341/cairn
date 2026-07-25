@@ -3,6 +3,7 @@ package cairn
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,7 +32,7 @@ func TestPrime(t *testing.T) {
 	}
 	assert.True(t, sawAlpha, "an alpha-scoped agent should see the alpha topic")
 
-	out := RenderPrimeText(result, dir, []string{"rig:alpha"})
+	out := RenderPrimeText(result)
 	assert.Contains(t, out, "cairn remember", "prime should still nudge agents to capture what they learn")
 
 	bare, err := Prime(t.Context(), dir, nil, testBudget)
@@ -48,7 +49,7 @@ func TestPrimeEmpty(t *testing.T) {
 	assert.Equal(t, 0, result.TotalVisible)
 	assert.Empty(t, result.Items)
 
-	out := RenderPrimeText(result, dir, nil)
+	out := RenderPrimeText(result)
 	assert.Contains(t, out, "No cached knowledge")
 }
 
@@ -61,7 +62,7 @@ func TestPrimeDoesNotClaimRememberMissing(t *testing.T) {
 	dir := t.TempDir()
 	result, err := Prime(t.Context(), dir, nil, testBudget)
 	require.NoError(t, err)
-	out := RenderPrimeText(result, dir, nil)
+	out := RenderPrimeText(result)
 	assert.NotContains(t, out, "no `remember` command yet")
 	assert.NotContains(t, out, "hand-author")
 	assert.Contains(t, out, "cairn remember")
@@ -84,7 +85,7 @@ func TestPrimeWarnsOnUnmatchedScopeDimension(t *testing.T) {
 	assert.Contains(t, result.Warnings[0], "role:", "warning should name the mismatched dimension")
 	assert.Contains(t, result.Warnings[0], "tag-shape mismatch")
 
-	out := RenderPrimeText(result, dir, []string{"role:builder"})
+	out := RenderPrimeText(result)
 	assert.Contains(t, out, "No cached knowledge")
 	assert.Contains(t, out, "tag-shape mismatch")
 }
@@ -102,7 +103,7 @@ func TestPrimeNoWarningOnScopeMatch(t *testing.T) {
 	assert.Equal(t, "o/thing", result.Items[0].TopicKey)
 	assert.Empty(t, result.Warnings)
 
-	out := RenderPrimeText(result, dir, []string{"role:investigator"})
+	out := RenderPrimeText(result)
 	assert.NotContains(t, out, "tag-shape mismatch")
 }
 
@@ -118,7 +119,7 @@ func TestPrimeNoWarningOnEmptyScopeDimension(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, result.Warnings)
 
-	out := RenderPrimeText(result, dir, []string{"role:investigator"})
+	out := RenderPrimeText(result)
 	assert.NotContains(t, out, "tag-shape mismatch")
 }
 
@@ -177,6 +178,67 @@ func TestPrimeTruncatesByByteBudgetWithoutAffectingAggregateCounts(t *testing.T)
 		tiny.TotalVisible,
 		tiny.FreshCount+tiny.StaleCount+tiny.UnknownCount,
 		"aggregate freshness counts must cover the entire visible set regardless of truncation",
+	)
+}
+
+// TestPrimeTruncationStopsAtFirstOverBudgetItem pins the Finding-1 fix from
+// crn-0vqk.2's review: once a higher-priority entry doesn't fit in the
+// remaining budget, Prime must stop itemizing entirely rather than skipping
+// ahead to try a later, lower-priority entry that happens to be cheaper.
+// TestPrimeTruncatesByByteBudgetWithoutAffectingAggregateCounts can't catch
+// this because its fixtures are same-cost, where "skip the expensive one and
+// keep going" and "stop entirely" produce identical results -- this test
+// uses fixtures with deliberately varying per-entry byte cost across the
+// priority order (mirroring the reviewer's own repro: a high-priority entry
+// too big to fit, followed by a lower-priority entry small enough that it
+// would slip in if truncation merely skipped instead of stopping).
+func TestPrimeTruncationStopsAtFirstOverBudgetItem(t *testing.T) {
+	dir := t.TempDir()
+	// x: highest priority (hit_count=10), large title -> expensive.
+	// y: middle priority (hit_count=5), medium title.
+	// z: lowest priority (hit_count=1), tiny title -> cheap.
+	writeFile(t, dir, "global/x.md",
+		"+++\nid = \"x\"\ntitle = \""+strings.Repeat("x", 200)+"\"\nhit_count = 10\nscope = []\n+++\nbody\n")
+	writeFile(t, dir, "global/y.md",
+		"+++\nid = \"y\"\ntitle = \""+strings.Repeat("y", 60)+"\"\nhit_count = 5\nscope = []\n+++\nbody\n")
+	writeFile(t, dir, "global/z.md",
+		"+++\nid = \"z\"\ntitle = \"z\"\nhit_count = 1\nscope = []\n+++\nbody\n")
+
+	full, err := Prime(t.Context(), dir, nil, testBudget)
+	require.NoError(t, err)
+	require.Len(t, full.Items, 3, "precondition: a generous budget itemizes everything visible")
+
+	byID := map[string]PrimeItem{}
+	for _, it := range full.Items {
+		byID[it.ID] = it
+	}
+	xCost := itemByteCost(byID["x"])
+	yCost := itemByteCost(byID["y"])
+	zCost := itemByteCost(byID["z"])
+	require.Less(t, zCost, yCost, "precondition: z must be cheaper than y for this repro to distinguish continue from break")
+	require.Less(t, yCost, xCost, "precondition: y must be cheaper than x for this repro to distinguish continue from break")
+
+	// Budget fits x+z together but not x+y -- so under the old `continue`
+	// behavior, y gets skipped (too expensive) but z (cheap enough) slips in
+	// right after it, producing {x, z}. Under the fixed `break` behavior,
+	// truncation must stop the moment y doesn't fit, producing {x} alone
+	// even though z alone would have fit in the leftover budget.
+	budget := xCost + zCost
+	require.Less(t, budget, xCost+yCost, "sanity: budget must fit x+z together but not x+y")
+
+	result, err := Prime(t.Context(), dir, nil, budget)
+	require.NoError(t, err)
+	ids := make([]string, len(result.Items))
+	for i, it := range result.Items {
+		ids[i] = it.ID
+	}
+	assert.Equal(t, []string{"x"}, ids, "truncation must stop at the first over-budget item, not let a later cheaper item slip in")
+	assert.Equal(t, 3, result.TotalVisible)
+	assert.Equal(t, 2, result.TruncatedCount)
+	assert.Equal(t,
+		result.TotalVisible,
+		result.FreshCount+result.StaleCount+result.UnknownCount,
+		"aggregate freshness counts must still cover the entire visible set even once truncation has latched",
 	)
 }
 
