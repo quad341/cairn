@@ -29,19 +29,52 @@ var reindexCmd = &cobra.Command{
 	},
 }
 
+// StatusItem is one entry's status-line summary in cairn status --json's
+// output. Bare array, no wrapper object: status's human mode prints no
+// header/metadata either, just one line per entry.
+type StatusItem struct {
+	ID         string              `json:"id"`
+	TopicKey   string              `json:"topic_key"`
+	VerifiedAt string              `json:"verified_at,omitempty"`
+	CreatedAt  string              `json:"created_at,omitempty"`
+	Freshness  cairn.FreshnessInfo `json:"freshness"`
+	ShadowedBy string              `json:"shadowed_by,omitempty"`
+}
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Freshness of every entry",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if identityRequested(cmd) {
-			return fmt.Errorf("status is unscoped and does not filter by identity; use 'cairn map' or 'cairn prime' for a scoped view")
+			return emitError(cmd, classifiedErr(CategoryInvalidInput, "",
+				fmt.Errorf("status is unscoped and does not filter by identity; use 'cairn map' or 'cairn prime' for a scoped view")))
 		}
 		entries, err := cairn.Status(cmd.Context(), storePath())
 		if err != nil {
-			return err
+			return emitError(cmd, err)
 		}
 		shadowedBy := cairn.ShadowMap(entries)
+
+		if wantsJSON(cmd) {
+			items := make([]StatusItem, 0, len(entries))
+			for _, e := range entries {
+				st, detail := cairn.Check(cmd.Context(), e)
+				item := StatusItem{
+					ID:         e.ID,
+					TopicKey:   e.TopicKey,
+					VerifiedAt: e.VerifiedAt,
+					CreatedAt:  e.CreatedAt,
+					Freshness:  cairn.FreshnessInfo{Status: st, Detail: detail},
+				}
+				if by, ok := shadowedBy[e.ID]; ok {
+					item.ShadowedBy = by.ID
+				}
+				items = append(items, item)
+			}
+			return emitJSON(cmd.OutOrStdout(), nonNil(items))
+		}
+
 		flags := map[string]string{cairn.Fresh: "OK ", cairn.Stale: "!! ", cairn.Unknown: "?? "}
 		for _, e := range entries {
 			st, detail := cairn.Check(cmd.Context(), e)
@@ -62,7 +95,7 @@ var freshnessCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		e, err := cairn.Find(cmd.Context(), storePath(), args[0])
 		if errors.Is(err, cairn.ErrNotFound) {
-			return fmt.Errorf("no entry %q", args[0])
+			return fmt.Errorf("no entry %q: %w", args[0], err)
 		}
 		if err != nil {
 			return err
@@ -73,6 +106,19 @@ var freshnessCmd = &cobra.Command{
 	},
 }
 
+// EntryResult is cairn get --json's top-level shape.
+type EntryResult struct {
+	ID             string               `json:"id"`
+	Title          string               `json:"title"`
+	TopicKey       string               `json:"topic_key"`
+	Scope          []string             `json:"scope"`
+	Freshness      cairn.FreshnessInfo  `json:"freshness"`
+	Kind           string               `json:"kind"`
+	AutoActionable bool                 `json:"auto_actionable"`
+	Conflicts      []cairn.DedupFinding `json:"conflicts"`
+	Body           string               `json:"body"`
+}
+
 var getCmd = &cobra.Command{
 	Use:   "get <id>",
 	Short: "Pull an entry's full body + freshness (direct by-id lookup, bypasses scope)",
@@ -80,34 +126,20 @@ var getCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		e, err := cairn.Find(cmd.Context(), storePath(), args[0])
 		if errors.Is(err, cairn.ErrNotFound) {
-			return fmt.Errorf("no entry %q", args[0])
+			return emitError(cmd, classifiedErr(CategoryNotFound, args[0], fmt.Errorf("no entry %q: %w", args[0], err)))
 		}
 		if err != nil {
-			return err
+			return emitError(cmd, err)
 		}
 		st, detail := cairn.Check(cmd.Context(), e)
-		topic := e.TopicKey
-		if topic == "" {
-			topic = cairn.UntopicedLabel
-		}
-		scope := "global"
-		if len(e.Scope) > 0 {
-			scope = strings.Join(e.Scope, " ")
-		}
-		fmt.Printf("%s: %s\n", e.ID, e.Title)
-		fmt.Printf("topic: %s  scope: %s\n", topic, scope)
-		fmt.Printf("freshness: %s — %s\n", st, detail)
 
-		kind := e.Kind
-		if kind == "" {
-			kind = "note"
+		identity, err := resolveIdentityValidated(cmd)
+		if err != nil {
+			return emitError(cmd, err)
 		}
-		fmt.Printf("kind: %s  auto_actionable: %t\n", kind, e.AutoActionable)
-
-		identity := resolveIdentity(cmd)
 		visible, err := cairn.Visible(cmd.Context(), storePath(), identity)
 		if err != nil {
-			return err
+			return emitError(cmd, err)
 		}
 		// Visible only populates the fields shadow/scope resolution needs
 		// (ID, TopicKey, Scope, VerifiedAt, CreatedAt, Anchor) — Title and
@@ -123,7 +155,7 @@ var getCmd = &cobra.Command{
 		}
 		all, err := cairn.IterEntries(storePath())
 		if err != nil {
-			return err
+			return emitError(cmd, err)
 		}
 		others := make([]*cairn.Entry, 0, len(visibleIDs))
 		for _, full := range all {
@@ -132,6 +164,39 @@ var getCmd = &cobra.Command{
 			}
 		}
 		conflicts := cairn.Conflicts(e, others)
+
+		kind := e.Kind
+		if kind == "" {
+			kind = "note"
+		}
+
+		if wantsJSON(cmd) {
+			return emitJSON(cmd.OutOrStdout(), EntryResult{
+				ID:             e.ID,
+				Title:          e.Title,
+				TopicKey:       e.TopicKey,
+				Scope:          nonNil(e.Scope),
+				Freshness:      cairn.FreshnessInfo{Status: st, Detail: detail},
+				Kind:           kind,
+				AutoActionable: e.AutoActionable,
+				Conflicts:      nonNil(conflicts),
+				Body:           e.Body,
+			})
+		}
+
+		topic := e.TopicKey
+		if topic == "" {
+			topic = cairn.UntopicedLabel
+		}
+		scope := "global"
+		if len(e.Scope) > 0 {
+			scope = strings.Join(e.Scope, " ")
+		}
+		fmt.Printf("%s: %s\n", e.ID, e.Title)
+		fmt.Printf("topic: %s  scope: %s\n", topic, scope)
+		fmt.Printf("freshness: %s — %s\n", st, detail)
+		fmt.Printf("kind: %s  auto_actionable: %t\n", kind, e.AutoActionable)
+
 		if len(conflicts) == 0 {
 			fmt.Println("conflicts: none")
 		} else {
@@ -162,7 +227,7 @@ var verifyCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		e, err := cairn.Find(cmd.Context(), storePath(), args[0])
 		if errors.Is(err, cairn.ErrNotFound) {
-			return fmt.Errorf("no entry %q", args[0])
+			return fmt.Errorf("no entry %q: %w", args[0], err)
 		}
 		if err != nil {
 			return err
@@ -181,15 +246,31 @@ var verifyCmd = &cobra.Command{
 	},
 }
 
+// MapTopicCount is one topic's visible-entry count in cairn map --json output.
+type MapTopicCount struct {
+	TopicKey string `json:"topic_key"`
+	Count    int    `json:"count"`
+}
+
+// MapResult is cairn map --json's top-level shape.
+type MapResult struct {
+	Identity []string        `json:"identity"`
+	Total    int             `json:"total"`
+	Topics   []MapTopicCount `json:"topics"`
+}
+
 var mapCmd = &cobra.Command{
 	Use:   "map",
 	Short: "Bounded topic map for an identity (the always-in-context payload)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		identity := resolveIdentity(cmd)
+		identity, err := resolveIdentityValidated(cmd)
+		if err != nil {
+			return emitError(cmd, err)
+		}
 		rows, err := cairn.Visible(cmd.Context(), storePath(), identity)
 		if err != nil {
-			return err
+			return emitError(cmd, err)
 		}
 		counts := map[string]int{}
 		for _, e := range rows {
@@ -204,6 +285,19 @@ var mapCmd = &cobra.Command{
 			topics = append(topics, t)
 		}
 		sort.Strings(topics)
+
+		if wantsJSON(cmd) {
+			mapTopics := make([]MapTopicCount, 0, len(topics))
+			for _, t := range topics {
+				mapTopics = append(mapTopics, MapTopicCount{TopicKey: t, Count: counts[t]})
+			}
+			return emitJSON(cmd.OutOrStdout(), MapResult{
+				Identity: nonNil(identity),
+				Total:    len(rows),
+				Topics:   nonNil(mapTopics),
+			})
+		}
+
 		fmt.Printf("# cairn map — %d entries visible to identity %v\n", len(rows), identity)
 		for _, t := range topics {
 			fmt.Printf("  %s  (%d)\n", t, counts[t])

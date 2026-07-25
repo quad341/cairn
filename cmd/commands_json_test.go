@@ -3,12 +3,32 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/quad341/cairn/internal/cairn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// resetJSONFlag clears the shared rootCmd's --json flag, mirroring
+// resetIdentityFlag: rootCmd is a package-level singleton, so a bool flag's
+// value from one execRootJSON call otherwise leaks into every later test in
+// the binary that never mentions --json at all (their JSON output would then
+// silently go to cmd.OutOrStdout() instead of the bare stdout those tests
+// capture, and they'd see empty output). Set("false") replaces a bool
+// flag's value outright -- no SliceValue.Replace trick needed here.
+func resetJSONFlag() error {
+	f := rootCmd.PersistentFlags().Lookup("json")
+	if f == nil {
+		return errors.New("json flag not registered on rootCmd")
+	}
+	if err := f.Value.Set("false"); err != nil {
+		return err
+	}
+	f.Changed = false
+	return nil
+}
 
 // execRootJSON runs the cairn CLI in-process with args (mirroring execRoot in
 // ergonomics_scenario.go) and returns cmd.OutOrStdout()'s buffered content
@@ -18,7 +38,11 @@ import (
 func execRootJSON(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	require.NoError(t, resetIdentityFlag())
-	t.Cleanup(func() { _ = resetIdentityFlag() })
+	require.NoError(t, resetJSONFlag())
+	t.Cleanup(func() {
+		_ = resetIdentityFlag()
+		_ = resetJSONFlag()
+	})
 
 	var buf bytes.Buffer
 	rootCmd.SetArgs(args)
