@@ -66,6 +66,50 @@ func TestParseEntryUnterminated(t *testing.T) {
 	assert.NotErrorIs(t, err, errNotEntry) // a real parse error, not "not an entry"
 }
 
+func TestIterEntriesTolerantCleanStoreNoFailures(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", sampleEntry)
+	writeFile(t, dir, "rig/alpha/r.md", "+++\nid = \"r1\"\ntitle = \"r1\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
+
+	entries, failures, err := IterEntriesTolerant(dir)
+	require.NoError(t, err)
+	assert.Empty(t, failures)
+	ids := map[string]bool{}
+	for _, e := range entries {
+		ids[e.ID] = true
+	}
+	assert.True(t, ids["test/one"] && ids["r1"])
+}
+
+func TestIterEntriesTolerantCollectsParseFailures(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/good.md", sampleEntry)
+	badPath := writeFile(t, dir, "global/bad.md", "+++\nid = \"a\"\nno closing fence\n")
+
+	entries, failures, err := IterEntriesTolerant(dir)
+	require.NoError(t, err, "a malformed entry must not abort the tolerant walk")
+
+	ids := map[string]bool{}
+	for _, e := range entries {
+		ids[e.ID] = true
+	}
+	assert.True(t, ids["test/one"], "the well-formed entry must still be collected")
+
+	require.Len(t, failures, 1)
+	assert.Equal(t, badPath, failures[0].Path)
+	assert.Error(t, failures[0].Err)
+	assert.NotErrorIs(t, failures[0].Err, errNotEntry)
+}
+
+func TestIterEntriesStillAbortsOnParseFailure(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/good.md", sampleEntry)
+	writeFile(t, dir, "global/bad.md", "+++\nid = \"a\"\nno closing fence\n")
+
+	_, err := IterEntries(dir)
+	require.Error(t, err, "IterEntries' existing abort-on-first-error contract must be unchanged")
+}
+
 func TestParseEntryNewFieldsZeroValues(t *testing.T) {
 	e, err := ParseEntry(writeFile(t, t.TempDir(), "global/one.md", sampleEntry))
 	require.NoError(t, err)
@@ -939,6 +983,26 @@ func TestShadowReasonNoDecisionForSingleCandidateTopic(t *testing.T) {
 	out, reasons := shadowReason([]*Entry{solo})
 	require.Len(t, out, 1)
 	assert.Empty(t, reasons, "a topic_key held by only one candidate is not a decision")
+}
+
+func TestShadowReasonReportsOneDecisionPerContestedTopic(t *testing.T) {
+	s1 := parseFixture(t, lessSpecificShared)
+	s2 := parseFixture(t, moreSpecificShared)
+	u1 := parseFixture(t, untopiced1) // never contested -- must produce no reason
+
+	survivors, reasons := shadowReason([]*Entry{s1, s2, u1})
+
+	survivorIDs := map[string]bool{}
+	for _, e := range survivors {
+		survivorIDs[e.ID] = true
+	}
+	assert.True(t, survivorIDs["s2"] && survivorIDs["u1"])
+	assert.False(t, survivorIDs["s1"])
+
+	require.Len(t, reasons, 1, "only the contested topic_key should produce a reason")
+	assert.Equal(t, "shared", reasons[0].TopicKey)
+	assert.Equal(t, "s2", reasons[0].WinnerID)
+	assert.Equal(t, "scope_size", reasons[0].Rule)
 }
 
 func TestShadowDelegatesToShadowReason(t *testing.T) {
