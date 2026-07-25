@@ -30,7 +30,7 @@ var primeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Print(cairn.RenderPrimeText(result, store, identity))
+		fmt.Print(cairn.RenderPrimeText(result))
 		return nil
 	},
 }
