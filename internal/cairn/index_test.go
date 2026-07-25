@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -467,6 +468,75 @@ func TestEnsureFreshNoopOnNonGitStore(t *testing.T) {
 
 	require.NoError(t, ensureFreshWith(ctx, store, countingReindex))
 	assert.Equal(t, 0, calls, "non-git store has no HEAD to drift from; an already-built index must not be reindexed")
+}
+
+func TestEnsureFreshWithLogsIndexDriftWhenStale(t *testing.T) {
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+
+	recs := testLogRecords(t, func(ctx context.Context) {
+		require.NoError(t, ensureFreshWith(ctx, store, Reindex))
+	})
+
+	require.Len(t, recs, 1, "ensureFreshWith must emit exactly one index_drift record")
+	rec := recs[0]
+	assert.Equal(t, "index_drift", rec["kind"])
+	assert.Equal(t, true, rec["stale"])
+	assert.Equal(t, true, rec["reindexed"])
+	assert.Equal(t, float64(1), rec["reindex_count"])
+	assert.Equal(t, "", rec["reindex_error"])
+	assert.GreaterOrEqual(t, rec["duration_ms"], float64(0))
+}
+
+func TestEnsureFreshWithLogsIndexDriftWhenFresh(t *testing.T) {
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(t.Context(), store)
+	require.NoError(t, err)
+
+	recs := testLogRecords(t, func(ctx context.Context) {
+		require.NoError(t, ensureFreshWith(ctx, store, Reindex))
+	})
+
+	require.Len(t, recs, 1, "ensureFreshWith must emit exactly one index_drift record")
+	rec := recs[0]
+	assert.Equal(t, "index_drift", rec["kind"])
+	assert.Equal(t, false, rec["stale"])
+	assert.Equal(t, false, rec["reindexed"])
+	assert.Equal(t, float64(0), rec["reindex_count"])
+	assert.Equal(t, "", rec["reindex_error"])
+}
+
+func TestEnsureFreshWithLogsIndexDriftOnReindexError(t *testing.T) {
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+
+	failingReindex := func(ctx context.Context, store string) (int, error) {
+		return 0, errors.New("boom")
+	}
+
+	var callErr error
+	recs := testLogRecords(t, func(ctx context.Context) {
+		callErr = ensureFreshWith(ctx, store, failingReindex)
+	})
+
+	require.Error(t, callErr)
+	require.Len(t, recs, 1, "ensureFreshWith must emit exactly one index_drift record even when reindex fails")
+	rec := recs[0]
+	assert.Equal(t, "index_drift", rec["kind"])
+	assert.Equal(t, true, rec["stale"])
+	assert.Equal(t, false, rec["reindexed"])
+	assert.Equal(t, float64(0), rec["reindex_count"])
+	assert.Equal(t, "boom", rec["reindex_error"])
 }
 
 func TestOpenDBAppliesBusyTimeoutAndWALPragmas(t *testing.T) {

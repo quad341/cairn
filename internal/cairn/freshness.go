@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+
+	"github.com/quad341/cairn/internal/obslog"
 )
 
 // Freshness statuses.
@@ -118,7 +120,16 @@ func ComputeFingerprint(ctx context.Context, a Anchor) (string, error) {
 }
 
 // Check returns (status, human-readable detail) for an entry's freshness.
-func Check(ctx context.Context, e *Entry) (string, string) {
+func Check(ctx context.Context, e *Entry) (status string, detail string) {
+	defer func() {
+		obslog.FromContext(ctx).FreshnessCheck(obslog.FreshnessCheckFields{
+			EntryID:    e.ID,
+			AnchorType: e.Anchor.Type,
+			Status:     status,
+			Detail:     detail,
+		})
+	}()
+
 	a := e.Anchor
 	if a.Type == "" || a.Type == "none" {
 		return Unknown, "no source anchor (time-based freshness only)"
