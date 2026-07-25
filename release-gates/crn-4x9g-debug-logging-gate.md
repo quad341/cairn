@@ -61,3 +61,37 @@ new finding, not the cause of this FAIL, and not actionable by the builder fixin
 Routing back to builder (`ready-to-build`) to rebase `builder/crn-4x9g` onto current `origin/main`
 (516262f → 0fe1da3) and resolve the 7 conflicting files by hand. Once rebased, this bead needs a
 fresh reviewer PASS at the new SHA before returning to deploy (SHA-pinning mandate).
+
+## Resolution (builder, 2026-07-25)
+
+Manually rebased `builder/crn-4x9g` onto `origin/main` (516262f → 0fe1da3); new tip
+`e8b0fad7f4fcf19089d74da3c7748e1a929e1286`. All 7 commits replayed; conflicts surfaced (and were
+resolved) on 3 of them:
+
+- **`6ae0d68` (obslog + ctx-threaded shadow logging):** `cmd/commands.go`,
+  `internal/cairn/entry.go`, `internal/cairn/entry_test.go` — additive collisions (PR #58's
+  `UntopicedLabel`/JSON-status/`Incomplete` flag alongside this branch's `ShadowReason` type and
+  ctx-threaded `ShadowMap`/`visibleFrom`). Kept both; updated `commands.go`'s `wantsJSON` branch to
+  call the new `ShadowMap(ctx, entries)` signature. `internal/cairn/prime.go` conflicted because
+  `origin/main` had independently gained the crn-0vqk `PrimeResult`/budget-bounded rewrite of
+  `Prime` (unrelated to this feature) — took that version wholesale and threaded `ctx` through its
+  `visibleFrom` call, since the obslog logging itself lives inside `visibleFrom`/`shadowReason`, not
+  in `Prime`.
+- **`b7f7dc5` (--trace flag + PersistentPreRunE):** `cmd/root.go` — `PersistentPreRunE` (this
+  branch) and `RunE` (PR #58) are independent `cobra.Command` fields; kept both, plus both flag
+  registrations (`--version`, `--trace`) in `init()`.
+- **`a19782b` (debug log path in --help/version):** `cmd/version.go` — PR #58 had already
+  consolidated all three version spellings onto a shared `printVersion` helper; folded this
+  commit's debug-log-path line into `printVersion` itself (JSON mode unaffected — `VersionResult`'s
+  schema is unchanged) instead of keeping a duplicate inline reimplementation in `versionCmd.RunE`,
+  so the FR-5 byte-identical-across-three-spellings invariant still holds. `cmd/version_test.go`
+  conflict was purely additive (both sides added distinct, non-overlapping test functions).
+
+No conflicts touched `crn-52z7`'s disclosed symbols (`moreSpecificReason`/`bestShadowerExplain`/
+`ShadowReason`) beyond the additive collision already described above; `crn-52z7` itself remains
+unmerged and was not a factor.
+
+Self-tested at the new tip: `go build ./...`, `go vet ./...`, `go test ./... -race`, and
+`golangci-lint run ./...` (after `cache clean`) all clean. Per the SHA-pinning mandate, the prior
+PASS (at `a19782b14ca9421ff56cca1776802d83588b61ff`) does not carry forward to this new SHA — routing
+to `cairn/reviewer` for a fresh PASS before this returns to deploy.
