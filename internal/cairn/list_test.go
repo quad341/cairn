@@ -45,11 +45,11 @@ func TestListByTopicUntopicedMultiEntryBucket(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 3, "all simultaneously visible untopiced entries must be returned, none dropped")
 
-	ids := map[string]bool{}
-	for _, r := range rows {
-		ids[r.ID] = true
+	gotIDs := make([]string, len(rows))
+	for i, r := range rows {
+		gotIDs[i] = r.ID
 	}
-	assert.True(t, ids["u1"] && ids["u2"] && ids["u3"])
+	assert.Equal(t, []string{"u1", "u2", "u3"}, gotIDs, "untopiced bucket must be returned ID-ascending (entry.go's sort.Slice, preserved through ListByTopic's filter)")
 }
 
 func TestListByTopicShadowConflictPrecedence(t *testing.T) {

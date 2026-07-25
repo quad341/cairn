@@ -93,6 +93,11 @@ func bodyPathsFor(ctx context.Context, db *sql.DB, ids []string) (map[string]str
 		placeholders[i] = "?"
 		args[i] = id
 	}
+	// The concatenated segment is always literal "?" placeholders, one per
+	// id -- never derived from ids' contents. Actual values flow only
+	// through the parameterized args... below, so there's no injection
+	// vector here.
+	//nolint:gosec // placeholders are literal "?"s; values are parameterized via args
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, body_path FROM entries WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	if err != nil {
