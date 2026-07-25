@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -833,4 +834,121 @@ func TestRememberRecurrenceRequiresVisibleMatch(t *testing.T) {
 	e1After, err := cairn.ParseEntry(e1.BodyPath)
 	require.NoError(t, err)
 	assert.Equal(t, 0, e1After.RecurrenceCount, "E1 must be untouched: it was never visible to the second call's identity")
+}
+
+// execRememberJSONAgainstStore is runRememberAgainstStore's --json
+// counterpart: resetRememberFlags alone doesn't touch the shared --json
+// persistent flag (it's registered on rootCmd by format.go's init, not by
+// this file's own init), so a leftover --json=true from an earlier test
+// would otherwise leak into a later non-JSON runRemember call in the same
+// binary. Returns cmd.OutOrStdout()'s buffer (see execRootJSON in
+// commands_json_test.go for why: emitJSON/emitError write there, not to
+// bare os.Stdout, unlike human mode's fmt.Printf/Println).
+func execRememberJSONAgainstStore(t *testing.T, store string, extraArgs ...string) (string, error) {
+	t.Helper()
+	resetRememberFlags(t)
+	require.NoError(t, resetJSONFlag())
+	t.Cleanup(func() {
+		resetRememberFlags(t)
+		_ = resetJSONFlag()
+	})
+
+	stubGC(t)
+	args := append([]string{"remember", "--store", store, "--json"}, extraArgs...)
+	rootCmd.SetArgs(args)
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&bytes.Buffer{})
+	err := rootCmd.Execute()
+	return buf.String(), err
+}
+
+// runRememberJSON is execRememberJSONAgainstStore against a fresh store, for
+// a test that only needs a single call -- mirrors runRemember's relationship
+// to runRememberAgainstStore.
+func runRememberJSON(t *testing.T, extraArgs ...string) (string, string, error) {
+	t.Helper()
+	store := t.TempDir()
+	gitInit(t, store)
+	out, err := execRememberJSONAgainstStore(t, store, extraArgs...)
+	return store, out, err
+}
+
+func TestRememberJSONPrivateTierOutputsResult(t *testing.T) {
+	_, out, err := runRememberJSON(t, "--scope", "agent:test", "capture this")
+	require.NoError(t, err)
+
+	var result RememberResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.NotEmpty(t, result.ID)
+	assert.Equal(t, []string{"agent:test"}, result.Scope)
+	assert.NotEmpty(t, result.Commit)
+	assert.Empty(t, result.ReviewBranch)
+	assert.Empty(t, result.Reviewer)
+	assert.False(t, result.Recurrence)
+}
+
+func TestRememberJSONSharedTierOutputsReviewBranchAndReviewer(t *testing.T) {
+	_, out, err := runRememberJSON(t, "--scope", "rig:web", "capture this")
+	require.NoError(t, err)
+
+	var result RememberResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.NotEmpty(t, result.ID)
+	assert.Equal(t, []string{"rig:web"}, result.Scope)
+	assert.Empty(t, result.Commit)
+	assert.NotEmpty(t, result.ReviewBranch)
+	assert.NotEmpty(t, result.Reviewer)
+}
+
+func TestRememberJSONRejectsInvalidScopeTag(t *testing.T) {
+	_, out, err := runRememberJSON(t, "--scope", "agent:../evil", "capture this")
+	require.Error(t, err)
+
+	var result ErrorResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.Equal(t, CategoryInvalidInput, result.Error.Category)
+	assert.Equal(t, "agent:../evil", result.Error.Subject)
+}
+
+// TestRememberJSONRejectsInvalidIdentityTagNotUsedAsScope proves
+// resolveIdentityValidated's new call in remember's RunE covers a case the
+// existing --topic/--scope validation loop can't reach: an explicit --scope
+// makes rememberScope skip defaultScope (and so never look at identity)
+// entirely, so a bad identity tag would otherwise reach cairn.NewEntry
+// unchecked, landing only in CreatedBy.
+func TestRememberJSONRejectsInvalidIdentityTagNotUsedAsScope(t *testing.T) {
+	t.Setenv("CAIRN_IDENTITY", "rig/bad agent:bot")
+	_, out, err := runRememberJSON(t, "--scope", "agent:bot", "capture this")
+	require.Error(t, err)
+
+	var result ErrorResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.Equal(t, CategoryInvalidInput, result.Error.Category)
+	assert.Equal(t, "rig/bad", result.Error.Subject)
+}
+
+// TestRememberJSONRecurrencePrivateTierReportsCommit mirrors
+// TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly's setup exactly
+// (two different agent scopes sharing one topic_key, a second identity broad
+// enough to see both -- a same-scope repeat is "shadow exempt" in Conflicts'
+// signal computation and would never match, per
+// TestRememberSameScopeTopicKeyRepeatDoesNotIncrementRecurrence just below).
+func TestRememberJSONRecurrencePrivateTierReportsCommit(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+
+	t.Setenv("CAIRN_IDENTITY", "agent:bob")
+	_, err := execRememberJSONAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:bob", "prefer feature flags over env vars")
+	require.NoError(t, err)
+
+	t.Setenv("CAIRN_IDENTITY", "agent:bob agent:alice")
+	out, err := execRememberJSONAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:alice", "prefer feature flags over env vars")
+	require.NoError(t, err)
+
+	var result RememberResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.True(t, result.Recurrence)
+	assert.Equal(t, 1, result.RecurrenceCount)
+	assert.NotEmpty(t, result.Commit)
 }
