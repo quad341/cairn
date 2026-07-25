@@ -14,32 +14,51 @@
 **cairn** is a scoped, freshness-tracked knowledge cache for AI agent fleets. It
 lets high-level agents (investigators, architects, designers) and interactive
 agents stop re-solving solved problems and re-deriving known infrastructure: each
-agent sees the union of knowledge relevant to *it*, and every entry knows when
-it's gone stale.
+agent sees the union of knowledge relevant to *it*, and supported source anchors
+make drift visible.
 
 This repo is the **engine** — CLI, the rebuildable SQLite index over markdown
 bodies, the freshness/drift checker, the scope/union query, schemas, and agent
-integration. The actual knowledge lives in a **separate private store repo** (one
+integration. The actual knowledge lives in a **separate store repo** (one
 per fleet/deployment): cairn is generic; your notes are yours.
 
 Design & architecture → [`docs/DESIGN.md`](docs/DESIGN.md).
 Usage & the knowledge lifecycle (+ how it differs from MEMORY.md / `bd remember`) → [`docs/knowledge-lifecycle.md`](docs/knowledge-lifecycle.md).
 
 ## Concepts, one breath
+
 - **Entry** = a markdown body (source of truth) + an index row (queryable metadata).
 - **Scope** = tags on an entry; an agent sees it *iff every tag is satisfied by its
-  identity*. Union = one query; conflict precedence = specificity.
-- **Freshness** = `confidence = f(age-since-verified, source-anchor-drift)`. Reads
-  lazily re-verify; a drift sweep re-checks high-traffic + low-confidence first.
-- **Recall** = a bounded topic **map** always in context + bodies pulled on demand
-  by semantic search. (You can't miss what you can see on the map.)
-- **Curation** = friction ∝ blast radius, via a **local, forge-free PR pipeline**:
+  identity*. Scope is relevance routing, not access control; direct by-ID lookup is
+  intentionally unscoped. Conflict precedence = specificity.
+- **Freshness** = source-anchor drift is checked on reads and by a shared-tier
+  sweep. Unanchored and unsupported anchors are reported as `unknown`.
+- **Recall** = a bounded topic **map** in session context + bodies pulled on demand
+  by exact ID. Exact topic lookup and semantic search are not implemented yet.
+- **Curation** = friction ∝ blast radius, via a **local review-branch pipeline**:
   private = direct commit; shared = branch → merge-request → librarian review → merge.
 
-## Status
-Early. `docs/DESIGN.md` has the ratified spine, the open questions, and the v1
-plan — prove source-anchored freshness on one real entry before building the lattice.
+## Current capabilities
+
+| Area | Shipped today | Not yet implemented |
+|---|---|---|
+| Recall | identity-scoped `prime`/`map`; unscoped `get <id>`; recall counters and timestamps | topic-to-ID lookup; semantic search; general JSON mode |
+| Freshness | `files` and `commit` anchors; lazy checks; `verify`; shared-tier JSON sweep | time-decay confidence; `query`/`external` verification; prioritized scheduling |
+| Capture | `remember`; optional topic hint; exact-topic recurrence detection; private direct commit | stdin/body-file capture; anchor flags on `remember` |
+| Curation | review branches and `review`; stale-branch reporting; dedup, promotion, and cull candidate workflows | hosted pull requests; fully autonomous curation |
+| Index | self-healing SQLite-backed reads plus operational recall/curation fields | no manual reindex is normally required, but `reindex` remains available for repair |
+
+The CLI is still early and its text output is primarily human-oriented. See
+[`docs/knowledge-lifecycle.md`](docs/knowledge-lifecycle.md) for the current
+commands and workflows.
+
+## Non-goal: security boundaries
+
+Cairn assumes one trusted fleet and store. Scope tags, tier names, shadowing, and
+review friction exist to improve relevance and limit the efficiency blast radius
+of bad knowledge. They do **not** provide confidentiality, authorization, or
+tenant isolation. `cairn get <id>` deliberately bypasses identity filtering.
 
 ## Store
-Point cairn at a private store laid out as `global/ · rig/<rig>/ · role/<role>/ ·
-agent/<agent>/`. Reference layout lives in the sibling `cairn-store` repo (private).
+Point cairn at a store laid out as `global/ · rig/<rig>/ · role/<role>/ ·
+agent/<agent>/`. Reference layout lives in the sibling `cairn-store` repo.

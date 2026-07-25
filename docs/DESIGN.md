@@ -3,8 +3,8 @@
 cairn is a scoped, freshness-tracked knowledge cache for a fleet of AI agents.
 It lets higher-level agents (investigators, architects, designers, interactive
 assistants) stop re-solving problems that were already solved and re-deriving
-infrastructure that is already understood — while guaranteeing that a cached
-answer is either known-fresh or flagged stale, never silently wrong.
+infrastructure that is already understood. Anchored answers report source drift;
+unanchored or unverifiable answers report unknown freshness.
 
 ## 1. Motivation
 
@@ -19,7 +19,12 @@ notes) has three problems this design targets:
   "everyone on this project," "this role," or "just me."
 
 Because a real fleet has *differentiated* agents, cairn scopes knowledge per
-project / role / agent rather than pooling everything into one store.
+project / role / agent rather than putting every fact into every agent's working
+context.
+
+Scope is a relevance and efficiency mechanism only. Cairn assumes one trusted
+fleet and store; it does not provide confidentiality, authorization, or tenant
+isolation. Direct by-ID lookup deliberately bypasses identity filtering.
 
 ## 2. Storage
 
@@ -36,9 +41,12 @@ project / role / agent rather than pooling everything into one store.
   Bodies are the **source of truth**: human-readable, git-versioned, diffable,
   reviewable like code.
 
-- **The index** is a **SQLite** database — a *rebuildable materialized view*
-  over the frontmatter. It is disposable and gitignored; `reindex` drops and
-  repopulates it from the bodies. It holds no state that isn't in a body.
+- **The index** is a gitignored **SQLite** database. Entry content and curated
+  metadata come from the bodies; the index also carries operational state such
+  as recall counts/timestamps and curation signals. Read paths self-heal the
+  index from the store when its Git watermark is stale. `reindex` remains an
+  explicit repair tool and preserves index-only operational fields for entries
+  that still exist.
 
 ## 3. Scope & the union
 
@@ -76,20 +84,19 @@ is *mechanically detectable*:
 - `commit` — pinned to a specific commit.
 - `query` / `external` — re-run, or TTL (roadmap).
 
-`confidence = f(age-since-verified, anchor-drift)`. An anchored entry whose
-source is untouched stays high-confidence for a long TTL; an un-anchored note
-decays on time alone.
+The current implementation reports three states: `fresh`, `stale`, and
+`unknown`. It compares supported anchors to the stored fingerprint. Time-based
+confidence decay is not implemented.
 
 Loops:
 
 - **Lazy verify on read** — a read cheaply re-checks the anchor; if it drifted,
   the entry is served ⚠-stale ("true as of X; re-derive"). Stale is never served
   as fresh.
-- **Write-back on miss** — re-deriving an entry re-stamps its fingerprint, so the
-  next reader gets it fresh for free.
-- **Prioritized sweep** — a background pass re-verifies high-traffic +
-  low-confidence entries first (most value per unit of work); the cold tail is
-  re-verified lazily on next read.
+- **Explicit write-back** — `cairn verify <id>` re-stamps a supported anchor
+  after an agent has re-derived and checked the entry.
+- **Shared-tier sweep** — `cairn sweep` emits JSON freshness findings for
+  librarian maintenance. Scheduling and prioritization live outside this CLI.
 
 ## 5. Recall
 
@@ -97,10 +104,11 @@ Loops:
   index. It scales with topic count (sub-linear in entries), so it stays small at
   scale, and it makes the agent aware of what exists — which is what prevents
   "queried wrong, silently missed it."
-- **Bodies on demand** — pulled by id (and, on the roadmap, by semantic search),
-  so context isn't bloated by entries the task doesn't need.
+- **Bodies on demand** — pulled by exact id, so context isn't bloated by entries
+  the task doesn't need.
 
-The map is the reason a query rarely misses: you can see the menu.
+The map exposes the menu, but today it does not expose entry IDs. Exact
+topic-to-entry lookup and semantic search remain roadmap work.
 
 ## 6. Topic keys
 
@@ -114,31 +122,43 @@ an entry is promoted to a shared scope.
 
 | Scope | Flow |
 |---|---|
-| `agent/…` (private) | commit straight to `main` — no review |
+| `agent/…` (private/narrowest relevance) | commit straight to `main` — no review |
 | `role/…` | light — the role's own agents curate |
 | `rig/…`, `global/…` | **owned**: propose on a branch, the layer's curator reviews the diff (sets anchor + tags + topic key), then merge |
 
-Because bodies are just files in a git repo, the shared-scope review *is* a pull
-request — no separate forge required. Cost matches damage: a bad private note
-hurts one agent; a bad global note poisons everyone.
+Because bodies are just files in a git repo, shared-scope review uses a local
+review branch; no hosted forge is required. Cost matches efficiency impact: a
+bad narrowly scoped note wastes one agent's effort, while a bad global note can
+mislead the whole fleet.
 
 ## 8. CLI (v0)
 
 ```
-cairn reindex         # rebuild the SQLite index from the bodies
-cairn map             # bounded topic map for an identity (--identity rig:web,role:reviewer)
-cairn status          # freshness of every entry
-cairn freshness <id>  # freshness of one entry
-cairn verify <id>     # recompute + write back an entry's anchor fingerprint
-cairn sweep           # freshness sweep across shared-tier entries (read-only, JSON output)
-cairn remember <body> # write a new entry to the store (curation-tier routing)
-cairn get <id>        # pull an entry's full body + freshness by id
-cairn prime           # emit the agent's scoped knowledge map + usage (SessionStart hook)
+cairn prime                   # scoped topic map + agent usage prompt
+cairn map                     # scoped topic map only
+cairn get <id>                # unscoped exact-ID body + freshness lookup
+cairn remember <body>         # private commit or shared review-branch proposal
+cairn freshness <id>          # freshness of one entry
+cairn status                  # freshness of every entry
+cairn verify <id>             # recompute and write a supported fingerprint
+cairn sweep                   # shared-tier freshness report (JSON)
+cairn review ...              # inspect and merge shared review branches
+cairn stale-branches          # review-branch age/reporting workflow (JSON)
+cairn dedup                   # duplicate/re-scope candidates (JSON)
+cairn promote-candidates      # recurring promotion candidates (JSON)
+cairn promote-mark <id>       # record promotion to a bead
+cairn recall-stats            # recall telemetry (JSON)
+cairn cull-candidates         # disused-entry candidates (JSON)
+cairn cull-evict <id>         # private eviction or shared review proposal
+cairn reindex                 # explicit index rebuild/repair
 ```
 
 ## 9. Roadmap
 
-- Semantic pull (embeddings) for body retrieval.
-- The prioritized drift sweep as a scheduled job.
+- Exact topic-to-entry retrieval, followed by semantic pull if still useful.
+- Machine-readable output for the interactive agent-facing commands.
+- Context-budgeted prime output with retrievable IDs and freshness.
+- Stdin/body-file capture and convenient anchor flags for `remember`.
+- Store validation and visibility/precedence explanations.
+- Prioritized scheduling around the existing drift sweep.
 - `query` / `external` anchor types.
-- A thin `propose` / `review` wrapper over the git PR flow for shared scopes.
