@@ -21,7 +21,7 @@ func Prime(ctx context.Context, store string, identity []string) (string, error)
 	for _, e := range entries {
 		t := e.TopicKey
 		if t == "" {
-			t = "(untopiced)"
+			t = UntopicedLabel
 		}
 		counts[t]++
 	}

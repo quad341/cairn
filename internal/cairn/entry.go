@@ -520,6 +520,11 @@ func scopeTags(ctx context.Context, db *sql.DB) (map[string][]string, error) {
 	return tags, rows.Err()
 }
 
+// UntopicedLabel is the display/query sentinel for an empty TopicKey, shared
+// by map, prime, get, and list so all four can never drift out of sync on
+// what string represents "no topic".
+const UntopicedLabel = "(untopiced)"
+
 // shadow resolves topic_key conflicts by specificity: the entry with the most
 // scope tags wins (CSS-style, DESIGN.md §3). Ties break on most-recent
 // VerifiedAt, then most-recent CreatedAt, then lowest ID, so resolution is
