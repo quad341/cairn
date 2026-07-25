@@ -84,3 +84,64 @@ func TestPrimeNoWarningOnEmptyScopeDimension(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, out, "tag-shape mismatch")
 }
+
+// TestPrimeStructuredReturnsItemsAndCounts covers crn-od2x.2: cairn prime
+// --json needs the same visible-set computation Prime's rendered text uses,
+// but as structured data an agent can parse without scraping prose. Field
+// names mirror crn-0vqk.1/crn-0vqk.2's PrimeResult/PrimeItem exactly so
+// either bead's --json consumers can depend on the same shape regardless of
+// merge order.
+func TestPrimeStructuredReturnsItemsAndCounts(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", globalEntry)
+	writeFile(t, dir, "rig/alpha/r.md",
+		"+++\nid = \"r\"\ntitle = \"r title\"\nsummary = \"r summary\"\ntopic_key = \"alpha/thing\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
+
+	db, err := openDB(dir)
+	require.NoError(t, err)
+	require.NoError(t, ensureFresh(t.Context(), dir))
+	_, err = db.ExecContext(t.Context(), `UPDATE entries SET hit_count = 3 WHERE id = 'r'`)
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	result, err := PrimeStructured(t.Context(), dir, []string{"rig:alpha"})
+	require.NoError(t, err)
+
+	assert.Equal(t, dir, result.Store)
+	assert.Equal(t, []string{"rig:alpha"}, result.Identity)
+	assert.Equal(t, 2, result.TotalVisible)
+	require.Len(t, result.Items, 2)
+	assert.Equal(t, 0, result.TruncatedCount, "this bead does no budget-aware truncation")
+	assert.False(t, result.ChecksCapped, "this bead does no budget-aware capping")
+	assert.Equal(t, 0, result.FreshCount, "neither fixture entry has an anchor")
+	assert.Equal(t, 0, result.StaleCount, "neither fixture entry has an anchor")
+	assert.Equal(t, 2, result.UnknownCount, "neither fixture entry has an anchor")
+
+	var item PrimeItem
+	for _, it := range result.Items {
+		if it.ID == "r" {
+			item = it
+		}
+	}
+	assert.Equal(t, "alpha/thing", item.TopicKey)
+	assert.Equal(t, "r title", item.Title)
+	assert.Equal(t, "r summary", item.Summary)
+	assert.Equal(t, 3, item.HitCount, "hit_count is index-only state, not re-derived from the body")
+	assert.Equal(t, Unknown, item.Freshness.Status, "no anchor -> unknown freshness")
+	assert.Contains(t, item.Freshness.Detail, "no source anchor")
+}
+
+// TestPrimeStructuredWarnsOnUnmatchedScopeDimension confirms PrimeStructured
+// surfaces the same scope-mismatch diagnostic as Prime's rendered text
+// (crn-ln1), just as a string slice instead of prose lines.
+func TestPrimeStructuredWarnsOnUnmatchedScopeDimension(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "role/investigator/o.md",
+		"+++\nid = \"o\"\ntitle = \"o\"\ntopic_key = \"o/thing\"\nscope = [\"role:investigator\"]\n+++\nx\n")
+
+	result, err := PrimeStructured(t.Context(), dir, []string{"role:builder"})
+	require.NoError(t, err)
+	assert.Equal(t, 0, result.TotalVisible, "precondition: the mismatch should leave nothing visible")
+	require.Len(t, result.Warnings, 1)
+	assert.Contains(t, result.Warnings[0], "tag-shape mismatch")
+}
