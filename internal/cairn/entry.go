@@ -659,14 +659,15 @@ func scopeSuperset(super, sub []string) bool {
 
 // Status returns every entry for the freshness/shadow report `cairn status`
 // prints, reading index columns only instead of walking + parsing every body
-// (crn-6az.6.1.5). It also backs Visible (via visibleFrom) and Prime's
-// scope-mismatch diagnostic (via scopeMismatchWarnings, crn-ln1), which need
+// (crn-6az.6.1.5). It also backs Visible (via visibleFrom), Prime's
+// scope-mismatch diagnostic (via scopeMismatchWarnings, crn-ln1), and
+// PrimeStructured's cairn prime --json item list (crn-od2x.2), which need
 // the same bulk index read pre- and post-identity-filtering respectively.
-// Check only ever reads e.Anchor, ShadowMap only ever reads ID, TopicKey,
-// Scope, VerifiedAt, and CreatedAt, and Visible/scopeMismatchWarnings only
-// ever read those same five -- so those are the only fields populated here;
-// Title, Summary, Type, CreatedBy, HitCount, Body, and BodyPath are left
-// zero-valued for every caller.
+// Check only ever reads e.Anchor; ShadowMap only ever reads ID, TopicKey,
+// Scope, VerifiedAt, and CreatedAt; Visible/scopeMismatchWarnings only ever
+// read those same five; PrimeStructured additionally reads Title, Summary,
+// and HitCount -- so those are the only fields populated here. Type,
+// CreatedBy, Body, and BodyPath are left zero-valued for every caller.
 func Status(ctx context.Context, store string) ([]*Entry, error) {
 	if err := ensureFresh(ctx, store); err != nil {
 		return nil, err
@@ -683,7 +684,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 	}
 
 	rows, err := db.QueryContext(ctx, `SELECT
-		id, topic_key, verified_at, created_at,
+		id, title, summary, topic_key, verified_at, created_at, hit_count,
 		anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint
 		FROM entries ORDER BY id`)
 	if err != nil {
@@ -696,7 +697,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 		e := &Entry{}
 		var anchorPaths string
 		if err := rows.Scan(
-			&e.ID, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt,
+			&e.ID, &e.Title, &e.Summary, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt, &e.HitCount,
 			&e.Anchor.Type, &e.Anchor.Repo, &anchorPaths, &e.Anchor.Spec, &e.Anchor.Fingerprint,
 		); err != nil {
 			return nil, err
