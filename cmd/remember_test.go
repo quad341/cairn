@@ -211,12 +211,25 @@ func withStdin(t *testing.T, body string, fn func()) {
 
 func resetRememberFlags(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"topic", "scope", "reviewer"} {
+	for _, name := range []string{"topic", "scope", "reviewer", "file", "title", "summary", "anchor-repo"} {
 		f := rememberCmd.Flags().Lookup(name)
 		require.NotNil(t, f)
 		require.NoError(t, f.Value.Set(""))
 		f.Changed = false
 	}
+	for _, name := range []string{"verify", "force"} {
+		f := rememberCmd.Flags().Lookup(name)
+		require.NotNil(t, f)
+		require.NoError(t, f.Value.Set("false"))
+		f.Changed = false
+	}
+
+	apf := rememberCmd.Flags().Lookup("anchor-path")
+	require.NotNil(t, apf)
+	apsv, ok := apf.Value.(pflag.SliceValue)
+	require.True(t, ok, "anchor-path flag must implement pflag.SliceValue")
+	require.NoError(t, apsv.Replace(nil))
+	apf.Changed = false
 
 	idf := rootCmd.PersistentFlags().Lookup("identity")
 	require.NotNil(t, idf)
