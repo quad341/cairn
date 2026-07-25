@@ -88,7 +88,7 @@ var getCmd = &cobra.Command{
 		st, detail := cairn.Check(cmd.Context(), e)
 		topic := e.TopicKey
 		if topic == "" {
-			topic = "(untopiced)"
+			topic = cairn.UntopicedLabel
 		}
 		scope := "global"
 		if len(e.Scope) > 0 {
@@ -195,7 +195,7 @@ var mapCmd = &cobra.Command{
 		for _, e := range rows {
 			t := e.TopicKey
 			if t == "" {
-				t = "(untopiced)"
+				t = cairn.UntopicedLabel
 			}
 			counts[t]++
 		}
