@@ -195,7 +195,7 @@ func RenderPrimeText(r PrimeResult) string {
 		for _, it := range r.Items {
 			topic := it.TopicKey
 			if topic == "" {
-				topic = "(untopiced)"
+				topic = UntopicedLabel
 			}
 			fmt.Fprintf(&b, "  %-12s %-30s hits:%-4d %-7s %s\n", it.ID, topic, it.HitCount, it.Freshness.Status, it.Title)
 		}
