@@ -14,13 +14,13 @@ const freshnessScenarioID = "freshness-anchor-drift"
 
 const freshnessFixtureFile = "a.txt"
 
-// RunFreshnessScenario exercises Check()/ComputeFingerprint()'s 3
-// user-visible freshness states — no anchor, never verified, and
-// fresh-then-drifted-to-stale — against a real, disposable git repo ("files"
-// is the only anchor type computable in v1, per freshness.go) and real
-// entries seeded into store via the same Entry.Create path `cairn remember`
-// uses, then re-loaded with Find so Check runs against the TOML round-trip,
-// not just an in-memory struct.
+// RunFreshnessScenario exercises Check()/ComputeFingerprint()'s 4
+// user-visible freshness states — no anchor, never verified,
+// fresh-then-drifted-to-stale, and a canceled-context invocation incomplete
+// — against a real, disposable git repo ("files" is the only anchor type
+// computable in v1, per freshness.go) and real entries seeded into store via
+// the same Entry.Create path `cairn remember` uses, then re-loaded with Find
+// so Check runs against the TOML round-trip, not just an in-memory struct.
 func RunFreshnessScenario(ctx context.Context, store string) Result {
 	n, err := nonce()
 	if err != nil {
@@ -43,7 +43,10 @@ func RunFreshnessScenario(ctx context.Context, store string) Result {
 	if r := checkFreshnessNeverVerified(ctx, store, n, repo); r.Verdict != Pass {
 		return r
 	}
-	return checkFreshnessDriftDetection(ctx, store, n, repo)
+	if r := checkFreshnessDriftDetection(ctx, store, n, repo); r.Verdict != Pass {
+		return r
+	}
+	return checkFreshnessInvocationIncomplete(ctx, store, n, repo)
 }
 
 // checkFreshnessNoAnchor seeds an entry with no anchor at all and asserts
@@ -106,7 +109,10 @@ func checkFreshnessNeverVerified(ctx context.Context, store, n, repo string) Res
 // trip that is the whole point of the freshness dimension.
 func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Result {
 	anchor := cairn.Anchor{Type: "files", Repo: repo, Paths: []string{freshnessFixtureFile}}
-	fp := cairn.ComputeFingerprint(ctx, anchor)
+	fp, err := cairn.ComputeFingerprint(ctx, anchor)
+	if err != nil {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("ComputeFingerprint: %v", err))
+	}
 	if fp == "" {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, "ComputeFingerprint returned empty for a valid files anchor")
 	}
@@ -144,6 +150,42 @@ func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Re
 			fmt.Sprintf("post-drift: expected status %q, got %q (%s)", cairn.Stale, status, detail))
 	}
 	return NewResult(DimensionFreshness, freshnessScenarioID, Pass, "fresh-then-drifted-to-stale transition correctly detected")
+}
+
+// checkFreshnessInvocationIncomplete seeds an entry with a valid files
+// anchor, then checks it with a pre-canceled context and asserts Check
+// reports Incomplete — the operationally realistic failure mode for a live
+// critic-loop iteration running under a request-scoped timeout (crn-fdjc.1,
+// FR-5 class 6). Uses context cancellation rather than PATH-tampering: this
+// scenario can run inside a live, possibly-concurrent process (not just
+// under go test), and mutating process-global PATH would risk breaking
+// concurrent git calls from other scenarios/sweeps sharing the process.
+func checkFreshnessInvocationIncomplete(ctx context.Context, store, n, repo string) Result {
+	e, err := cairn.NewEntry("critic-freshness-invocation-incomplete-"+n, nil, "invocation-incomplete fixture body", "critic")
+	if err != nil {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("build entry: %v", err))
+	}
+	e.Anchor = cairn.Anchor{Type: "files", Repo: repo, Paths: []string{freshnessFixtureFile}}
+
+	cleanup, err := seedEntries(ctx, store, []*cairn.Entry{e})
+	defer cleanup()
+	if err != nil {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("seed fixture: %v", err))
+	}
+
+	loaded, err := cairn.Find(ctx, store, e.ID)
+	if err != nil {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("Find: %v", err))
+	}
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	status, detail := cairn.Check(cancelCtx, loaded)
+	if status != cairn.Incomplete {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail,
+			fmt.Sprintf("canceled-context check: expected status %q, got %q (%s)", cairn.Incomplete, status, detail))
+	}
+	return NewResult(DimensionFreshness, freshnessScenarioID, Pass, "canceled-context check correctly reports incomplete")
 }
 
 // gitInitAndCommit creates a git repo at dir and commits file with contents

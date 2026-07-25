@@ -42,7 +42,7 @@ var statusCmd = &cobra.Command{
 			return err
 		}
 		shadowedBy := cairn.ShadowMap(entries)
-		flags := map[string]string{cairn.Fresh: "OK ", cairn.Stale: "!! ", cairn.Unknown: "?? "}
+		flags := map[string]string{cairn.Fresh: "OK ", cairn.Stale: "!! ", cairn.Unknown: "?? ", cairn.Incomplete: "!X "}
 		for _, e := range entries {
 			st, detail := cairn.Check(cmd.Context(), e)
 			line := fmt.Sprintf("%s%-38s %-8s %s", flags[st], e.ID, st, detail)
@@ -68,6 +68,9 @@ var freshnessCmd = &cobra.Command{
 			return err
 		}
 		st, detail := cairn.Check(cmd.Context(), e)
+		if st == cairn.Incomplete {
+			return fmt.Errorf("%s: %s", args[0], detail)
+		}
 		fmt.Printf("%s: %s — %s\n", args[0], st, detail)
 		return nil
 	},
@@ -167,7 +170,10 @@ var verifyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fp := cairn.ComputeFingerprint(cmd.Context(), e.Anchor)
+		fp, err := cairn.ComputeFingerprint(cmd.Context(), e.Anchor)
+		if err != nil {
+			return fmt.Errorf("%s: git check did not complete: %w", args[0], err)
+		}
 		if fp == "" {
 			return fmt.Errorf("%s: nothing to verify (anchor type %q has no computable fingerprint)", args[0], e.Anchor.Type)
 		}
