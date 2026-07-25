@@ -46,7 +46,12 @@ func checkShadowWinsBySpecificity(ctx context.Context, store, n string) Result {
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build rig entry: %v", err))
 	}
-	rigAndRole, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: topic, Scope: []string{rig, "role:builder"}, Body: "rig+role body", CreatedBy: "critic"})
+	rigAndRole, err := cairn.NewEntry(cairn.NewEntryParams{
+		TopicKey:  topic,
+		Scope:     []string{rig, "role:builder"},
+		Body:      "rig+role body",
+		CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build rig+role entry: %v", err))
 	}
@@ -131,7 +136,12 @@ func checkShadowMapSupersetSemantics(ctx context.Context, store, n string) Resul
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build superset rig-only: %v", err))
 	}
-	rigRole, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: supTopic, Scope: []string{rig, "role:builder"}, Body: "rig+role body", CreatedBy: "critic"})
+	rigRole, err := cairn.NewEntry(cairn.NewEntryParams{
+		TopicKey:  supTopic,
+		Scope:     []string{rig, "role:builder"},
+		Body:      "rig+role body",
+		CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build superset rig+role: %v", err))
 	}
