@@ -106,12 +106,28 @@ func Check(ctx context.Context, e *Entry) (string, string) {
 	if a.Type == "" || a.Type == "none" {
 		return Unknown, "no source anchor (time-based freshness only)"
 	}
+	// Anchor shape (type + presence of the fields the type needs) decides
+	// verifiability without any git call -- ComputeFingerprint's own switch
+	// makes exactly this same free decision internally. Checking it here
+	// first, before the never-verified check below, keeps "not verifiable"
+	// winning over "never verified" for a fundamentally unverifiable anchor
+	// (crn-0vqk.2).
+	if a.Type != "commit" && (a.Type != "files" || a.Repo == "" || len(a.Paths) == 0) {
+		return Unknown, fmt.Sprintf("anchor type %q not verifiable in v1", a.Type)
+	}
+	// Once the anchor is at least shape-checkable, "never verified" is also
+	// knowable for free from a.Fingerprint alone -- check it before paying
+	// for ComputeFingerprint's git shell-out (the only expensive branch,
+	// reached only for a files anchor with repo+paths set). This benefits
+	// every Check() caller (status/freshness/get/verify), not just Prime's
+	// budgeted classifier, and is a currently-live inefficiency fixed in
+	// scope for crn-0vqk.2 rather than filed separately.
+	if a.Fingerprint == "" {
+		return Unknown, "never verified (no stored fingerprint)"
+	}
 	cur := ComputeFingerprint(ctx, a)
 	if cur == "" {
 		return Unknown, fmt.Sprintf("anchor type %q not verifiable in v1", a.Type)
-	}
-	if a.Fingerprint == "" {
-		return Unknown, "never verified (no stored fingerprint)"
 	}
 	if cur == a.Fingerprint {
 		return Fresh, fmt.Sprintf("anchor matches (%s)", cur)

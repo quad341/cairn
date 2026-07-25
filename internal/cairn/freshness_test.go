@@ -79,6 +79,33 @@ func TestFileAnchorNonexistentPathFingerprintEmpty(t *testing.T) {
 	assert.Equalf(t, Unknown, st, "detail: %s", detail)
 }
 
+// TestCheckNeverVerifiedIsFreeEvenWhenAnchorUnresolvable pins crn-0vqk.2's
+// in-scope Check() reorder: a never-verified files anchor must report "never
+// verified", not "not verifiable", even when the repo path can't actually be
+// resolved -- proving the answer came from the free Fingerprint=="" check,
+// not from a git shell-out that happened to come back empty. Before the
+// reorder, ComputeFingerprint ran first, so an unresolvable repo produced
+// "not verifiable" and silently threw away the (free, already-known)
+// never-verified signal.
+func TestCheckNeverVerifiedIsFreeEvenWhenAnchorUnresolvable(t *testing.T) {
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Repo: t.TempDir(), Paths: []string{"a.go"}}}
+	st, detail := Check(t.Context(), e)
+	assert.Equal(t, Unknown, st)
+	assert.Contains(t, detail, "never verified")
+}
+
+// TestCheckFilesAnchorMissingRepoReportsNotVerifiableEvenWhenNeverVerified
+// pins the reorder's ordering the other way: an anchor that isn't even
+// shape-checkable (files with no repo configured) must still report "not
+// verifiable", not "never verified", regardless of whether Fingerprint is
+// also empty -- the shape check wins over the never-verified check.
+func TestCheckFilesAnchorMissingRepoReportsNotVerifiableEvenWhenNeverVerified(t *testing.T) {
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Paths: []string{"a.go"}}}
+	st, detail := Check(t.Context(), e)
+	assert.Equal(t, Unknown, st)
+	assert.Contains(t, detail, "not verifiable")
+}
+
 func TestFileAnchorDrift(t *testing.T) {
 	ctx := t.Context()
 	repo := t.TempDir()
