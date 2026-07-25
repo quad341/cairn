@@ -108,6 +108,15 @@ func Reindex(ctx context.Context, store string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return ReindexEntries(ctx, store, entries)
+}
+
+// ReindexEntries is Reindex's body factored out to take an already-gathered
+// entry list, so a caller that needs a tolerant walk (doctor.go's
+// IterEntriesTolerant) can rebuild the index from it without re-triggering
+// IterEntries' own abort-on-first-parse-error walk (OQ5/OQ3). Reindex itself
+// is unchanged for its existing callers -- this is purely a factoring.
+func ReindexEntries(ctx context.Context, store string, entries []*Entry) (int, error) {
 	db, err := openDB(store)
 	if err != nil {
 		return 0, err
@@ -283,6 +292,13 @@ func ensureFreshWith(ctx context.Context, store string, reindex func(context.Con
 	}
 	obslog.FromContext(ctx).IndexDrift(fields)
 	return reindexErr
+}
+
+// IndexStale reports whether the index's watermark commit is behind the
+// store's current git HEAD (or missing/unbuilt) -- an exported wrapper
+// around indexStale so doctor.go's index-drift check can call it (OQ5).
+func IndexStale(ctx context.Context, store string) (bool, error) {
+	return indexStale(ctx, store)
 }
 
 func indexStale(ctx context.Context, store string) (bool, error) {

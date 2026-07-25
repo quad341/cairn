@@ -47,6 +47,46 @@ func TestReindex(t *testing.T) {
 	assert.Equal(t, 1, count)
 }
 
+func TestReindexEntriesBuildsIndexFromSuppliedList(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	body := "+++\nid = \"a\"\ntitle = \"A\"\ntopic_key = \"t/a\"\nscope = [\"rig:alpha\"]\n+++\nbody\n"
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"), []byte(body), 0o600))
+
+	entries, failures, err := IterEntriesTolerant(store)
+	require.NoError(t, err)
+	require.Empty(t, failures)
+
+	n, err := ReindexEntries(ctx, store, entries)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	db, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	var id string
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT id FROM entries").Scan(&id))
+	assert.Equal(t, "a", id)
+}
+
+func TestIndexStaleDelegatesToUnexportedCheck(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+
+	stale, err := IndexStale(ctx, store)
+	require.NoError(t, err)
+	assert.True(t, stale, "a store with no index built yet must report stale")
+
+	_, err = Reindex(ctx, store)
+	require.NoError(t, err)
+
+	stale, err = IndexStale(ctx, store)
+	require.NoError(t, err)
+	assert.False(t, stale, "immediately after a reindex on a non-git store the index must report fresh")
+}
+
 func TestReindexPopulatesAnchorAndTimestampColumns(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()

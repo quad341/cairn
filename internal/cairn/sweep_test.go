@@ -63,6 +63,30 @@ func TestSweepMatchesCheckForHealthyAnchors(t *testing.T) {
 	assert.Equal(t, Unknown, findingFor(t, findings, "no-anchor-1").Status)
 }
 
+// TestSweepEntriesUsesSuppliedList confirms Sweep's logic is fully reusable
+// with an already-gathered entry list (doctor.go's use case via
+// IterEntriesTolerant), not just via Sweep's own IterEntries walk.
+func TestSweepEntriesUsesSuppliedList(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	fp := ComputeFingerprint(ctx, Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}})
+	require.NotEmpty(t, fp)
+	writeFile(t, dir, "global/fresh.md", filesEntry("fresh-1", repo, []string{"a.go"}, fp))
+
+	entries, failures, err := IterEntriesTolerant(dir)
+	require.NoError(t, err)
+	require.Empty(t, failures)
+
+	findings, err := SweepEntries(ctx, dir, entries)
+	require.NoError(t, err)
+	assert.Equal(t, Fresh, findingFor(t, findings, "fresh-1").Status)
+}
+
 // TestSweepMatchesCheckForDriftedAnchor: a real content drift (source
 // changed after the stored fingerprint was stamped) must come through as
 // Stale — the sanity check must not mask genuine drift on a healthy anchor.
