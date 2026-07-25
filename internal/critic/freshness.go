@@ -146,6 +146,42 @@ func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Re
 	return NewResult(DimensionFreshness, freshnessScenarioID, Pass, "fresh-then-drifted-to-stale transition correctly detected")
 }
 
+// checkFreshnessInvocationIncomplete seeds an entry with a valid files
+// anchor, then checks it with a pre-canceled context and asserts Check
+// reports Incomplete — the operationally realistic failure mode for a live
+// critic-loop iteration running under a request-scoped timeout (crn-fdjc.1,
+// FR-5 class 6). Uses context cancellation rather than PATH-tampering: this
+// scenario can run inside a live, possibly-concurrent process (not just
+// under go test), and mutating process-global PATH would risk breaking
+// concurrent git calls from other scenarios/sweeps sharing the process.
+func checkFreshnessInvocationIncomplete(ctx context.Context, store, n, repo string) Result {
+	e, err := cairn.NewEntry("critic-freshness-invocation-incomplete-"+n, nil, "invocation-incomplete fixture body", "critic")
+	if err != nil {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("build entry: %v", err))
+	}
+	e.Anchor = cairn.Anchor{Type: "files", Repo: repo, Paths: []string{freshnessFixtureFile}}
+
+	cleanup, err := seedEntries(ctx, store, []*cairn.Entry{e})
+	defer cleanup()
+	if err != nil {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("seed fixture: %v", err))
+	}
+
+	loaded, err := cairn.Find(ctx, store, e.ID)
+	if err != nil {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("Find: %v", err))
+	}
+
+	cancelCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	status, detail := cairn.Check(cancelCtx, loaded)
+	if status != cairn.Incomplete {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail,
+			fmt.Sprintf("canceled-context check: expected status %q, got %q (%s)", cairn.Incomplete, status, detail))
+	}
+	return NewResult(DimensionFreshness, freshnessScenarioID, Pass, "canceled-context check correctly reports incomplete")
+}
+
 // gitInitAndCommit creates a git repo at dir and commits file with contents
 // as its first commit — the same fixture shape freshness_test.go's
 // gitInit/gitCommitAll build, but as runtime code rather than test code,

@@ -70,3 +70,12 @@ func TestCheckFreshnessDriftDetection(t *testing.T) {
 	r := checkFreshnessDriftDetection(ctx, t.TempDir(), "unit-drift", repo)
 	assert.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 }
+
+func TestCheckFreshnessInvocationIncomplete(t *testing.T) {
+	ctx := t.Context()
+	repo := t.TempDir()
+	require.NoError(t, gitInitAndCommit(ctx, repo, freshnessFixtureFile, "line one\n"))
+
+	r := checkFreshnessInvocationIncomplete(ctx, t.TempDir(), "unit-invocation-incomplete", repo)
+	assert.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
+}

@@ -13,9 +13,10 @@ import (
 
 // Freshness statuses.
 const (
-	Fresh   = "fresh"
-	Stale   = "stale"
-	Unknown = "unknown"
+	Fresh      = "fresh"
+	Stale      = "stale"
+	Unknown    = "unknown"
+	Incomplete = "incomplete"
 )
 
 // git runs a git subcommand against repo and returns (output, found, err).

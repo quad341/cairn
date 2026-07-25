@@ -156,6 +156,32 @@ func TestSweepOverridesStagedUncommittedAnchorToUnknown(t *testing.T) {
 	assert.NotEqual(t, naiveDetail, f.Detail, "Sweep should enrich Check's generic detail with the specific untracked path")
 }
 
+// TestSweepGitInvocationFailureIsIncomplete guards against Sweep's
+// independent untrackedPaths enrichment mistaking a genuine git invocation
+// failure (git unreachable via PATH) for a confirmed untracked path: the
+// finding must surface as Incomplete with Check's own detail, not get
+// overwritten to Unknown with an "anchor path(s) not tracked at HEAD"
+// message implying a confirmed verdict that was never actually reached.
+func TestSweepGitInvocationFailureIsIncomplete(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	writeFile(t, dir, "global/broken.md", filesEntry("broken-1", repo, []string{"a.go"}, ""))
+
+	t.Setenv("PATH", t.TempDir()) // git binary now unreachable
+
+	findings, err := Sweep(ctx, dir)
+	require.NoError(t, err)
+	f := findingFor(t, findings, "broken-1")
+	assert.Equal(t, Incomplete, f.Status)
+	assert.NotContains(t, f.Detail, "not tracked at HEAD",
+		"an invocation failure must never be reported as a confirmed untracked-path finding")
+}
+
 // TestSweepTierScoping is acceptance criterion 5: global/rig/role are in
 // remit, agent/ private entries are not.
 func TestSweepTierScoping(t *testing.T) {
