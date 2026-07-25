@@ -866,16 +866,15 @@ func execRememberJSONAgainstStore(t *testing.T, store string, extraArgs ...strin
 // runRememberJSON is execRememberJSONAgainstStore against a fresh store, for
 // a test that only needs a single call -- mirrors runRemember's relationship
 // to runRememberAgainstStore.
-func runRememberJSON(t *testing.T, extraArgs ...string) (string, string, error) {
+func runRememberJSON(t *testing.T, extraArgs ...string) (string, error) {
 	t.Helper()
 	store := t.TempDir()
 	gitInit(t, store)
-	out, err := execRememberJSONAgainstStore(t, store, extraArgs...)
-	return store, out, err
+	return execRememberJSONAgainstStore(t, store, extraArgs...)
 }
 
 func TestRememberJSONPrivateTierOutputsResult(t *testing.T) {
-	_, out, err := runRememberJSON(t, "--scope", "agent:test", "capture this")
+	out, err := runRememberJSON(t, "--scope", "agent:test", "capture this")
 	require.NoError(t, err)
 
 	var result RememberResult
@@ -889,7 +888,7 @@ func TestRememberJSONPrivateTierOutputsResult(t *testing.T) {
 }
 
 func TestRememberJSONSharedTierOutputsReviewBranchAndReviewer(t *testing.T) {
-	_, out, err := runRememberJSON(t, "--scope", "rig:web", "capture this")
+	out, err := runRememberJSON(t, "--scope", "rig:web", "capture this")
 	require.NoError(t, err)
 
 	var result RememberResult
@@ -902,7 +901,7 @@ func TestRememberJSONSharedTierOutputsReviewBranchAndReviewer(t *testing.T) {
 }
 
 func TestRememberJSONRejectsInvalidScopeTag(t *testing.T) {
-	_, out, err := runRememberJSON(t, "--scope", "agent:../evil", "capture this")
+	out, err := runRememberJSON(t, "--scope", "agent:../evil", "capture this")
 	require.Error(t, err)
 
 	var result ErrorResult
@@ -919,7 +918,7 @@ func TestRememberJSONRejectsInvalidScopeTag(t *testing.T) {
 // unchecked, landing only in CreatedBy.
 func TestRememberJSONRejectsInvalidIdentityTagNotUsedAsScope(t *testing.T) {
 	t.Setenv("CAIRN_IDENTITY", "rig/bad agent:bot")
-	_, out, err := runRememberJSON(t, "--scope", "agent:bot", "capture this")
+	out, err := runRememberJSON(t, "--scope", "agent:bot", "capture this")
 	require.Error(t, err)
 
 	var result ErrorResult

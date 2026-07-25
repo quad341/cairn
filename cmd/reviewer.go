@@ -32,10 +32,12 @@ func requestReview(cmd *cobra.Command, e *cairn.Entry, scope []string) error {
 
 	reviewer, err := resolveReviewer(cmd, tier, value)
 	if err != nil {
-		return emitError(cmd, fmt.Errorf("entry %s committed to review branch %s, but resolving a reviewer to mail failed: %w", e.ID, branch, err))
+		return emitError(cmd, fmt.Errorf(
+			"entry %s committed to review branch %s, but resolving a reviewer to mail failed: %w", e.ID, branch, err))
 	}
 	if err := sendReviewMail(cmd.Context(), reviewer, e, branch); err != nil {
-		return emitError(cmd, fmt.Errorf("entry %s committed to review branch %s, but mail to reviewer %q failed: %w", e.ID, branch, reviewer, err))
+		return emitError(cmd, fmt.Errorf(
+			"entry %s committed to review branch %s, but mail to reviewer %q failed: %w", e.ID, branch, reviewer, err))
 	}
 	if wantsJSON(cmd) {
 		return emitJSON(cmd.OutOrStdout(), RememberResult{
