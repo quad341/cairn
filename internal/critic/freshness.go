@@ -14,13 +14,13 @@ const freshnessScenarioID = "freshness-anchor-drift"
 
 const freshnessFixtureFile = "a.txt"
 
-// RunFreshnessScenario exercises Check()/ComputeFingerprint()'s 3
-// user-visible freshness states — no anchor, never verified, and
-// fresh-then-drifted-to-stale — against a real, disposable git repo ("files"
-// is the only anchor type computable in v1, per freshness.go) and real
-// entries seeded into store via the same Entry.Create path `cairn remember`
-// uses, then re-loaded with Find so Check runs against the TOML round-trip,
-// not just an in-memory struct.
+// RunFreshnessScenario exercises Check()/ComputeFingerprint()'s 4
+// user-visible freshness states — no anchor, never verified,
+// fresh-then-drifted-to-stale, and a canceled-context invocation incomplete
+// — against a real, disposable git repo ("files" is the only anchor type
+// computable in v1, per freshness.go) and real entries seeded into store via
+// the same Entry.Create path `cairn remember` uses, then re-loaded with Find
+// so Check runs against the TOML round-trip, not just an in-memory struct.
 func RunFreshnessScenario(ctx context.Context, store string) Result {
 	n, err := nonce()
 	if err != nil {
@@ -43,7 +43,10 @@ func RunFreshnessScenario(ctx context.Context, store string) Result {
 	if r := checkFreshnessNeverVerified(ctx, store, n, repo); r.Verdict != Pass {
 		return r
 	}
-	return checkFreshnessDriftDetection(ctx, store, n, repo)
+	if r := checkFreshnessDriftDetection(ctx, store, n, repo); r.Verdict != Pass {
+		return r
+	}
+	return checkFreshnessInvocationIncomplete(ctx, store, n, repo)
 }
 
 // checkFreshnessNoAnchor seeds an entry with no anchor at all and asserts
@@ -106,7 +109,10 @@ func checkFreshnessNeverVerified(ctx context.Context, store, n, repo string) Res
 // trip that is the whole point of the freshness dimension.
 func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Result {
 	anchor := cairn.Anchor{Type: "files", Repo: repo, Paths: []string{freshnessFixtureFile}}
-	fp := cairn.ComputeFingerprint(ctx, anchor)
+	fp, err := cairn.ComputeFingerprint(ctx, anchor)
+	if err != nil {
+		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("ComputeFingerprint: %v", err))
+	}
 	if fp == "" {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, "ComputeFingerprint returned empty for a valid files anchor")
 	}

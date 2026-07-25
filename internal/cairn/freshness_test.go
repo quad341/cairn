@@ -71,8 +71,9 @@ func TestFileAnchorNonexistentPathFingerprintEmpty(t *testing.T) {
 	gitCommitAll(t, repo, "init")
 
 	a := Anchor{Type: "files", Repo: repo, Paths: []string{"does-not-exist.go"}}
-	assert.Empty(t, ComputeFingerprint(ctx, a),
-		"a files anchor path untracked at HEAD must not produce a fingerprint")
+	fp, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	assert.Empty(t, fp, "a files anchor path untracked at HEAD must not produce a fingerprint")
 
 	e := &Entry{ID: "x", Anchor: a}
 	st, detail := Check(ctx, e)
@@ -115,7 +116,8 @@ func TestFileAnchorDrift(t *testing.T) {
 	gitCommitAll(t, repo, "init")
 
 	a := Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}
-	fp1 := ComputeFingerprint(ctx, a)
+	fp1, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
 	require.NotEmpty(t, fp1)
 
 	a.Fingerprint = fp1
@@ -128,7 +130,9 @@ func TestFileAnchorDrift(t *testing.T) {
 
 	st, _ = Check(ctx, e)
 	assert.Equal(t, Stale, st)
-	assert.NotEqual(t, fp1, ComputeFingerprint(ctx, a), "fingerprint should change after the source changed")
+	fp2, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	assert.NotEqual(t, fp1, fp2, "fingerprint should change after the source changed")
 }
 
 // TestCheckMissingRepositoryIsUnknown covers FR-5 class 1: an anchor
@@ -219,6 +223,24 @@ func TestCheckContextCanceledIsIncomplete(t *testing.T) {
 	e := &Entry{ID: "x", Anchor: Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}}
 	st, detail := Check(ctx, e)
 	assert.Equalf(t, Incomplete, st, "detail: %s", detail)
+}
+
+// TestComputeFingerprintGitInvocationFailureReturnsError is the
+// ComputeFingerprint-level counterpart to TestCheckGitInvocationFailureIsIncomplete
+// (mirrors the existing git()-level test one layer up, per crn-fdjc.1's test
+// plan).
+func TestComputeFingerprintGitInvocationFailureReturnsError(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	t.Setenv("PATH", t.TempDir()) // git binary now unreachable
+
+	a := Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}
+	fp, err := ComputeFingerprint(t.Context(), a)
+	require.Error(t, err)
+	assert.Empty(t, fp)
 }
 
 func TestGitConfirmedNonRepoIsNotAnError(t *testing.T) {

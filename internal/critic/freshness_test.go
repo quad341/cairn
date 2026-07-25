@@ -40,11 +40,13 @@ func TestGitInitAndCommitThenCommitFileChangesFingerprint(t *testing.T) {
 	require.NoError(t, gitInitAndCommit(ctx, dir, "f.txt", "v1\n"))
 
 	anchor := cairn.Anchor{Type: "files", Repo: dir, Paths: []string{"f.txt"}}
-	fp1 := cairn.ComputeFingerprint(ctx, anchor)
+	fp1, err := cairn.ComputeFingerprint(ctx, anchor)
+	require.NoError(t, err)
 	require.NotEmpty(t, fp1)
 
 	require.NoError(t, commitFile(ctx, dir, "f.txt", "v2\n", "update"))
-	fp2 := cairn.ComputeFingerprint(ctx, anchor)
+	fp2, err := cairn.ComputeFingerprint(ctx, anchor)
+	require.NoError(t, err)
 	assert.NotEqual(t, fp1, fp2, "the fingerprint must change once the anchored file's committed content changes")
 }
 
