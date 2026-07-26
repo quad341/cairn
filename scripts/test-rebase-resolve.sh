@@ -617,6 +617,76 @@ test_bounded_rebase_trivial_conflict_resolves_and_succeeds() {
     rm -rf "$remote" "$work" "$seed"
 }
 
+# Regression (crn-2sdw): the mid-rebase guard must resolve rebase-state dirs
+# via the real git-dir, not a literal .git/rebase-merge relative path. Inside
+# a git WORKTREE, .git is a FILE (gitdir pointer), not a directory, so the
+# literal check can never match — every conflict, trivial or not, was always
+# misdiagnosed as non-trivial (rc=12), and attempt_trivial_conflict_resolution
+# was never even invoked. This exercises the exact same trivial-conflict
+# shape as the case-2 test above, but with $work created via `git worktree
+# add` (a real linked worktree, .git-is-a-file) instead of `git clone`
+# (.git-is-a-directory) — reproducing the condition the old check
+# misdiagnosed and the deployer always runs under in practice.
+test_bounded_rebase_trivial_conflict_resolves_in_linked_worktree() {
+    local remote hub linked
+    remote="$(new_bare_remote)"
+    hub="$(mktemp -d "${TMPDIR:-/tmp}/gc-deployer-rebase-hub.XXXXXX")"
+    git clone -q "$remote" "$hub" 2>/dev/null
+    (
+        cd "$hub" || exit 1
+        git config commit.gpgsign false
+        mkdir -p pkg
+        printf 'package widget\n' > pkg/widget_test.go
+        git add -A && git commit -qm base
+        git push -q origin main
+        git checkout -q -b feature
+        printf 'package widget\n\nfunc TestFeatureA(t *testing.T) { /* a */ }\n' > pkg/widget_test.go
+        git add -A && git commit -qm "feature adds TestFeatureA"
+        git push -q origin feature
+        git checkout -q main
+        printf 'package widget\n\nfunc TestFeatureB(t *testing.T) { /* b */ }\n' > pkg/widget_test.go
+        git add -A && git commit -qm "main adds TestFeatureB"
+        git push -q origin main
+    )
+
+    linked="$(mktemp -d "${TMPDIR:-/tmp}/gc-deployer-rebase-linked.XXXXXX")"
+    if ! git -C "$hub" worktree add -q "$linked" feature >/dev/null 2>&1; then
+        record_fail "bounded/trivial-conflict-linked-worktree" "git worktree add failed"
+        rm -rf "$remote" "$hub" "$linked"
+        return
+    fi
+    if [[ ! -f "$linked/.git" ]]; then
+        record_fail "bounded/trivial-conflict-linked-worktree" \
+            "\$linked/.git is not a plain file — worktree setup didn't reproduce the bug condition"
+        git -C "$hub" worktree remove --force "$linked" >/dev/null 2>&1
+        rm -rf "$remote" "$hub"
+        return
+    fi
+
+    local output rc
+    output="$(cd "$linked" && attempt_bounded_self_rebase feature main 2>&1)"; rc=$?
+    if [[ $rc -ne 0 ]]; then
+        record_fail "bounded/trivial-conflict-linked-worktree" "expected rc=0, got rc=$rc, output: $output"
+        git -C "$hub" worktree remove --force "$linked" >/dev/null 2>&1
+        rm -rf "$remote" "$hub"
+        return
+    fi
+    local remote_after local_after
+    remote_after="$(remote_sha "$remote" refs/heads/feature)"
+    local_after="$(git -C "$linked" rev-parse HEAD)"
+    if [[ "$remote_after" == "$local_after" ]] \
+       && ! has_markers "$linked" \
+       && grep -q 'TestFeatureA' "$linked/pkg/widget_test.go" \
+       && grep -q 'TestFeatureB' "$linked/pkg/widget_test.go"; then
+        record_pass "bounded/trivial-conflict-linked-worktree (resolved from inside a real linked worktree, pushed)"
+    else
+        record_fail "bounded/trivial-conflict-linked-worktree" \
+            "remote_after=$remote_after local_after=$local_after content: $(tr '\n' '|' < "$linked/pkg/widget_test.go")"
+    fi
+    git -C "$hub" worktree remove --force "$linked" >/dev/null 2>&1
+    rm -rf "$remote" "$hub"
+}
+
 # Bead-required case 3: non-trivial/real conflict -> classifier correctly
 # refuses, falls back to route-to-builder untouched (no push, branch
 # restored to its pre-call state).
@@ -905,6 +975,7 @@ run_all() {
     test_bounded_rebase_noop_when_already_ancestor
     test_bounded_rebase_clean_fastforward_succeeds
     test_bounded_rebase_trivial_conflict_resolves_and_succeeds
+    test_bounded_rebase_trivial_conflict_resolves_in_linked_worktree
     test_bounded_rebase_real_conflict_refused_untouched
     test_bounded_rebase_stale_lease_returns_13
     test_shared_worktree_branch_classification
