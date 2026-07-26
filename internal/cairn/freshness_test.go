@@ -295,3 +295,20 @@ func TestGitContextCanceledPropagatesAsError(t *testing.T) {
 	assert.False(t, ok)
 	assert.ErrorIs(t, err, context.Canceled)
 }
+
+func TestCheckLogsFreshnessCheck(t *testing.T) {
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "none"}}
+
+	var status, detail string
+	recs := testLogRecords(t, func(ctx context.Context) {
+		status, detail = Check(ctx, e)
+	})
+
+	require.Len(t, recs, 1, "Check must emit exactly one freshness_check record per call")
+	rec := recs[0]
+	assert.Equal(t, "freshness_check", rec["kind"])
+	assert.Equal(t, "x", rec["entry_id"])
+	assert.Equal(t, "none", rec["anchor_type"])
+	assert.Equal(t, status, rec["status"])
+	assert.Equal(t, detail, rec["detail"])
+}

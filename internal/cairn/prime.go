@@ -68,7 +68,7 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 	if err != nil {
 		return PrimeResult{}, err
 	}
-	visible := visibleFrom(all, identity)
+	visible := visibleFrom(ctx, all, identity)
 
 	ordered := make([]*Entry, len(visible))
 	copy(ordered, visible)

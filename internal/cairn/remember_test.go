@@ -1,6 +1,8 @@
 package cairn
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -621,4 +623,155 @@ func TestCommitPromotionToReviewBranchAppendsSecondCommitToExistingBranch(t *tes
 	require.NoError(t, err)
 	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
 		"the scratch review worktree must be cleaned up, leaving only the store's own")
+}
+
+func TestCommitDirectLogsWritePathAndSteps(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	e, err := NewEntry("build-flags", []string{"agent:bot"}, "prefer feature flags over env vars", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	recs := testLogRecords(t, func(ctx context.Context) {
+		_, err := e.CommitDirect(ctx, store)
+		require.NoError(t, err)
+	})
+
+	require.Len(t, recs, 4, "expected 1 write_path + 3 write_path_step (git_add, git_commit, git_rev_parse_head)")
+
+	wp := recs[0]
+	assert.Equal(t, "write_path", wp["kind"])
+	assert.Equal(t, "commit_direct", wp["operation"])
+	assert.Equal(t, []any{"agent:bot"}, wp["scope"])
+	assert.Equal(t, "agent", wp["tier"])
+	assert.Equal(t, true, wp["private"])
+
+	wantSteps := []string{"git_add", "git_commit", "git_rev_parse_head"}
+	for i, name := range wantSteps {
+		step := recs[i+1]
+		assert.Equal(t, "write_path_step", step["kind"])
+		assert.Equal(t, "commit_direct", step["operation"])
+		assert.Equal(t, name, step["name"])
+		assert.Equal(t, "ok", step["outcome"])
+		assert.GreaterOrEqual(t, step["duration_ms"], float64(0))
+	}
+}
+
+func TestCommitDirectFailureLogsStepOutcome(t *testing.T) {
+	store := t.TempDir() // deliberately not a git repo
+
+	e, err := NewEntry("build-flags", []string{"agent:bot"}, "body", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	recs := testLogRecords(t, func(ctx context.Context) {
+		_, err := e.CommitDirect(ctx, store)
+		require.Error(t, err)
+	})
+
+	require.Len(t, recs, 2, "expected 1 write_path + 1 write_path_step (git_add) -- CommitDirect must stop at the first failing step")
+	assert.Equal(t, "write_path", recs[0]["kind"])
+
+	step := recs[1]
+	assert.Equal(t, "write_path_step", step["kind"])
+	assert.Equal(t, "commit_direct", step["operation"])
+	assert.Equal(t, "git_add", step["name"])
+	assert.Equal(t, "error", step["outcome"])
+	assert.NotEmpty(t, step["detail"], "a failed step must record what went wrong")
+}
+
+func TestGitStepRedactsSecretsInErrorDetail(t *testing.T) {
+	recs := testLogRecords(t, func(ctx context.Context) {
+		_, err := gitStep(ctx, "test_op", "test_step", func() (string, error) {
+			return "", fmt.Errorf("remote rejected: token %s invalid", testAWSKeyExample)
+		})
+		require.Error(t, err)
+	})
+
+	require.Len(t, recs, 1)
+	step := recs[0]
+	assert.Equal(t, "error", step["outcome"])
+	assert.NotContains(t, step["detail"], testAWSKeyExample, "a secret-shaped string must never reach the log verbatim")
+	assert.Contains(t, step["detail"], "[redacted:AWS access key ID]")
+}
+
+func TestCommitToReviewBranchLogsWritePathAndSteps(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	recs := testLogRecords(t, func(ctx context.Context) {
+		_, err := e.CommitToReviewBranch(ctx, store)
+		require.NoError(t, err)
+	})
+
+	require.Len(t, recs, 5,
+		"expected 1 write_path + 4 write_path_step (git_worktree_add, git_add, git_commit, git_worktree_remove)")
+
+	wp := recs[0]
+	assert.Equal(t, "write_path", wp["kind"])
+	assert.Equal(t, "commit_to_review_branch", wp["operation"])
+	assert.Equal(t, []any{"rig:web"}, wp["scope"])
+	assert.Equal(t, "rig", wp["tier"])
+	assert.Equal(t, false, wp["private"])
+
+	wantSteps := []string{"git_worktree_add", "git_add", "git_commit", "git_worktree_remove"}
+	for i, name := range wantSteps {
+		step := recs[i+1]
+		assert.Equal(t, "write_path_step", step["kind"])
+		assert.Equal(t, "commit_to_review_branch", step["operation"])
+		assert.Equal(t, name, step["name"])
+		assert.Equal(t, "ok", step["outcome"])
+	}
+}
+
+func TestCommitRecurrenceAndPromotionLogDistinctOperationNames(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+	_, err = e.CommitToReviewBranch(t.Context(), store)
+	require.NoError(t, err)
+
+	e.RecurrenceCount = 1
+	require.NoError(t, e.WriteBackRecurrenceCount())
+	recurRecs := testLogRecords(t, func(ctx context.Context) {
+		_, err := e.CommitRecurrenceToReviewBranch(ctx, store)
+		require.NoError(t, err)
+	})
+	require.NotEmpty(t, recurRecs)
+	assert.Equal(t, "write_path", recurRecs[0]["kind"])
+	assert.Equal(t, "commit_recurrence_to_review_branch", recurRecs[0]["operation"])
+	for _, rec := range recurRecs {
+		if rec["kind"] == "write_path_step" {
+			assert.Equal(t, "commit_recurrence_to_review_branch", rec["operation"])
+		}
+	}
+
+	e.PromotedBeadID = "crn-abcd"
+	require.NoError(t, e.WriteBackPromotedBeadID())
+	promoRecs := testLogRecords(t, func(ctx context.Context) {
+		_, err := e.CommitPromotionToReviewBranch(ctx, store)
+		require.NoError(t, err)
+	})
+	require.NotEmpty(t, promoRecs)
+	assert.Equal(t, "write_path", promoRecs[0]["kind"])
+	assert.Equal(t, "commit_promotion_to_review_branch", promoRecs[0]["operation"])
+	for _, rec := range promoRecs {
+		if rec["kind"] == "write_path_step" {
+			assert.Equal(t, "commit_promotion_to_review_branch", rec["operation"])
+		}
+	}
 }

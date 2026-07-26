@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/quad341/cairn/internal/obslog"
 )
 
 const fence = "+++"
@@ -486,7 +487,7 @@ func Visible(ctx context.Context, store string, identity []string) ([]*Entry, er
 	if err != nil {
 		return nil, err
 	}
-	return visibleFrom(all, identity), nil
+	return visibleFrom(ctx, all, identity), nil
 }
 
 // visibleFrom applies Visible's subset-match + shadowing rule to an
@@ -494,7 +495,7 @@ func Visible(ctx context.Context, store string, identity []string) ([]*Entry, er
 // need the full unfiltered list (e.g. Prime's scope-mismatch diagnostic,
 // crn-ln1) can load the store once via Status and derive both from a single
 // pass, instead of Visible re-querying the index a second time.
-func visibleFrom(entries []*Entry, identity []string) []*Entry {
+func visibleFrom(ctx context.Context, entries []*Entry, identity []string) []*Entry {
 	idset := make(map[string]struct{}, len(identity))
 	for _, t := range identity {
 		idset[t] = struct{}{}
@@ -513,7 +514,18 @@ func visibleFrom(entries []*Entry, identity []string) []*Entry {
 			out = append(out, e)
 		}
 	}
-	return shadow(out)
+
+	shadowed, reasons := shadowReason(out)
+	logger := obslog.FromContext(ctx)
+	for _, r := range reasons {
+		logger.ShadowDecision(obslog.ShadowDecisionFields{
+			Mode:     "identity",
+			TopicKey: r.TopicKey,
+			WinnerID: r.WinnerID,
+			Rule:     r.Rule,
+		})
+	}
+	return shadowed
 }
 
 // scopeTags loads every entry's scope tags from the index, keyed by entry id.
@@ -540,42 +552,92 @@ func scopeTags(ctx context.Context, db *sql.DB) (map[string][]string, error) {
 // what string represents "no topic".
 const UntopicedLabel = "(untopiced)"
 
+// ShadowReason explains a single shadow-resolution decision: WinnerID is the
+// entry that survived for TopicKey, and Rule names which moreSpecific
+// tiebreak decided it ("scope_size", "verified_at", "created_at", or
+// "id_tiebreak").
+type ShadowReason struct {
+	TopicKey string
+	WinnerID string
+	Rule     string
+}
+
 // shadow resolves topic_key conflicts by specificity: the entry with the most
 // scope tags wins (CSS-style, DESIGN.md §3). Ties break on most-recent
 // VerifiedAt, then most-recent CreatedAt, then lowest ID, so resolution is
 // always deterministic regardless of which timestamp fields are populated.
 // Entries without a topic_key never shadow one another.
 func shadow(candidates []*Entry) []*Entry {
+	out, _ := shadowReason(candidates)
+	return out
+}
+
+// shadowReason is shadow's reason-carrying counterpart: alongside the
+// surviving entries, it reports one ShadowReason per topic_key that had two
+// or more candidates -- a topic_key held by a single candidate never
+// produces a decision, since there was nothing to resolve.
+func shadowReason(candidates []*Entry) ([]*Entry, []ShadowReason) {
 	winner := make(map[string]*Entry, len(candidates))
+	rule := make(map[string]string, len(candidates))
+	count := make(map[string]int, len(candidates))
 	for _, e := range candidates {
 		if e.TopicKey == "" {
 			continue
 		}
-		if cur, ok := winner[e.TopicKey]; !ok || moreSpecific(e, cur) {
+		count[e.TopicKey]++
+		cur, ok := winner[e.TopicKey]
+		if !ok {
+			winner[e.TopicKey] = e
+			continue
+		}
+		more, r := moreSpecificReason(e, cur)
+		if more {
 			winner[e.TopicKey] = e
 		}
+		rule[e.TopicKey] = r
 	}
+
 	out := make([]*Entry, 0, len(candidates))
 	for _, e := range candidates {
 		if e.TopicKey == "" || winner[e.TopicKey] == e {
 			out = append(out, e)
 		}
 	}
-	return out
+
+	var reasons []ShadowReason
+	for topicKey, n := range count {
+		if n < 2 {
+			continue
+		}
+		reasons = append(reasons, ShadowReason{
+			TopicKey: topicKey,
+			WinnerID: winner[topicKey].ID,
+			Rule:     rule[topicKey],
+		})
+	}
+	return out, reasons
 }
 
 // moreSpecific reports whether a should win over b for a shared topic_key.
 func moreSpecific(a, b *Entry) bool {
+	more, _ := moreSpecificReason(a, b)
+	return more
+}
+
+// moreSpecificReason is moreSpecific's reason-carrying counterpart: rule
+// names which tiebreak decided the comparison ("scope_size", "verified_at",
+// "created_at", or "id_tiebreak"), regardless of which of a/b it favors.
+func moreSpecificReason(a, b *Entry) (more bool, rule string) {
 	if len(a.Scope) != len(b.Scope) {
-		return len(a.Scope) > len(b.Scope)
+		return len(a.Scope) > len(b.Scope), "scope_size"
 	}
 	if a.VerifiedAt != b.VerifiedAt {
-		return a.VerifiedAt > b.VerifiedAt // ISO-8601 strings sort lexically = chronologically
+		return a.VerifiedAt > b.VerifiedAt, "verified_at" // ISO-8601 strings sort lexically = chronologically
 	}
 	if a.CreatedAt != b.CreatedAt {
-		return a.CreatedAt > b.CreatedAt
+		return a.CreatedAt > b.CreatedAt, "created_at"
 	}
-	return a.ID < b.ID
+	return a.ID < b.ID, "id_tiebreak"
 }
 
 // ShadowMap reports, store-wide with no identity in scope, which entries are
@@ -599,7 +661,7 @@ func moreSpecific(a, b *Entry) bool {
 // specific qualifying shadower is reported (same moreSpecific reduction
 // shadow() uses to pick winners) — a deliberate v1 scope limit, not an
 // exhaustive list. The returned map is keyed by the shadowed entry's ID.
-func ShadowMap(entries []*Entry) map[string]*Entry {
+func ShadowMap(ctx context.Context, entries []*Entry) map[string]*Entry {
 	byTopic := make(map[string][]*Entry)
 	for _, e := range entries {
 		if e.TopicKey == "" {
@@ -608,15 +670,25 @@ func ShadowMap(entries []*Entry) map[string]*Entry {
 		byTopic[e.TopicKey] = append(byTopic[e.TopicKey], e)
 	}
 
+	logger := obslog.FromContext(ctx)
 	out := make(map[string]*Entry)
 	for _, group := range byTopic {
 		if len(group) < 2 {
 			continue // a topic_key held by only one entry can't be shadowed
 		}
 		for _, x := range group {
-			if best := bestShadower(x, group); best != nil {
-				out[x.ID] = best
+			best, rule := bestShadowerExplain(x, group)
+			if best == nil {
+				continue
 			}
+			out[x.ID] = best
+			logger.ShadowDecision(obslog.ShadowDecisionFields{
+				Mode:     "store_wide",
+				TopicKey: x.TopicKey,
+				EntryID:  x.ID,
+				WinnerID: best.ID,
+				Rule:     rule,
+			})
 		}
 	}
 	return out
@@ -626,7 +698,14 @@ func ShadowMap(entries []*Entry) map[string]*Entry {
 // x (see ShadowMap's doc comment for the shadowing rule), or nil if none
 // qualifies.
 func bestShadower(x *Entry, group []*Entry) *Entry {
-	var best *Entry
+	best, _ := bestShadowerExplain(x, group)
+	return best
+}
+
+// bestShadowerExplain is bestShadower's reason-carrying counterpart: rule
+// names which moreSpecific tiebreak makes best win over x (empty when best
+// is nil, i.e. nothing in group shadows x).
+func bestShadowerExplain(x *Entry, group []*Entry) (best *Entry, rule string) {
 	for _, y := range group {
 		if y == x || !scopeSuperset(y.Scope, x.Scope) {
 			continue
@@ -638,7 +717,10 @@ func bestShadower(x *Entry, group []*Entry) *Entry {
 			best = y
 		}
 	}
-	return best
+	if best != nil {
+		_, rule = moreSpecificReason(best, x)
+	}
+	return best, rule
 }
 
 // scopeSuperset reports whether every tag in sub also appears in super —

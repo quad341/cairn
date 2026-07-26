@@ -222,6 +222,29 @@ func TestDetectSecretPattern(t *testing.T) {
 	}
 }
 
+func TestRedactSecrets(t *testing.T) {
+	cases := map[string]struct {
+		text string
+		want string
+	}{
+		"clean text":     {"just a normal note about deploys", "just a normal note about deploys"},
+		"aws access key": {"key is " + testAWSKeyExample + " here", "key is [redacted:AWS access key ID] here"},
+		"github token": {
+			"token ghp_" + strings.Repeat("a", 36),
+			"token [redacted:GitHub token]",
+		},
+		"multiple distinct secrets": {
+			testAWSKeyExample + " and ghp_" + strings.Repeat("a", 36),
+			"[redacted:AWS access key ID] and [redacted:GitHub token]",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, redactSecrets(tc.text))
+		})
+	}
+}
+
 // TestMergeReviewBranchSucceeds covers the acceptance-criteria core of
 // MergeReviewBranch: a real --no-ff merge commit (never a fast-forward, even
 // though this branch is trivially fast-forwardable), the documented

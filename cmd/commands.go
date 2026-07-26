@@ -54,7 +54,7 @@ var statusCmd = &cobra.Command{
 		if err != nil {
 			return emitError(cmd, err)
 		}
-		shadowedBy := cairn.ShadowMap(entries)
+		shadowedBy := cairn.ShadowMap(cmd.Context(), entries)
 
 		if wantsJSON(cmd) {
 			items := make([]StatusItem, 0, len(entries))

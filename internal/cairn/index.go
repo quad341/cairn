@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/quad341/cairn/internal/obslog"
 	// modernc.org/sqlite registers a pure-Go SQLite driver ("sqlite") for database/sql.
 	_ "modernc.org/sqlite"
 )
@@ -256,15 +258,31 @@ func ensureFresh(ctx context.Context, store string) error {
 // invocations of it directly, since ensureFresh's "no needless reindex"
 // contract can only be verified by call count, not by inspecting state.
 func ensureFreshWith(ctx context.Context, store string, reindex func(context.Context, string) (int, error)) error {
+	start := time.Now()
 	stale, err := indexStale(ctx, store)
 	if err != nil {
 		return err
 	}
 	if !stale {
+		obslog.FromContext(ctx).IndexDrift(obslog.IndexDriftFields{
+			Stale:      false,
+			DurationMS: time.Since(start).Milliseconds(),
+		})
 		return nil
 	}
-	_, err = reindex(ctx, store)
-	return err
+
+	count, reindexErr := reindex(ctx, store)
+	fields := obslog.IndexDriftFields{
+		Stale:        true,
+		Reindexed:    reindexErr == nil,
+		ReindexCount: count,
+		DurationMS:   time.Since(start).Milliseconds(),
+	}
+	if reindexErr != nil {
+		fields.ReindexError = redactSecrets(reindexErr.Error())
+	}
+	obslog.FromContext(ctx).IndexDrift(fields)
+	return reindexErr
 }
 
 func indexStale(ctx context.Context, store string) (bool, error) {
