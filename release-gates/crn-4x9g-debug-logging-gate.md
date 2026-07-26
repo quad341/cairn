@@ -95,3 +95,40 @@ Self-tested at the new tip: `go build ./...`, `go vet ./...`, `go test ./... -ra
 `golangci-lint run ./...` (after `cache clean`) all clean. Per the SHA-pinning mandate, the prior
 PASS (at `a19782b14ca9421ff56cca1776802d83588b61ff`) does not carry forward to this new SHA — routing
 to `cairn/reviewer` for a fresh PASS before this returns to deploy.
+
+---
+
+## Re-evaluation (deployer, 2026-07-26) — final commit `5f54fb1802b6e25814b7100ed865b8de7a930126`
+
+`e8b0fad` (the builder's rebase-resolution above) is an ancestor of `5f54fb18`; the one commit
+between them (`5f54fb1 cairn: document manual rebase resolution for crn-4x9g gate FAIL`) is the
+builder committing this file's "Resolution" section to the branch itself. The reviewer re-reviewed
+at this final tip and recorded a fresh PASS citing `5f54fb18` exactly — no further code changes,
+so this is a genuine fresh SHA-pinned PASS, not a carried-forward one.
+
+Full 7-criterion re-evaluation performed independently against `5f54fb18`:
+
+| # | Criterion | Result | Evidence |
+|---|-----------|--------|----------|
+| 6 | Branch diverges cleanly from main | PASS | Fetched `origin/main` immediately before evaluation (tip `0fe1da3`, PR #58 — unchanged since the FAIL round's routing). `git merge-base --is-ancestor origin/main 5f54fb18` → true. No rebase needed this round. |
+| 1 | Review PASS present, SHA match | PASS | Reviewer recorded a fresh PASS on this exact commit (`5f54fb18`), superseding the original PASS at `a19782b1`. D == R exactly. |
+| 2 | Acceptance criteria met | PASS | Reviewer's fresh PASS walked crn-co2u.1's FR-1..FR-11/NFR-1..NFR-5 individually against the final diff (obslog package, rotating writer, XDG state dir with fail-open, `--trace` mirror, ctx wiring through `ShadowMap`/`visibleFrom`/`shadowReason`, freshness/index_drift/write_path logging, structural body-redaction, secret-pattern scrubbing, help/version doc — including the version.go/root.go/commands.go reconciliation with PR #58 documented above). |
+| 3 | Tests pass | PASS (2 disclosed non-blocking flakes) | `go build ./...` and `go vet ./...` clean. `go test ./... -count=1` green except two independently-reproduced, pre-existing, load-sensitive flakes unrelated to this branch's diff — see below. |
+| 4 | No open blocking findings | PASS | `bd show crn-4x9g` — closed, no HIGH-severity labels. Reviewer's PASS states no open HIGH findings. |
+| 5 | Final branch clean | PASS | `git status --porcelain` empty on `deploy/crn-p5gy-gate` at `5f54fb18`. |
+| 7 | Single feature theme | PASS | One coherent theme throughout (debug logging), including the reconciliation commits — no unrelated changes riding along. |
+
+**Verdict: PASS — proceeding to isolated deploy branch push + PR.**
+
+### Disclosed non-blocking test flakes (this round)
+
+1. **crn-wrg0** (filed by the reviewer): `TestConcurrentReindexDoesNotRaceOnEntryTagsSchema` (internal/cairn) — SQLITE_BUSY race, reproduces on unmodified `origin/main` too (1/8 runs), unrelated to this branch's purely-additive logging changes to `index.go`.
+2. **crn-mxvn** (filed this round): `TestRunPerfScenarioDoesNotFail` / `TestRunPerfScenarioCleansUpAfterItself` (internal/critic) — a `testing.TempDir()` cleanup-time `unlinkat ... .git: directory not empty` race, not a scenario-assertion failure. Reproduced 2x on full-suite runs of this branch; 0 failures across 13 narrow single-package runs (this branch and plain `origin/main` alike, in both an isolated clone and this shared worktree). Failure rate tracks overall machine/concurrency load, not which ref is checked out. This branch's only touch to `internal/critic` is a 1-line mechanical signature adaptation (`cairn.ShadowMap(all)` → `cairn.ShadowMap(ctx, all)`) with no bearing on tempdir/git cleanup.
+
+### Cross-branch sequencing: crn-4m7k / crn-52z7 (cairn doctor)
+
+The duplicate-symbol risk flagged in the FAIL round above (informational only, at that time) is now live: `crn-4m7k` (deploy bead for crn-52z7, cairn doctor) independently defines the identical symbols this branch does in `internal/cairn/entry.go` (`ShadowReason`, `shadowReason`, `moreSpecificReason`, `bestShadowerExplain`) — confirmed by direct diff inspection, not just bead-note assertion. Whichever of the two merges second would fail to compile against the other. Both beads' own review notes flag this explicitly as a pre-merge blocker requiring reconciliation or coordinated merge order, and disclosed the risk to mayor three times (`gm-wisp-f8kmbnl`, `gm-wisp-n1mtts1`, `gm-wisp-b67kxcm`) with no objection or hold placed on either bead.
+
+The reviewer's own analysis (in crn-4m7k's notes) identifies this branch's version as the strict superset — it threads `ctx` through `ShadowMap` for `shadow_decision` logging, which crn-52z7's version does not — confirmed independently: the two implementations' core logic (struct + 3 functions) is byte-for-byte identical; the only real divergence is in `ShadowMap`'s wrapper (ctx+logging here vs. a plain call there).
+
+**Decision:** deploy this bead (crn-p5gy/crn-4x9g) now. Holding `crn-4m7k` — routing back to the builder with instructions to rebase `builder/crn-52z7` onto the new `origin/main` after this PR lands, drop its now-duplicate hunk, and layer its doctor-specific consumers onto this branch's canonical implementation additively. This is coordination/sequencing, not a code-quality problem with either branch — both passed independent review. Mayor notified of this sequencing decision (`gm-wisp-7dsx1su`) before proceeding.
