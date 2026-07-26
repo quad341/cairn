@@ -67,7 +67,18 @@ func Dedup(store string) ([]DedupFinding, error) {
 	if err != nil {
 		return nil, err
 	}
+	return DedupEntries(store, all)
+}
 
+// DedupEntries is Dedup's body factored out to take an already-gathered
+// entry list, so a caller with its own tolerantly-gathered entries
+// (doctor.go) can reuse Dedup's real logic without re-triggering IterEntries'
+// own abort-on-first-parse-error walk (OQ5/OQ3). store is still required
+// (not just all) because entryTier derives an entry's tier from its BodyPath
+// relative to store; the error return is kept for signature symmetry with
+// ReindexEntries/SweepEntries even though nothing in this body is currently
+// fallible. Dedup itself is unchanged for its existing caller.
+func DedupEntries(store string, all []*Entry) ([]DedupFinding, error) {
 	tierOf := make(map[string]string, len(all))
 	var shared []*Entry
 	for _, e := range all {
@@ -84,7 +95,7 @@ func Dedup(store string) ([]DedupFinding, error) {
 		byTier[tierOf[e.ID]] = append(byTier[tierOf[e.ID]], e)
 	}
 
-	var out []DedupFinding
+	out := make([]DedupFinding, 0, len(shared))
 	for _, tier := range []string{"global", "rig", "role"} {
 		out = append(out, topicKeyCollisions(tier, byTier[tier])...)
 	}

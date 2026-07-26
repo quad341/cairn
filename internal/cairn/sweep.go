@@ -36,6 +36,16 @@ func Sweep(ctx context.Context, store string) ([]SweepFinding, error) {
 	if err != nil {
 		return nil, err
 	}
+	return SweepEntries(ctx, store, entries)
+}
+
+// SweepEntries is Sweep's body factored out to take an already-gathered
+// entry list, so a caller with its own tolerantly-gathered entries (doctor.go)
+// can reuse Sweep's real logic without re-triggering IterEntries' own
+// abort-on-first-parse-error walk (OQ5/OQ3). store is still required (not
+// just entries) because entryTier derives an entry's tier from its BodyPath
+// relative to store -- Sweep itself is unchanged for its existing caller.
+func SweepEntries(ctx context.Context, store string, entries []*Entry) ([]SweepFinding, error) {
 	var out []SweepFinding
 	for _, e := range entries {
 		tier := entryTier(store, e)

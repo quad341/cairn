@@ -47,6 +47,26 @@ func TestDedupTopicKeyCollisionSameTier(t *testing.T) {
 	assert.Equal(t, []string{"rig/one", "rig/two"}, tk[0].EntryIDs, "both colliding entry IDs must be identified")
 }
 
+// TestDedupEntriesUsesSuppliedList confirms Dedup's logic is fully reusable
+// with an already-gathered entry list (doctor.go's use case via
+// IterEntriesTolerant), not just via Dedup's own IterEntries walk.
+func TestDedupEntriesUsesSuppliedList(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "rig/alpha/one.md", minimalEntry("rig/one", "One", "s1", "dup-key", `["rig:alpha"]`))
+	writeFile(t, dir, "rig/beta/two.md", minimalEntry("rig/two", "Two", "s2", "dup-key", `["rig:beta"]`))
+
+	all, failures, err := IterEntriesTolerant(dir)
+	require.NoError(t, err)
+	require.Empty(t, failures)
+
+	findings, err := DedupEntries(dir, all)
+	require.NoError(t, err)
+
+	tk := dedupFindingsOfKind(findings, "topic_key")
+	require.Len(t, tk, 1)
+	assert.Equal(t, []string{"rig/one", "rig/two"}, tk[0].EntryIDs)
+}
+
 // TestDedupTopicKeyCollisionGroupOfThree covers a key held by more than two
 // entries: one finding, covering the whole group, not three pairwise ones.
 func TestDedupTopicKeyCollisionGroupOfThree(t *testing.T) {
