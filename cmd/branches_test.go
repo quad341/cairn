@@ -67,7 +67,7 @@ func resetStaleBranchesFlags(t *testing.T) {
 // internal/cairn/branches_test.go's helper of the same name/shape.
 func commitReviewBranchAt(t *testing.T, store, topicKey string, scope []string, at time.Time) *cairn.Entry {
 	t.Helper()
-	e, err := cairn.NewEntry(topicKey, scope, "body text", "tester")
+	e, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: topicKey, Scope: scope, Body: "body text", CreatedBy: "tester"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 

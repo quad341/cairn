@@ -52,7 +52,11 @@ func RunFreshnessScenario(ctx context.Context, store string) Result {
 // checkFreshnessNoAnchor seeds an entry with no anchor at all and asserts
 // Check reports Unknown — the "time-based freshness only" case.
 func checkFreshnessNoAnchor(ctx context.Context, store, n string) Result {
-	e, err := cairn.NewEntry("critic-freshness-no-anchor-"+n, nil, "no-anchor fixture body", "critic")
+	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		TopicKey:  "critic-freshness-no-anchor-" + n,
+		Body:      "no-anchor fixture body",
+		CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("build entry: %v", err))
 	}
@@ -79,7 +83,11 @@ func checkFreshnessNoAnchor(ctx context.Context, store, n string) Result {
 // stored fingerprint and asserts Check reports Unknown — the
 // "never verified" case, distinct from the no-anchor case above.
 func checkFreshnessNeverVerified(ctx context.Context, store, n, repo string) Result {
-	e, err := cairn.NewEntry("critic-freshness-never-verified-"+n, nil, "never-verified fixture body", "critic")
+	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		TopicKey:  "critic-freshness-never-verified-" + n,
+		Body:      "never-verified fixture body",
+		CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("build entry: %v", err))
 	}
@@ -118,7 +126,7 @@ func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Re
 	}
 	anchor.Fingerprint = fp
 
-	e, err := cairn.NewEntry("critic-freshness-drift-"+n, nil, "drift fixture body", "critic")
+	e, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: "critic-freshness-drift-" + n, Body: "drift fixture body", CreatedBy: "critic"})
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("build entry: %v", err))
 	}
@@ -161,7 +169,11 @@ func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Re
 // under go test), and mutating process-global PATH would risk breaking
 // concurrent git calls from other scenarios/sweeps sharing the process.
 func checkFreshnessInvocationIncomplete(ctx context.Context, store, n, repo string) Result {
-	e, err := cairn.NewEntry("critic-freshness-invocation-incomplete-"+n, nil, "invocation-incomplete fixture body", "critic")
+	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		TopicKey:  "critic-freshness-invocation-incomplete-" + n,
+		Body:      "invocation-incomplete fixture body",
+		CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("build entry: %v", err))
 	}

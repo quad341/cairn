@@ -15,30 +15,64 @@ import (
 	"github.com/quad341/cairn/internal/obslog"
 )
 
+// NewEntryParams holds NewEntry's inputs. An options struct rather than a
+// growing positional-arg list: the original 4 positional args (topicKey,
+// scope, body, createdBy) would otherwise grow to 7 for crn-lzn4.1.1's
+// FR-3/FR-4 (Title, Summary, Anchor), which is where positional args stop
+// being readable at the call site (DESIGN.md §11 Trade-offs).
+//
+// Title and Summary independently default to titleAndSummary(Body)'s
+// existing auto-derivation when left unset (the zero value, ""); Anchor
+// defaults to Anchor{Type: "none"} when left at its zero value (Type == "").
+// A caller that wants only one of Title/Summary auto-derived may leave just
+// that field unset.
+type NewEntryParams struct {
+	TopicKey  string
+	Scope     []string
+	Body      string
+	CreatedBy string
+	Title     string
+	Summary   string
+	Anchor    Anchor
+}
+
 // NewEntry constructs a new entry for `cairn remember`: a contributor's
-// freeform write, not yet curator-normalized (DESIGN.md §6). id combines
-// topicKey with a random suffix -- never just topicKey, since several
+// freeform write, not yet curator-normalized (DESIGN.md §6). ID combines
+// TopicKey with a random suffix -- never just TopicKey, since several
 // entries may deliberately share one topic_key (that's the whole point:
-// shadow() picks the most specific at read time, DESIGN.md §3). title is
-// body's first line, a scannable heading for status output; summary is the
-// full trimmed body, so the two are often identical for remember's typical
-// one-liner input.
-func NewEntry(topicKey string, scope []string, body, createdBy string) (*Entry, error) {
+// shadow() picks the most specific at read time, DESIGN.md §3).
+func NewEntry(p NewEntryParams) (*Entry, error) {
 	suffix, err := randomSuffix()
 	if err != nil {
 		return nil, err
 	}
-	title, summary := titleAndSummary(body)
+
+	title, summary := p.Title, p.Summary
+	if title == "" || summary == "" {
+		autoTitle, autoSummary := titleAndSummary(p.Body)
+		if title == "" {
+			title = autoTitle
+		}
+		if summary == "" {
+			summary = autoSummary
+		}
+	}
+
+	anchor := p.Anchor
+	if anchor.Type == "" {
+		anchor = Anchor{Type: "none"}
+	}
+
 	return &Entry{
-		ID:        topicKey + "-" + suffix,
+		ID:        p.TopicKey + "-" + suffix,
 		Title:     title,
 		Summary:   summary,
-		TopicKey:  topicKey,
-		Scope:     scope,
-		Anchor:    Anchor{Type: "none"},
-		CreatedBy: createdBy,
+		TopicKey:  p.TopicKey,
+		Scope:     p.Scope,
+		Anchor:    anchor,
+		CreatedBy: p.CreatedBy,
 		CreatedAt: time.Now().Format(time.DateOnly),
-		Body:      body,
+		Body:      p.Body,
 	}, nil
 }
 

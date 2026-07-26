@@ -3,7 +3,10 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/quad341/cairn/internal/cairn"
 	"github.com/spf13/cobra"
@@ -20,13 +23,32 @@ func init() {
 		"scope tags for the entry, e.g. --scope rig:web,role:reviewer (default: private -- the agent:<id> tag from the resolved identity)")
 	rememberCmd.Flags().String("reviewer", "",
 		"reviewer to mail for a shared-tier (rig/role/global) entry (default: $CAIRN_REVIEWER, else a per-tier computed default)")
+	rememberCmd.Flags().String("file", "",
+		"read the entry body from this file, instead of a positional argument or piped stdin")
+	rememberCmd.Flags().String("title", "",
+		"explicit title (default: auto-derived from the body)")
+	rememberCmd.Flags().String("summary", "",
+		"explicit summary (default: auto-derived from the body)")
+	rememberCmd.Flags().String("anchor-repo", "",
+		`git repo the --anchor-path values are tracked in (with --anchor-path, builds a "files" source anchor)`)
+	rememberCmd.Flags().StringArray("anchor-path", nil,
+		"a path (relative to --anchor-repo) anchoring this entry to its source; repeatable")
+	rememberCmd.Flags().Bool("verify", false,
+		"immediately compute and persist the anchor's fingerprint (soft-fails to stderr if it doesn't resolve)")
+	rememberCmd.Flags().Bool("force", false,
+		"create a new entry even if a recurrence match is found, recording which entry it overrides")
 }
 
 var rememberCmd = &cobra.Command{
-	Use:   "remember <body>",
+	Use:   "remember [body]",
 	Short: "Write a new knowledge entry to the store (curation-tier routing)",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		body, err := rememberBody(cmd, args)
+		if err != nil {
+			return err
+		}
+
 		topic, _ := cmd.Flags().GetString("topic")
 		if topic != "" {
 			if err := cairn.ValidatePathSegment(topic); err != nil {
@@ -49,18 +71,36 @@ var rememberCmd = &cobra.Command{
 			return emitError(cmd, err)
 		}
 
+		title, _ := cmd.Flags().GetString("title")
+		summary, _ := cmd.Flags().GetString("summary")
 		createdBy := strings.Join(identity, " ")
-		e, err := cairn.NewEntry(topic, scope, args[0], createdBy)
+		e, err := cairn.NewEntry(cairn.NewEntryParams{
+			TopicKey:  topic,
+			Scope:     scope,
+			Body:      body,
+			CreatedBy: createdBy,
+			Title:     title,
+			Summary:   summary,
+			Anchor:    rememberAnchor(cmd),
+		})
 		if err != nil {
 			return emitError(cmd, fmt.Errorf("construct entry: %w", err))
+		}
+
+		if verify, _ := cmd.Flags().GetBool("verify"); verify && e.Anchor.Type == "files" {
+			verifyAnchor(cmd, e)
 		}
 
 		matched, err := recurrenceMatch(cmd, e)
 		if err != nil {
 			return emitError(cmd, err)
 		}
-		if matched != nil {
+		force, _ := cmd.Flags().GetBool("force")
+		if matched != nil && !force {
 			return recordRecurrence(cmd, matched)
+		}
+		if matched != nil {
+			e.OverriddenDuplicateOf = matched.ID
 		}
 
 		if err := e.Create(storePath()); err != nil {
@@ -68,6 +108,9 @@ var rememberCmd = &cobra.Command{
 		}
 		if !wantsJSON(cmd) {
 			fmt.Printf("%s\n", e.ID)
+			if matched != nil {
+				fmt.Printf("override: forced past duplicate of %s\n", matched.ID)
+			}
 		}
 
 		if cairn.IsPrivateScope(e.Scope) {
@@ -103,6 +146,89 @@ type RememberResult struct {
 	Reviewer        string   `json:"reviewer,omitempty"`
 	Recurrence      bool     `json:"recurrence"`
 	RecurrenceCount int      `json:"recurrence_count,omitempty"`
+}
+
+// rememberBody resolves the entry body from exactly one of three sources: a
+// positional argument, --file, or piped (non-interactive) stdin. All three
+// indicators are always evaluated regardless of which is found first -- an
+// already-present positional argument does not short-circuit the stdin
+// check -- so two sources given together (e.g. a positional body plus piped
+// stdin) are always caught as ambiguous, rather than one silently winning.
+// Piped stdin is detected via os.ModeCharDevice: a real terminal (or go
+// test's own attached input) is reliably a char device, so this is false
+// whenever stdin has not actually been redirected.
+func rememberBody(cmd *cobra.Command, args []string) (string, error) {
+	file, _ := cmd.Flags().GetString("file")
+
+	stdinPiped := false
+	if info, err := os.Stdin.Stat(); err == nil {
+		stdinPiped = info.Mode()&os.ModeCharDevice == 0
+	}
+
+	sources := 0
+	if len(args) == 1 {
+		sources++
+	}
+	if file != "" {
+		sources++
+	}
+	if stdinPiped {
+		sources++
+	}
+
+	switch {
+	case sources > 1:
+		return "", errors.New("ambiguous body source: pass exactly one of a positional body argument, --file, or piped stdin")
+	case len(args) == 1:
+		return args[0], nil
+	case file != "":
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return "", fmt.Errorf("read --file: %w", err)
+		}
+		return string(data), nil
+	case stdinPiped:
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return "", fmt.Errorf("read stdin: %w", err)
+		}
+		return string(data), nil
+	default:
+		return "", errors.New("a body is required: pass it as a positional argument, --file, or piped stdin")
+	}
+}
+
+// rememberAnchor builds a "files" source anchor from --anchor-repo/
+// --anchor-path when either is given, else returns the zero Anchor (which
+// cairn.NewEntry defaults to Type: "none").
+func rememberAnchor(cmd *cobra.Command) cairn.Anchor {
+	repo, _ := cmd.Flags().GetString("anchor-repo")
+	paths, _ := cmd.Flags().GetStringArray("anchor-path")
+	if repo == "" && len(paths) == 0 {
+		return cairn.Anchor{}
+	}
+	return cairn.Anchor{Type: "files", Repo: repo, Paths: paths}
+}
+
+// verifyAnchor computes e's anchor fingerprint and, on success, stamps it
+// and VerifiedAt in memory -- before e.Create ever writes it, so no separate
+// WriteBack is needed. A genuine failure to compute a fingerprint and an
+// anchor that simply doesn't resolve to a trackable object
+// (ComputeFingerprint's own ("", nil) "confirmed negative") both soft-fail
+// identically: warn on stderr and leave the entry unverified, rather than
+// aborting the whole remember call over an optional, best-effort check.
+func verifyAnchor(cmd *cobra.Command, e *cairn.Entry) {
+	fp, err := cairn.ComputeFingerprint(cmd.Context(), e.Anchor)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: --verify: could not compute anchor fingerprint: %v\n", err)
+		return
+	}
+	if fp == "" {
+		fmt.Fprintf(os.Stderr, "warning: --verify: anchor does not resolve to a trackable object; skipping\n")
+		return
+	}
+	e.Anchor.Fingerprint = fp
+	e.VerifiedAt = time.Now().Format(time.DateOnly)
 }
 
 // recurrenceMatch checks candidate against every entry VISIBLE to the
