@@ -192,11 +192,23 @@ func similarity(a, b *Entry) float64 {
 // pair, independent of tier: sameTopicKey is an exact, non-empty topic_key
 // match; similarityScore is the Title+Summary Jaccard score (see
 // similarity); shadowExempt is true when the pair qualifies as legitimate
-// ShadowMap-style shadowing (shares a topic_key and one's Scope is a
-// genuine, non-strict superset of the other's) — entry.go's own condition
-// for "this is intentional precedence, not a duplicate"; contentMatch is
-// true iff similarityScore meets dedupSimilarityThreshold and the pair is
-// not shadowExempt.
+// ShadowMap-style shadowing (shares a topic_key and exactly one side's Scope
+// is a strict superset of the other's) — entry.go's own condition for "this
+// is intentional precedence, not a duplicate"; contentMatch is true iff
+// similarityScore meets dedupSimilarityThreshold and the pair is not
+// shadowExempt.
+//
+// shadowExempt uses a strict (exclusive-or) superset check, not a plain
+// either-direction OR: an OR is also satisfied when the two scopes are
+// exactly equal (each is trivially a non-strict superset of the other),
+// which would wrongly exempt two entries that share both topic_key and
+// scope -- a genuine repeat, not shadowing, since there is no specificity
+// difference for shadow()/bestShadower to have picked a winner from (see
+// TestConflictsEqualScopeSameTopicKeyIsNotShadowing, crn-lzn4.1.1 FR-6). The
+// exclusive-or is false on that equal-scope case (both directions true) and
+// on the incomparable case (both directions false, unchanged from before),
+// and stays true exactly when one side is strictly more specific than the
+// other.
 //
 // This is the one place both signals are computed (NFR-05): Dedup's
 // whole-store scan calls it per-pair for the content signal
@@ -210,7 +222,7 @@ func similarity(a, b *Entry) float64 {
 func pairSignals(a, b *Entry) (sameTopicKey bool, similarityScore float64, shadowExempt bool, contentMatch bool) {
 	sameTopicKey = a.TopicKey != "" && a.TopicKey == b.TopicKey
 	similarityScore = similarity(a, b)
-	shadowExempt = sameTopicKey && (scopeSuperset(a.Scope, b.Scope) || scopeSuperset(b.Scope, a.Scope))
+	shadowExempt = sameTopicKey && (scopeSuperset(a.Scope, b.Scope) != scopeSuperset(b.Scope, a.Scope))
 	contentMatch = !shadowExempt && similarityScore >= dedupSimilarityThreshold
 	return sameTopicKey, similarityScore, shadowExempt, contentMatch
 }

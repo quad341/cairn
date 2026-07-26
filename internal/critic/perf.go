@@ -49,7 +49,12 @@ func RunPerfScenario(ctx context.Context, store string) Result {
 
 	entries := make([]*cairn.Entry, 0, perfFixtureCount)
 	for i := range perfFixtureCount {
-		e, err := cairn.NewEntry(fmt.Sprintf("critic-perf-%s-%d", n, i), []string{rig}, "perf fixture body", "critic")
+		e, err := cairn.NewEntry(cairn.NewEntryParams{
+			TopicKey:  fmt.Sprintf("critic-perf-%s-%d", n, i),
+			Scope:     []string{rig},
+			Body:      "perf fixture body",
+			CreatedBy: "critic",
+		})
 		if err != nil {
 			return NewResult(DimensionPerf, perfScenarioID, Fail, fmt.Sprintf("build fixture %d: %v", i, err))
 		}
