@@ -379,8 +379,14 @@ func (e *Entry) marshal() ([]byte, error) {
 	return []byte(sb.String()), nil
 }
 
-// IterEntries walks the scope dirs and returns all entries, sorted by id.
-func IterEntries(store string) ([]*Entry, error) {
+// walkEntries walks the scope dirs, parsing every .md file into an Entry.
+// onParseErr is invoked for each file that fails to parse for a reason other
+// than errNotEntry (which always just means "skip, not an entry"); returning
+// the error aborts the walk (IterEntries' contract), while recording it and
+// returning nil keeps going (IterEntriesTolerant's contract) -- the
+// traversal itself is identical between the two, only the parse-failure
+// policy differs.
+func walkEntries(store string, onParseErr func(path string, err error) error) ([]*Entry, error) {
 	var out []*Entry
 	for _, sd := range scopeDirs {
 		base := filepath.Join(store, sd)
@@ -399,7 +405,7 @@ func IterEntries(store string) ([]*Entry, error) {
 				if errors.Is(perr, errNotEntry) {
 					return nil // not an entry — skip it
 				}
-				return &MalformedEntryError{Path: p, Err: perr}
+				return onParseErr(p, perr)
 			}
 			out = append(out, e)
 			return nil
@@ -410,6 +416,34 @@ func IterEntries(store string) ([]*Entry, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
+}
+
+// IterEntries walks the scope dirs and returns all entries, sorted by id.
+func IterEntries(store string) ([]*Entry, error) {
+	return walkEntries(store, func(p string, err error) error { return &MalformedEntryError{Path: p, Err: err} })
+}
+
+// ParseFailure records one file that failed to parse during a tolerant walk.
+type ParseFailure struct {
+	Path string
+	Err  error
+}
+
+// IterEntriesTolerant walks the scope dirs the same way IterEntries does,
+// but a malformed file never aborts the whole scan (FR-3/NFR-1): its path
+// and error are appended to the returned failures instead. The error return
+// is reserved for a genuine I/O failure on the store root itself (e.g. an
+// unreadable directory), never a parse error.
+func IterEntriesTolerant(store string) ([]*Entry, []ParseFailure, error) {
+	var failures []ParseFailure
+	out, err := walkEntries(store, func(p string, perr error) error {
+		failures = append(failures, ParseFailure{Path: p, Err: perr})
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, failures, nil
 }
 
 // Find returns the entry with the given id, or ErrNotFound. It resolves via
