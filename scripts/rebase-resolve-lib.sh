@@ -408,7 +408,12 @@ attempt_bounded_self_rebase() {
         while :; do
             # Are we actually mid-rebase with conflicts? If the rebase
             # stopped for another reason, abort and route rather than guess.
-            if [[ ! -d .git/rebase-merge && ! -d .git/rebase-apply ]]; then
+            # Resolve the rebase-state dirs via `git rev-parse --git-path`, not a
+            # literal .git/… path: inside a git worktree `.git` is a file (gitdir
+            # pointer), so `.git/rebase-merge` never exists and this check would
+            # always fire, defeating self-heal in every worktree (crn-2sdw). The
+            # resolved path is identical to `.git/rebase-merge` in a normal clone.
+            if [[ ! -d "$(git rev-parse --git-path rebase-merge 2>/dev/null)" && ! -d "$(git rev-parse --git-path rebase-apply 2>/dev/null)" ]]; then
                 git rebase --abort >/dev/null 2>&1 || true
                 return 12
             fi
