@@ -1,7 +1,10 @@
 package cairn
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quad341/cairn/internal/obslog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -814,7 +818,7 @@ func TestShadowMapSuperset(t *testing.T) {
 	s1 := parseFixture(t, lessSpecificShared)
 	s2 := parseFixture(t, moreSpecificShared)
 
-	sm := ShadowMap([]*Entry{s1, s2})
+	sm := ShadowMap(context.Background(), []*Entry{s1, s2})
 
 	require.Contains(t, sm, "s1", "the 1-tag entry must be shadowed")
 	assert.Equal(t, "s2", sm["s1"].ID, "the 1-tag entry must be shadowed by the 2-tag superset entry")
@@ -825,7 +829,7 @@ func TestShadowMapIncomparableScopesNeverShadow(t *testing.T) {
 	i1 := parseFixture(t, incomparableRig)
 	i2 := parseFixture(t, incomparableRole)
 
-	sm := ShadowMap([]*Entry{i1, i2})
+	sm := ShadowMap(context.Background(), []*Entry{i1, i2})
 
 	assert.NotContains(t, sm, "i1", "neither-subset-nor-superset scopes must never shadow, even on an equal-tag-count tie")
 	assert.NotContains(t, sm, "i2", "neither-subset-nor-superset scopes must never shadow, even on an equal-tag-count tie")
@@ -835,7 +839,7 @@ func TestShadowMapTiebreakOnEqualScope(t *testing.T) {
 	v1 := parseFixture(t, earlyVerifiedShared)
 	v2 := parseFixture(t, lateVerifiedShared)
 
-	sm := ShadowMap([]*Entry{v1, v2})
+	sm := ShadowMap(context.Background(), []*Entry{v1, v2})
 
 	require.Contains(t, sm, "v1", "the earlier-verified entry must be shadowed")
 	assert.Equal(t, "v2", sm["v1"].ID, "the earlier-verified entry must be shadowed by the later-verified one")
@@ -847,7 +851,7 @@ func TestShadowMapChainReportsMostSpecific(t *testing.T) {
 	ch2 := parseFixture(t, chainTwoTags)
 	ch3 := parseFixture(t, chainThreeTags)
 
-	sm := ShadowMap([]*Entry{ch1, ch2, ch3})
+	sm := ShadowMap(context.Background(), []*Entry{ch1, ch2, ch3})
 
 	require.Contains(t, sm, "ch1")
 	assert.Equal(t, "ch3", sm["ch1"].ID, "the 1-tag entry must be shadowed by the most specific entry in the chain, not its nearest neighbor")
@@ -861,7 +865,7 @@ func TestShadowMapUntopicedNeverShadow(t *testing.T) {
 	u2 := parseFixture(t, untopiced2)
 	u3 := parseFixture(t, untopiced3)
 
-	sm := ShadowMap([]*Entry{u1, u2, u3})
+	sm := ShadowMap(context.Background(), []*Entry{u1, u2, u3})
 
 	assert.Empty(t, sm, "entries without a topic_key must never appear in the shadow map")
 }
@@ -870,11 +874,171 @@ func TestShadowMapGlobalShadowedByScoped(t *testing.T) {
 	g := parseFixture(t, globalShared)
 	r := parseFixture(t, scopedShared)
 
-	sm := ShadowMap([]*Entry{g, r})
+	sm := ShadowMap(context.Background(), []*Entry{g, r})
 
 	require.Contains(t, sm, "gs", "the global (empty-scope) entry must be shadowed by the scoped one")
 	assert.Equal(t, "rs", sm["gs"].ID)
 	assert.NotContains(t, sm, "rs", "the scoped entry must not appear as shadowed by the global one")
+}
+
+func TestMoreSpecificReasonScopeSize(t *testing.T) {
+	a := &Entry{ID: "a", Scope: []string{"rig:x", "role:y"}}
+	b := &Entry{ID: "b", Scope: []string{"rig:x"}}
+	more, rule := moreSpecificReason(a, b)
+	assert.True(t, more)
+	assert.Equal(t, "scope_size", rule)
+}
+
+func TestMoreSpecificReasonVerifiedAt(t *testing.T) {
+	a := &Entry{ID: "a", Scope: []string{"rig:x"}, VerifiedAt: "2026-02-01"}
+	b := &Entry{ID: "b", Scope: []string{"rig:x"}, VerifiedAt: "2026-01-01"}
+	more, rule := moreSpecificReason(a, b)
+	assert.True(t, more)
+	assert.Equal(t, "verified_at", rule)
+}
+
+func TestMoreSpecificReasonCreatedAt(t *testing.T) {
+	a := &Entry{ID: "a", Scope: []string{"rig:x"}, CreatedAt: "2026-02-01"}
+	b := &Entry{ID: "b", Scope: []string{"rig:x"}, CreatedAt: "2026-01-01"}
+	more, rule := moreSpecificReason(a, b)
+	assert.True(t, more)
+	assert.Equal(t, "created_at", rule)
+}
+
+func TestMoreSpecificReasonIDTiebreak(t *testing.T) {
+	a := &Entry{ID: "a", Scope: []string{"rig:x"}}
+	b := &Entry{ID: "b", Scope: []string{"rig:x"}}
+	more, rule := moreSpecificReason(a, b)
+	assert.True(t, more, "lower ID must win the final tiebreak")
+	assert.Equal(t, "id_tiebreak", rule)
+}
+
+func TestMoreSpecificDelegatesToReason(t *testing.T) {
+	a := &Entry{ID: "a", Scope: []string{"rig:x", "role:y"}}
+	b := &Entry{ID: "b", Scope: []string{"rig:x"}}
+	assert.True(t, moreSpecific(a, b))
+	assert.False(t, moreSpecific(b, a))
+}
+
+func TestShadowReasonReportsWinnerAndRule(t *testing.T) {
+	rigOnly := &Entry{ID: "r1", TopicKey: "t", Scope: []string{"rig:x"}}
+	rigAndRole := &Entry{ID: "r2", TopicKey: "t", Scope: []string{"rig:x", "role:y"}}
+
+	out, reasons := shadowReason([]*Entry{rigOnly, rigAndRole})
+
+	require.Len(t, out, 1, "only the winner should survive shadowing")
+	assert.Equal(t, "r2", out[0].ID)
+	require.Len(t, reasons, 1)
+	assert.Equal(t, "t", reasons[0].TopicKey)
+	assert.Equal(t, "r2", reasons[0].WinnerID)
+	assert.Equal(t, "scope_size", reasons[0].Rule)
+}
+
+func TestShadowReasonNoDecisionForSingleCandidateTopic(t *testing.T) {
+	solo := &Entry{ID: "solo", TopicKey: "only-one", Scope: nil}
+	out, reasons := shadowReason([]*Entry{solo})
+	require.Len(t, out, 1)
+	assert.Empty(t, reasons, "a topic_key held by only one candidate is not a decision")
+}
+
+func TestShadowDelegatesToShadowReason(t *testing.T) {
+	rigOnly := &Entry{ID: "r1", TopicKey: "t", Scope: []string{"rig:x"}}
+	rigAndRole := &Entry{ID: "r2", TopicKey: "t", Scope: []string{"rig:x", "role:y"}}
+	out := shadow([]*Entry{rigOnly, rigAndRole})
+	require.Len(t, out, 1)
+	assert.Equal(t, "r2", out[0].ID)
+}
+
+func TestBestShadowerExplainReportsRule(t *testing.T) {
+	rigOnly := &Entry{ID: "s1", TopicKey: "t", Scope: []string{"rig:x"}}
+	rigAndRole := &Entry{ID: "s2", TopicKey: "t", Scope: []string{"rig:x", "role:y"}}
+	group := []*Entry{rigOnly, rigAndRole}
+
+	best, rule := bestShadowerExplain(rigOnly, group)
+	require.NotNil(t, best)
+	assert.Equal(t, "s2", best.ID)
+	assert.Equal(t, "scope_size", rule)
+
+	best, rule = bestShadowerExplain(rigAndRole, group)
+	assert.Nil(t, best)
+	assert.Empty(t, rule)
+}
+
+func TestBestShadowerDelegatesToExplain(t *testing.T) {
+	rigOnly := &Entry{ID: "s1", TopicKey: "t", Scope: []string{"rig:x"}}
+	rigAndRole := &Entry{ID: "s2", TopicKey: "t", Scope: []string{"rig:x", "role:y"}}
+	group := []*Entry{rigOnly, rigAndRole}
+	best := bestShadower(rigOnly, group)
+	require.NotNil(t, best)
+	assert.Equal(t, "s2", best.ID)
+}
+
+// testLogRecords runs fn with a buffer-backed obslog.Logger attached to
+// ctx, then parses every JSONL line the run produced.
+func testLogRecords(t *testing.T, fn func(ctx context.Context)) []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	logger := obslog.NewWithWriter(&buf, obslog.Options{Command: "test"}, &bytes.Buffer{})
+	ctx := obslog.WithLogger(context.Background(), logger)
+	fn(ctx)
+
+	var recs []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var rec map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &rec))
+		recs = append(recs, rec)
+	}
+	return recs
+}
+
+func TestVisibleFromLogsShadowDecisionInIdentityMode(t *testing.T) {
+	rigOnly := &Entry{ID: "r1", TopicKey: "t", Scope: []string{"rig:x"}}
+	rigAndRole := &Entry{ID: "r2", TopicKey: "t", Scope: []string{"rig:x", "role:y"}}
+
+	var out []*Entry
+	recs := testLogRecords(t, func(ctx context.Context) {
+		out = visibleFrom(ctx, []*Entry{rigOnly, rigAndRole}, []string{"rig:x", "role:y"})
+	})
+
+	require.Len(t, out, 1)
+	assert.Equal(t, "r2", out[0].ID)
+
+	require.Len(t, recs, 1, "exactly one shadow_decision expected for one multi-candidate topic")
+	rec := recs[0]
+	assert.Equal(t, "shadow_decision", rec["kind"])
+	assert.Equal(t, "identity", rec["mode"])
+	assert.Equal(t, "t", rec["topic_key"])
+	assert.Equal(t, "r2", rec["winner_id"])
+	assert.Equal(t, "scope_size", rec["rule"])
+}
+
+func TestVisibleFromNoLogWhenNoShadowingOccurs(t *testing.T) {
+	solo := &Entry{ID: "solo", TopicKey: "t", Scope: nil}
+	recs := testLogRecords(t, func(ctx context.Context) {
+		visibleFrom(ctx, []*Entry{solo}, nil)
+	})
+	assert.Empty(t, recs, "no shadow_decision expected when no topic had more than one visible candidate")
+}
+
+func TestShadowMapLogsShadowDecisionInStoreWideMode(t *testing.T) {
+	s1 := parseFixture(t, lessSpecificShared)
+	s2 := parseFixture(t, moreSpecificShared)
+
+	var sm map[string]*Entry
+	recs := testLogRecords(t, func(ctx context.Context) {
+		sm = ShadowMap(ctx, []*Entry{s1, s2})
+	})
+
+	require.Contains(t, sm, "s1")
+	require.Len(t, recs, 1)
+	rec := recs[0]
+	assert.Equal(t, "shadow_decision", rec["kind"])
+	assert.Equal(t, "store_wide", rec["mode"])
+	assert.Equal(t, "s1", rec["entry_id"])
+	assert.Equal(t, "s2", rec["winner_id"])
 }
 
 func TestFindReturnsErrNotFoundForUnknownID(t *testing.T) {

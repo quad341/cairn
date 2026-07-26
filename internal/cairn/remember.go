@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/quad341/cairn/internal/obslog"
 )
 
 // NewEntry constructs a new entry for `cairn remember`: a contributor's
@@ -150,6 +152,27 @@ func gitRun(ctx context.Context, repo string, args ...string) (string, error) {
 	return string(out), nil
 }
 
+// gitStep runs fn -- typically a gitRun call -- logging a write_path_step
+// record correlated back to its parent write_path record via operation, and
+// timed around the call. fn's own (output, error) result is returned
+// unchanged: gitStep only observes, it never alters control flow.
+func gitStep(ctx context.Context, operation, name string, fn func() (string, error)) (string, error) {
+	start := time.Now()
+	out, err := fn()
+	fields := obslog.WritePathStepFields{
+		Operation:  operation,
+		Name:       name,
+		Outcome:    "ok",
+		DurationMS: time.Since(start).Milliseconds(),
+	}
+	if err != nil {
+		fields.Outcome = "error"
+		fields.Detail = redactSecrets(err.Error())
+	}
+	obslog.FromContext(ctx).WritePathStep(fields)
+	return out, err
+}
+
 // CommitDirect stages and commits e's already-written body file straight to
 // the store repo's current branch: the private agent/ tier's flow
 // (DESIGN.md §7, "commit straight to main -- no review"). Callers must only
@@ -168,17 +191,31 @@ func gitRun(ctx context.Context, repo string, args ...string) (string, error) {
 // it -- uncommitted, not rolled back -- and the returned error says so
 // explicitly, so that state is reported rather than silently lost.
 func (e *Entry) CommitDirect(ctx context.Context, store string) (string, error) {
+	tier, _ := ResolvedTier(e.Scope)
+	obslog.FromContext(ctx).WritePath(obslog.WritePathFields{
+		Operation: "commit_direct",
+		Scope:     e.Scope,
+		Tier:      tier,
+		Private:   IsPrivateScope(e.Scope),
+	})
+
 	rel, err := filepath.Rel(store, e.BodyPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve %s relative to store %s: %w", e.BodyPath, store, err)
 	}
-	if _, err := gitRun(ctx, store, "add", "--", rel); err != nil {
+	if _, err := gitStep(ctx, "commit_direct", "git_add", func() (string, error) {
+		return gitRun(ctx, store, "add", "--", rel)
+	}); err != nil {
 		return "", fmt.Errorf("git add %s (entry written but not committed -- remove or retry): %w", rel, err)
 	}
-	if _, err := gitRun(ctx, store, "commit", "-m", "remember: "+e.ID, "--", rel); err != nil {
+	if _, err := gitStep(ctx, "commit_direct", "git_commit", func() (string, error) {
+		return gitRun(ctx, store, "commit", "-m", "remember: "+e.ID, "--", rel)
+	}); err != nil {
 		return "", fmt.Errorf("git commit %s (entry written and staged but not committed -- remove or retry): %w", rel, err)
 	}
-	sha, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	sha, err := gitStep(ctx, "commit_direct", "git_rev_parse_head", func() (string, error) {
+		return gitRun(ctx, store, "rev-parse", "HEAD")
+	})
 	if err != nil {
 		return "", fmt.Errorf("commit succeeded but could not resolve the resulting SHA: %w", err)
 	}
@@ -204,7 +241,7 @@ func reviewBranchName(e *Entry) string {
 func (e *Entry) CommitToReviewBranch(ctx context.Context, store string) (string, error) {
 	branch := reviewBranchName(e)
 	msg := fmt.Sprintf("remember: %s\n\nscope: %s", e.ID, strings.Join(e.Scope, " "))
-	if err := e.commitToReviewWorktree(ctx, store, branch, true, msg); err != nil {
+	if err := e.commitToReviewWorktree(ctx, store, branch, true, msg, "commit_to_review_branch"); err != nil {
 		return "", err
 	}
 	return branch, nil
@@ -218,8 +255,18 @@ func (e *Entry) CommitToReviewBranch(ctx context.Context, store string) (string,
 // the same relative path, stage, and commit with msg. See
 // CommitToReviewBranch's doc comment for why a throwaway worktree is used
 // instead of an in-place checkout; that reasoning applies identically to
-// both callers.
-func (e *Entry) commitToReviewWorktree(ctx context.Context, store, branch string, create bool, msg string) error {
+// both callers. operation is the caller's own write_path operation name
+// (e.g. "commit_to_review_branch"), used only to correlate this call's
+// write_path/write_path_step log records back to its caller.
+func (e *Entry) commitToReviewWorktree(ctx context.Context, store, branch string, create bool, msg, operation string) error {
+	tier, _ := ResolvedTier(e.Scope)
+	obslog.FromContext(ctx).WritePath(obslog.WritePathFields{
+		Operation: operation,
+		Scope:     e.Scope,
+		Tier:      tier,
+		Private:   IsPrivateScope(e.Scope),
+	})
+
 	rel, err := filepath.Rel(store, e.BodyPath)
 	if err != nil {
 		return fmt.Errorf("resolve entry path: %w", err)
@@ -233,15 +280,23 @@ func (e *Entry) commitToReviewWorktree(ctx context.Context, store, branch string
 
 	wt := filepath.Join(scratch, "wt")
 	if create {
-		if _, err := gitRun(ctx, store, "worktree", "add", "-b", branch, wt, "HEAD"); err != nil {
+		if _, err := gitStep(ctx, operation, "git_worktree_add", func() (string, error) {
+			return gitRun(ctx, store, "worktree", "add", "-b", branch, wt, "HEAD")
+		}); err != nil {
 			return fmt.Errorf("create review branch %q: %w", branch, err)
 		}
 	} else {
-		if _, err := gitRun(ctx, store, "worktree", "add", wt, branch); err != nil {
+		if _, err := gitStep(ctx, operation, "git_worktree_add", func() (string, error) {
+			return gitRun(ctx, store, "worktree", "add", wt, branch)
+		}); err != nil {
 			return fmt.Errorf("open existing review branch %q: %w", branch, err)
 		}
 	}
-	defer func() { _, _ = gitRun(ctx, store, "worktree", "remove", "--force", wt) }()
+	defer func() {
+		_, _ = gitStep(ctx, operation, "git_worktree_remove", func() (string, error) {
+			return gitRun(ctx, store, "worktree", "remove", "--force", wt)
+		})
+	}()
 
 	content, err := os.ReadFile(e.BodyPath)
 	if err != nil {
@@ -260,10 +315,14 @@ func (e *Entry) commitToReviewWorktree(ctx context.Context, store, branch string
 		return fmt.Errorf("copy entry into review worktree: %w", err)
 	}
 
-	if _, err := gitRun(ctx, wt, "add", "--", rel); err != nil {
+	if _, err := gitStep(ctx, operation, "git_add", func() (string, error) {
+		return gitRun(ctx, wt, "add", "--", rel)
+	}); err != nil {
 		return fmt.Errorf("stage entry in review worktree: %w", err)
 	}
-	if _, err := gitRun(ctx, wt, "commit", "-q", "-m", msg); err != nil {
+	if _, err := gitStep(ctx, operation, "git_commit", func() (string, error) {
+		return gitRun(ctx, wt, "commit", "-q", "-m", msg)
+	}); err != nil {
 		return fmt.Errorf("commit entry to review branch: %w", err)
 	}
 	return nil
@@ -305,7 +364,7 @@ func (e *Entry) CommitRecurrenceToReviewBranch(ctx context.Context, store string
 		return "", err
 	}
 	msg := fmt.Sprintf("remember: recurrence %s (count %d)\n\nscope: %s", e.ID, e.RecurrenceCount, strings.Join(e.Scope, " "))
-	if err := e.commitToReviewWorktree(ctx, store, branch, !exists, msg); err != nil {
+	if err := e.commitToReviewWorktree(ctx, store, branch, !exists, msg, "commit_recurrence_to_review_branch"); err != nil {
 		return "", err
 	}
 	return branch, nil
@@ -327,7 +386,7 @@ func (e *Entry) CommitPromotionToReviewBranch(ctx context.Context, store string)
 		return "", err
 	}
 	msg := fmt.Sprintf("remember: promote %s (bead %s)", e.ID, e.PromotedBeadID)
-	if err := e.commitToReviewWorktree(ctx, store, branch, !exists, msg); err != nil {
+	if err := e.commitToReviewWorktree(ctx, store, branch, !exists, msg, "commit_promotion_to_review_branch"); err != nil {
 		return "", err
 	}
 	return branch, nil

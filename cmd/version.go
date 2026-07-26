@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"github.com/quad341/cairn/internal/obslog"
 )
 
 // version, commit, and date are overridden via -ldflags "-X ..." at build
@@ -30,6 +32,9 @@ func printVersion(cmd *cobra.Command) error {
 		return emitJSON(cmd.OutOrStdout(), VersionResult{Version: version, Commit: commit, Date: date})
 	}
 	fmt.Printf("cairn version %s (commit %s, built %s)\n", version, commit, date)
+	if path, err := obslog.LogPath(); err == nil {
+		fmt.Printf("debug log: %s\n", path)
+	}
 	return nil
 }
 
