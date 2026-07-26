@@ -194,3 +194,43 @@ func TestMapJSONEmptyIdentityIsEmptyArray(t *testing.T) {
 	assert.Equal(t, 0, result.Total)
 	assert.Equal(t, []MapTopicCount{}, result.Topics)
 }
+
+func TestListJSONOutputsResults(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md",
+		"+++\nid = \"g/a\"\ntitle = \"A\"\nsummary = \"summary text\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nbody\n")
+
+	out, err := execRootJSON(t, "list", "topic-a", "--json", "--store", dir)
+	require.NoError(t, err)
+
+	var items []ListResult
+	require.NoError(t, json.Unmarshal([]byte(out), &items))
+	require.Len(t, items, 1)
+	assert.Equal(t, "g/a", items[0].ID)
+	assert.Equal(t, "A", items[0].Title)
+	assert.Equal(t, "summary text", items[0].Summary)
+	assert.NotEmpty(t, items[0].Freshness.Status)
+}
+
+func TestListJSONNotFoundEmitsErrorEnvelope(t *testing.T) {
+	out, err := execRootJSON(t, "list", "no-such-topic", "--json", "--store", t.TempDir())
+	require.Error(t, err)
+
+	var result ErrorResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.Equal(t, CategoryNotFound, result.Error.Category)
+	assert.Equal(t, "no-such-topic", result.Error.Subject)
+}
+
+func TestListJSONRejectsBadIdentityTag(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md", "+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n+++\nbody\n")
+
+	out, err := execRootJSON(t, "list", "topic-a", "--json", "--store", dir, "--identity", "role/bad")
+	require.Error(t, err)
+
+	var result ErrorResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.Equal(t, CategoryInvalidInput, result.Error.Category)
+	assert.Equal(t, "role/bad", result.Error.Subject)
+}
