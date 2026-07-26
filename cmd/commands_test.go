@@ -53,26 +53,6 @@ func captureStdout(t *testing.T, fn func()) string {
 	return string(out)
 }
 
-// captureStderr redirects os.Stderr for the duration of fn and returns
-// everything written to it, mirroring captureStdout -- needed for FR-5's
-// --verify soft-fail warning, which is written directly to os.Stderr rather
-// than through cmd.ErrOrStderr().
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	orig := os.Stderr
-	os.Stderr = w
-	defer func() { os.Stderr = orig }()
-
-	fn()
-
-	require.NoError(t, w.Close())
-	out, err := io.ReadAll(r)
-	require.NoError(t, err)
-	return string(out)
-}
-
 // seedEntry writes a fixture entry (TOML-frontmatter markdown) under one of
 // the store's scope dirs, mirroring internal/cairn's own test fixtures.
 func seedEntry(t *testing.T, storeDir, relPath, content string) {
