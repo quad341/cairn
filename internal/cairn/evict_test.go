@@ -45,7 +45,7 @@ func TestEvictDirectDeletesOnlyTheEntryFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
 	gitCommitAll(t, store, "seed")
 
-	e, err := NewEntry("build-flags", []string{"agent:bot"}, "prefer feature flags over env vars", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"agent:bot"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	gitCommitAll(t, store, "add entry")
@@ -100,7 +100,7 @@ func TestEvictDirectFailureLeavesEntryOnDiskAndReportsError(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir() // deliberately not a git repo
 
-	e, err := NewEntry("build-flags", []string{"agent:bot"}, "body", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"agent:bot"}, Body: "body", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 
@@ -131,7 +131,7 @@ func TestEvictDirectRefusesSharedTierEntry(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := t.TempDir()
-			e, err := NewEntry("build-flags", tc.scope, "body", "agent:bot")
+			e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: tc.scope, Body: "body", CreatedBy: "agent:bot"})
 			require.NoError(t, err)
 			require.NoError(t, e.Create(store))
 
@@ -158,7 +158,7 @@ func TestEvictToReviewBranchDeletesOnlyTheEntryFileLeavingDefaultUntouched(t *te
 	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
 	gitCommitAll(t, store, "seed")
 
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "prefer feature flags over env vars", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	gitCommitAll(t, store, "add entry")
@@ -222,7 +222,7 @@ func TestEvictToReviewBranchFailureLeavesEntryUntouchedAndReportsError(t *testin
 	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
 	gitCommitAll(t, store, "seed")
 
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "body", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "body", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	gitCommitAll(t, store, "add entry")
@@ -264,7 +264,7 @@ func TestEvictToReviewBranchRefusesWhenProposalAlreadyPending(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
 	gitCommitAll(t, store, "seed")
 
-	e, err := NewEntry("build-flags", []string{"rig:web"}, "body", "agent:bot")
+	e, err := NewEntry(NewEntryParams{TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "body", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	gitCommitAll(t, store, "add entry")

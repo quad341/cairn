@@ -27,7 +27,7 @@ func reviewCLIStore(t *testing.T) string {
 // cairn review against exactly what `cairn remember` produces.
 func seedReviewBranch(t *testing.T, store, topicKey string, scope []string, body string) (branch string, e *cairn.Entry) {
 	t.Helper()
-	e, err := cairn.NewEntry(topicKey, scope, body, "agent:bot")
+	e, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: topicKey, Scope: scope, Body: body, CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	branch, err = e.CommitToReviewBranch(t.Context(), store)
