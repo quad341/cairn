@@ -129,8 +129,10 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 		// supposed to respect. Always itemize at least one entry (the
 		// len==0 guard) so a budget too small for even one item doesn't
 		// leave a caller with zero items despite a nonzero visible count.
+		// budgetBytes<=0 means unlimited (the same idiom as gascity's
+		// ListTail), so the budget check never fires and every entry itemizes.
 		cost := itemByteCost(item)
-		if usedBytes+cost > budgetBytes && len(result.Items) > 0 {
+		if budgetBytes > 0 && usedBytes+cost > budgetBytes && len(result.Items) > 0 {
 			truncating = true
 			continue
 		}
