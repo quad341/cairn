@@ -54,8 +54,27 @@ func loadEntryRecallRows(ctx context.Context, store string) ([]entryRecallRow, e
 	}
 	defer func() { _ = db.Close() }()
 
+	// COALESCE every nullable column. These were added to an existing index by
+	// ALTER TABLE ADD COLUMN with no DEFAULT, so every row that predates the
+	// migration holds NULL -- and a plain string scan target fails outright with
+	// "converting NULL to string is unsupported", killing the whole report.
+	//
+	// A reindex does NOT clear them, and a store built from scratch in a test
+	// never produces them, which is why the unit tests passed while every real
+	// store failed: on the live store 11 of 19 rows had a NULL last_recalled_at
+	// and 15 of 19 a NULL promoted_bead_id.
+	//
+	// Empty string is the documented value for "never recalled" (see
+	// RecallStatsFinding), so coalescing to '' restores the intended contract
+	// rather than inventing a new one.
 	rows, err := db.QueryContext(ctx, `SELECT
-		id, topic_key, hit_count, last_recalled_at, recurrence_count, promoted_bead_id, anchor_repo
+		id,
+		COALESCE(topic_key, ''),
+		COALESCE(hit_count, 0),
+		COALESCE(last_recalled_at, ''),
+		COALESCE(recurrence_count, 0),
+		COALESCE(promoted_bead_id, ''),
+		COALESCE(anchor_repo, '')
 		FROM entries ORDER BY id`)
 	if err != nil {
 		return nil, err
