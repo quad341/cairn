@@ -298,3 +298,27 @@ func TestPrimeCapsFreshnessChecksAndFailsTowardUnknown(t *testing.T) {
 	assert.Contains(t, byID["b"].Freshness.Detail, "not checked this pass",
 		"past the cap, classification must short-circuit rather than actually invoking Check on a bogus repo")
 }
+
+// TestPrimeUnlimitedBudgetItemizesEverything is crn-od2x.7's acceptance
+// criterion: budgetBytes<=0 means unlimited -- the conventional idiom this
+// operator already uses elsewhere for the same shape (e.g. gascity's
+// ListTail: limit<=0 returns all). Before this fix, the len(result.Items)==0
+// guard only exempted the first item from the budget check, so every
+// subsequent item still satisfied usedBytes+cost > budgetBytes and got
+// truncated -- a non-positive budget returned exactly one item, never the
+// complete set, with no sentinel a caller could pass to mean "everything".
+func TestPrimeUnlimitedBudgetItemizesEverything(t *testing.T) {
+	dir := t.TempDir()
+	for _, id := range []string{"a", "b", "c", "d"} {
+		writeFile(t, dir, "global/"+id+".md",
+			"+++\nid = \""+id+"\"\ntitle = \""+id+"\"\nscope = []\n+++\nx\n")
+	}
+
+	for _, budget := range []int{0, -1, -1000} {
+		result, err := Prime(t.Context(), dir, nil, budget)
+		require.NoError(t, err)
+		assert.Equal(t, 4, result.TotalVisible)
+		assert.Len(t, result.Items, 4, "budgetBytes=%d should itemize every visible entry", budget)
+		assert.Equal(t, 0, result.TruncatedCount, "budgetBytes=%d should never report truncation", budget)
+	}
+}
