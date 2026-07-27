@@ -191,10 +191,18 @@ needs-pm pipeline as any other bead (crn-rqf.2 AC: "no special routing").
       --title "critic-loop: $DIM $VERDICT ($SID)" \
       --type "$TYPE" \
       --priority "$PRIO" \
-      --labels "dim:$DIM,source:cairn-critic-loop" \
+      --labels "dim:$DIM,source:cairn-critic-loop,needs-pm" \
       --description "The cairn dogfood critic loop's $DIM scenario ($SID) returned a $VERDICT verdict against a real store. Filed automatically (crn-7oa section 10); see --acceptance for the repro, expected-vs-actual, and dimension rationale." \
       --acceptance "$ACCEPTANCE" \
       --json | jq -r '.id')
+
+    # Guard (crn-wqgm): assert the filed bead actually matches the deacon
+    # patrol's own selection query (routable label present, assignee empty,
+    # gc.routed_to empty) -- this prose and the actual --labels argument
+    # drifted apart once already; this catches a repeat instead of filing
+    # another bead nothing will ever pick up.
+    GUARD_OK=$(bd show "$NEWID" --json | jq -r '.[0] as $b | ((($b.labels // []) | index("needs-pm")) != null) and (($b.assignee // "") == "") and (($b.metadata["gc.routed_to"] // "") == "")')
+    [ "$GUARD_OK" = "true" ] || echo "critic-loop: GUARD FAILED -- $NEWID does not match the deacon patrol's selection query (needs-pm label / empty assignee / empty gc.routed_to) -- it will not be auto-routed" >&2
 
     printf 'FILED=%s\n' "$NEWID" >> "$ENV"
     echo "critic-loop: filed $NEWID ($TYPE P$PRIO dim:$DIM) for $DIM $VERDICT"

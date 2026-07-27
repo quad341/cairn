@@ -104,7 +104,7 @@ pass to pass; if it's instead re-cloned fresh every sweep tick, add
     NEW_ID=$(bd create \
         --title="cairn librarian: stale review branch on $BRANCH ($TIER)" \
         --stdin --type=task --priority=3 \
-        --labels=dim:review-branch,source:cairn-librarian --silent <<BODY
+        --labels=dim:review-branch,source:cairn-librarian,needs-pm --silent <<BODY
 Review branch "$BRANCH" (entry $ENTRY_ID, tier $TIER) has been unmerged for
 ${AGE_SECONDS}s. A reminder mail was already sent to $REVIEWER on an earlier
 cairn stale-branches pass at this same commit, and it is now past the
@@ -117,6 +117,15 @@ into the store's default branch, or an author should update it -- either
 action removes the branch from future "cairn stale-branches" output.
 BODY
     )
+
+    # Guard (crn-wqgm): assert the filed bead matches the deacon patrol's own
+    # selection query (routable label present, assignee empty, gc.routed_to
+    # empty) -- this prose and the actual --labels argument drifted apart
+    # once already; this catches a repeat instead of filing another bead
+    # nothing will ever pick up.
+    GUARD_OK=$(bd show "$NEW_ID" --json | jq -r '.[0] as $b | ((($b.labels // []) | index("needs-pm")) != null) and (($b.assignee // "") == "") and (($b.metadata["gc.routed_to"] // "") == "")')
+    [ "$GUARD_OK" = "true" ] || echo "librarian: GUARD FAILED -- $NEW_ID does not match the deacon patrol's selection query (needs-pm label / empty assignee / empty gc.routed_to) -- it will not be auto-routed" >&2
+
     echo "filed $NEW_ID for $BRANCH"
     FILED=$((FILED + 1))
   done < <(cairn stale-branches --store "$STORE" | jq -c '.[] | select(.status == "escalate")')
@@ -161,7 +170,7 @@ guardrail 8.
     NEW_ID=$(bd create \
         --title="cairn librarian: $STATUS freshness on $ID ($TIER)" \
         --stdin --type=task --priority=3 \
-        --labels=dim:freshness,source:cairn-librarian --silent <<BODY
+        --labels=dim:freshness,source:cairn-librarian,needs-pm --silent <<BODY
 Sweep detected $STATUS freshness for shared-tier cairn entry "$ID" (tier: $TIER, anchor: $ANCHOR).
 
 $DETAIL
@@ -174,6 +183,15 @@ anchor, then either re-run "cairn verify $ID" once the source has settled,
 re-anchor the entry, or retire it if it no longer applies.
 BODY
     )
+
+    # Guard (crn-wqgm): assert the filed bead matches the deacon patrol's own
+    # selection query (routable label present, assignee empty, gc.routed_to
+    # empty) -- this prose and the actual --labels argument drifted apart
+    # once already; this catches a repeat instead of filing another bead
+    # nothing will ever pick up.
+    GUARD_OK=$(bd show "$NEW_ID" --json | jq -r '.[0] as $b | ((($b.labels // []) | index("needs-pm")) != null) and (($b.assignee // "") == "") and (($b.metadata["gc.routed_to"] // "") == "")')
+    [ "$GUARD_OK" = "true" ] || echo "librarian: GUARD FAILED -- $NEW_ID does not match the deacon patrol's selection query (needs-pm label / empty assignee / empty gc.routed_to) -- it will not be auto-routed" >&2
+
     echo "filed $NEW_ID for $ID ($STATUS)"
     FILED=$((FILED + 1))
   done < <(cairn sweep --store "$STORE" | jq -c '.[] | select(.status != "fresh")')
@@ -230,7 +248,7 @@ deletes, or rewrites a cairn entry, per crn-xw3 guardrail 8.
     NEW_ID=$(bd create \
         --title="$TITLE" \
         --stdin --type=task --priority=3 \
-        --labels=dim:dedup,source:cairn-librarian --silent <<BODY
+        --labels=dim:dedup,source:cairn-librarian,needs-pm --silent <<BODY
 Sweep detected a $KIND duplicate/re-scope candidate across shared-tier cairn entries: $IDS_CSV.
 
 $DETAIL
@@ -243,6 +261,15 @@ close this bead as a false positive (e.g. two same-tier entries that
 legitimately picked the same topic_key for unrelated reasons).
 BODY
     )
+
+    # Guard (crn-wqgm): assert the filed bead matches the deacon patrol's own
+    # selection query (routable label present, assignee empty, gc.routed_to
+    # empty) -- this prose and the actual --labels argument drifted apart
+    # once already; this catches a repeat instead of filing another bead
+    # nothing will ever pick up.
+    GUARD_OK=$(bd show "$NEW_ID" --json | jq -r '.[0] as $b | ((($b.labels // []) | index("needs-pm")) != null) and (($b.assignee // "") == "") and (($b.metadata["gc.routed_to"] // "") == "")')
+    [ "$GUARD_OK" = "true" ] || echo "librarian: GUARD FAILED -- $NEW_ID does not match the deacon patrol's selection query (needs-pm label / empty assignee / empty gc.routed_to) -- it will not be auto-routed" >&2
+
     echo "filed $NEW_ID for $KIND $ANCHOR"
     FILED=$((FILED + 1))
   done < <(cairn dedup --store "$STORE" | jq -c '.[]')
@@ -315,7 +342,7 @@ unsupported cross-store write.
     NEW_ID=$(bd create \
         --title="cairn librarian: recurring topic \"$TOPIC_KEY\" needs a fix in $ANCHOR_REPO $ANCHOR" \
         --stdin --type=task --priority=3 \
-        --labels="dim:promote,source:cairn-librarian,target-repo:$ANCHOR_REPO" --silent <<BODY
+        --labels="dim:promote,source:cairn-librarian,target-repo:$ANCHOR_REPO,needs-pm" --silent <<BODY
 Cairn entry $ENTRY_ID (topic "$TOPIC_KEY") has recurred $COUNT time(s),
 crossing the promote threshold (FR-07).
 
@@ -329,6 +356,14 @@ there if it differs from where this bead landed, then close this proposal
 once the durable fix is tracked in the right place.
 BODY
     )
+
+    # Guard (crn-wqgm): assert the filed bead matches the deacon patrol's own
+    # selection query (routable label present, assignee empty, gc.routed_to
+    # empty) -- this prose and the actual --labels argument drifted apart
+    # once already; this catches a repeat instead of filing another bead
+    # nothing will ever pick up.
+    GUARD_OK=$(bd show "$NEW_ID" --json | jq -r '.[0] as $b | ((($b.labels // []) | index("needs-pm")) != null) and (($b.assignee // "") == "") and (($b.metadata["gc.routed_to"] // "") == "")')
+    [ "$GUARD_OK" = "true" ] || echo "librarian: GUARD FAILED -- $NEW_ID does not match the deacon patrol's selection query (needs-pm label / empty assignee / empty gc.routed_to) -- it will not be auto-routed" >&2
 
     if ! cairn promote-mark "$ENTRY_ID" --bead "$NEW_ID" --store "$STORE"; then
       echo "cairn promote-mark $ENTRY_ID --bead $NEW_ID failed (bead filed; promotion mark not persisted)" >&2
@@ -423,7 +458,7 @@ human reviewer merges the proposal branch.
     NEW_ID=$(bd create \
         --title="cairn librarian: disuse cull proposed for \"$TOPIC_KEY\" ($TIER) $ANCHOR" \
         --stdin --type=task --priority=3 \
-        --labels=dim:cull,source:cairn-librarian --silent <<BODY
+        --labels=dim:cull,source:cairn-librarian,needs-pm --silent <<BODY
 Cairn entry $ENTRY_ID (topic "$TOPIC_KEY", tier $TIER) has been disused since
 $DISUSED_SINCE, past the configured cull threshold (FR-10/NFR-06).
 
@@ -437,6 +472,15 @@ by not merging (entry kept; close this bead noting why, e.g. a
 pinned/rare-but-critical entry).
 BODY
     )
+
+    # Guard (crn-wqgm): assert the filed bead matches the deacon patrol's own
+    # selection query (routable label present, assignee empty, gc.routed_to
+    # empty) -- this prose and the actual --labels argument drifted apart
+    # once already; this catches a repeat instead of filing another bead
+    # nothing will ever pick up.
+    GUARD_OK=$(bd show "$NEW_ID" --json | jq -r '.[0] as $b | ((($b.labels // []) | index("needs-pm")) != null) and (($b.assignee // "") == "") and (($b.metadata["gc.routed_to"] // "") == "")')
+    [ "$GUARD_OK" = "true" ] || echo "librarian: GUARD FAILED -- $NEW_ID does not match the deacon patrol's selection query (needs-pm label / empty assignee / empty gc.routed_to) -- it will not be auto-routed" >&2
+
     echo "filed $NEW_ID for $ENTRY_ID ($TIER, disused since $DISUSED_SINCE)"
     FILED=$((FILED + 1))
   done < <(cairn cull-candidates --store "$STORE" | jq -c '.[]')
