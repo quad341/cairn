@@ -51,7 +51,15 @@ func CullCandidates(ctx context.Context, store string, disuseAfter time.Duration
 		return nil, err
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT id, topic_key, last_recalled_at, created_at FROM entries ORDER BY id`)
+	// COALESCE the nullable columns -- see the note in recall.go's
+	// loadEntryRecallRows. Rows predating an ALTER TABLE ADD COLUMN hold NULL,
+	// and a plain string scan target aborts the entire sweep.
+	rows, err := db.QueryContext(ctx, `SELECT
+		id,
+		COALESCE(topic_key, ''),
+		COALESCE(last_recalled_at, ''),
+		COALESCE(created_at, '')
+		FROM entries ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
