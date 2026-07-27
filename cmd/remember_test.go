@@ -376,6 +376,21 @@ func TestRememberRequiresExactlyOneBodyArg(t *testing.T) {
 	assertNoFilesWritten(t, store)
 }
 
+// TestRememberBodyRequiredWhenNoSourceProvided covers rememberBody's default
+// branch specifically: with no positional argument, no --file, and stdin not
+// piped (go test's own stdin is reliably a char device, see withStdin's doc
+// comment), the error must be the zero-source "a body is required" message,
+// not just any error -- every other branch of the 3-source resolution
+// already pins its own message (e.g.
+// TestRememberRejectsPositionalAndFileTogether's "ambiguous"); this is that
+// same precision for the default case.
+func TestRememberBodyRequiredWhenNoSourceProvided(t *testing.T) {
+	store, err := runRemember(t, "--topic", "valid-topic")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "a body is required")
+	assertNoFilesWritten(t, store)
+}
+
 func TestRememberValidInputWritesEntry(t *testing.T) {
 	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test", "a body")
 	require.NoError(t, err)
@@ -781,9 +796,7 @@ func TestRememberSameScopeTopicKeyRepeatIncrementsRecurrence(t *testing.T) {
 // use the SAME scope for both calls here: shadowExempt requires
 // sameTopicKey as a precondition (internal/cairn/dedup.go's pairSignals), so
 // two different topic_keys are never shadow-exempt regardless of scope, and
-// the content signal is exercised cleanly, unlike
-// TestRememberSameScopeTopicKeyRepeatDoesNotIncrementRecurrence's same-topic_key
-// case where shadow exemption would mask it either way.
+// the content signal is exercised cleanly.
 func TestRememberNearMissTopicKeyDoesNotIncrementRecurrence(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
@@ -966,11 +979,9 @@ func TestRememberJSONRejectsInvalidIdentityTagNotUsedAsScope(t *testing.T) {
 }
 
 // TestRememberJSONRecurrencePrivateTierReportsCommit mirrors
-// TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly's setup exactly
-// (two different agent scopes sharing one topic_key, a second identity broad
-// enough to see both -- a same-scope repeat is "shadow exempt" in Conflicts'
-// signal computation and would never match, per
-// TestRememberSameScopeTopicKeyRepeatDoesNotIncrementRecurrence just below).
+// TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly's setup exactly:
+// two different agent scopes sharing one topic_key, with a second identity
+// broad enough to see both.
 func TestRememberJSONRecurrencePrivateTierReportsCommit(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
@@ -1054,6 +1065,33 @@ func TestRememberTitleAndSummaryFlagsOverrideAutoDerivation(t *testing.T) {
 	require.NoError(t, err)
 	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
 	assert.Equal(t, "explicit title", e.Title)
+	assert.Equal(t, "explicit summary", e.Summary)
+}
+
+// TestRememberTitleFlagAloneAutoDerivesSummary covers NewEntryParams' partial
+// defaulting (see internal/cairn/remember_test.go, where the logic lives) at
+// the CLI layer: --title alone must leave --summary's auto-derivation from
+// the body untouched, not fall back to auto-deriving both.
+func TestRememberTitleFlagAloneAutoDerivesSummary(t *testing.T) {
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test",
+		"--title", "explicit title",
+		"auto-derived title line\nrest of the body")
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Equal(t, "explicit title", e.Title)
+	assert.Equal(t, "auto-derived title line\nrest of the body", e.Summary)
+}
+
+// TestRememberSummaryFlagAloneAutoDerivesTitle is
+// TestRememberTitleFlagAloneAutoDerivesSummary's mirror image: --summary
+// alone must leave --title's auto-derivation from the body untouched.
+func TestRememberSummaryFlagAloneAutoDerivesTitle(t *testing.T) {
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test",
+		"--summary", "explicit summary",
+		"auto-derived title line\nrest of the body")
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Equal(t, "auto-derived title line", e.Title)
 	assert.Equal(t, "explicit summary", e.Summary)
 }
 
