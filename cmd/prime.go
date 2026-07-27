@@ -14,7 +14,7 @@ const defaultPrimeBudgetBytes = 8192
 
 func init() {
 	primeCmd.Flags().Int("budget-bytes", defaultPrimeBudgetBytes,
-		"cap on itemized payload bytes; entries past the cap are counted but not itemized (crn-0vqk FR-2)")
+		"cap on itemized payload bytes; entries past the cap are counted but not itemized (crn-0vqk FR-2); <=0 means unlimited")
 	rootCmd.AddCommand(primeCmd)
 }
 
