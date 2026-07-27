@@ -163,6 +163,40 @@ func TestLibrarianPromoteAndCullStepsSkipWhenAlreadyTracked(t *testing.T) {
 	}
 }
 
+// crn-wqgm / crn-go8o: the needs-pm label and its Guard assertion are what
+// make a filed bead visible to the deacon patrol at all -- this exact class
+// of regression (prose claims "routes into the pipeline", the --labels
+// argument doesn't) already happened once, and a second instance of it (the
+// -rig wrapper's then-unpatched duplicate steps) slipped past self-test and
+// was only caught in review. Assert both directly per step instead of
+// relying solely on the rig/base parity test as an indirect proxy.
+func TestLibrarianStepsHaveNeedsPmLabelAndGuard(t *testing.T) {
+	f := decodeFormula(t, "mol-cairn-librarian.formula.toml")
+
+	for _, stepID := range []string{
+		"stale-review-branch-recovery",
+		"freshness-drift-beads",
+		"dedup-candidate-beads",
+		"promote-candidate-beads",
+		"cull-candidate-beads",
+	} {
+		s, ok := stepByID(f, stepID)
+		if !ok {
+			t.Fatalf("mol-cairn-librarian.formula.toml: no %q step found", stepID)
+		}
+
+		if !strings.Contains(s.Description, ",needs-pm") {
+			t.Errorf("%s: --labels must include needs-pm, or the deacon patrol's auto-router never picks up the filed bead (crn-wqgm)", stepID)
+		}
+		if !strings.Contains(s.Description, `index("needs-pm")`) {
+			t.Errorf("%s: missing the Guard block asserting the filed bead matches the deacon patrol's own selection query (needs-pm label present)", stepID)
+		}
+		if !strings.Contains(s.Description, `($b.assignee // "") == ""`) || !strings.Contains(s.Description, `($b.metadata["gc.routed_to"] // "") == ""`) {
+			t.Errorf("%s: Guard block must also check assignee and gc.routed_to are empty, matching the deacon patrol's full selection query", stepID)
+		}
+	}
+}
+
 // cairn cull-evict itself is not safely repeatable for the same entry --
 // EvictToReviewBranch hard-errors once a proposal is already pending, since
 // its review branch name is deterministic ("cull/" + entry ID; see
