@@ -98,8 +98,12 @@ var reviewMergeCmd = &cobra.Command{
 			Bead:               bead,
 			AllowSecretPattern: allowSecret,
 		}
-		if scopeRaw != "" {
-			opts.Scope = strings.Split(scopeRaw, ",")
+		if cmd.Flags().Changed("scope") {
+			if scopeRaw == "" {
+				opts.Scope = []string{}
+			} else {
+				opts.Scope = strings.Split(scopeRaw, ",")
+			}
 		}
 
 		res, err := cairn.MergeReviewBranch(cmd.Context(), storePath(), args[0], opts)

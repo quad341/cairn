@@ -272,7 +272,7 @@ func MergeReviewBranch(ctx context.Context, store, branch string, opts ReviewMer
 		return nil, fmt.Errorf("invalid --topic-key: %w", err)
 	}
 	for _, tag := range opts.Scope {
-		if err := ValidatePathSegment(tag); err != nil {
+		if err := ValidateScopeTag(tag); err != nil {
 			return nil, fmt.Errorf("invalid --scope tag %q: %w", tag, err)
 		}
 	}

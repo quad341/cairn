@@ -330,14 +330,11 @@ func hasTag(tags []string, want string) bool {
 	return false
 }
 
-// validTagTiers are the tier prefixes a "tier:value" scope tag may use.
-// "global" is a separate, standalone valid shape (not tier:value at all).
-var validTagTiers = map[string]struct{}{"rig": {}, "role": {}, "agent": {}}
-
-// invalidTags reports every scope tag that fails OQ1's two-part validity
-// test: (a) shape -- exactly "global", or tier:value with tier in
-// {rig,role,agent}; (b) for a tier:value tag, value must pass
-// ValidatePathSegment. ValidatePathSegment today only runs at remember-time
+// invalidTags reports every scope tag that fails ValidateScopeTag: tier:value
+// with tier in {rig,role,agent} and value passing ValidatePathSegment.
+// DESIGN.md §2's global tier is expressed by an *empty* Scope, never by a
+// tag naming it, so a tier-less tag -- including the literal word "global"
+// -- is invalid here too. ValidateScopeTag today only runs at remember-time
 // (cmd/remember.go), so it never re-validates a body file that reached disk
 // another way -- hand-edited, git merged, or written by an older cairn
 // version; this check re-applies it store-wide.
@@ -360,22 +357,9 @@ func invalidTags(entries []*Entry) []Finding {
 }
 
 // tagInvalidReason returns "" for a valid tag, else a human-readable reason
-// it fails OQ1's shape or value-safety test.
+// it fails ValidateScopeTag.
 func tagInvalidReason(tag string) string {
-	if tag == "global" {
-		return ""
-	}
-	tier, value, ok := strings.Cut(tag, ":")
-	if !ok {
-		return `must be "global" or tier:value`
-	}
-	if _, valid := validTagTiers[tier]; !valid {
-		return fmt.Sprintf("unknown tier %q", tier)
-	}
-	if strings.Contains(value, ":") {
-		return "must not contain more than one colon"
-	}
-	if err := ValidatePathSegment(value); err != nil {
+	if err := ValidateScopeTag(tag); err != nil {
 		return err.Error()
 	}
 	return ""
