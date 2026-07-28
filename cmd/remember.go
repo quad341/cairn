@@ -61,8 +61,12 @@ var rememberCmd = &cobra.Command{
 			return emitError(cmd, classifiedErr(CategoryInvalidInput, "", err))
 		}
 		for _, tag := range scope {
-			if err := cairn.ValidatePathSegment(tag); err != nil {
-				return emitError(cmd, classifiedErr(CategoryInvalidInput, tag, fmt.Errorf("invalid scope tag %q: %w", tag, err)))
+			if err := cairn.ValidateScopeTag(tag); err != nil {
+				hint := ""
+				if !strings.Contains(tag, ":") {
+					hint = " (a global-tier entry has no scope tags at all; pass --scope '' explicitly)"
+				}
+				return emitError(cmd, classifiedErr(CategoryInvalidInput, tag, fmt.Errorf("invalid scope tag %q: %w%s", tag, err, hint)))
 			}
 		}
 
@@ -361,11 +365,16 @@ func recordRecurrence(cmd *cobra.Command, matched *cairn.Entry) error {
 	return nil
 }
 
-// rememberScope returns the entry's scope tags: --scope if given, else the
-// private tier for the resolved identity (agent/<agent>/) via defaultScope.
+// rememberScope returns the entry's scope tags: --scope if given (a literal
+// empty string is a deliberate, explicit request for the global tier -- see
+// ValidateScopeTag's doc comment), else the private tier for the resolved
+// identity (agent/<agent>/) via defaultScope.
 func rememberScope(cmd *cobra.Command) ([]string, error) {
-	raw, _ := cmd.Flags().GetString("scope")
-	if raw != "" {
+	if cmd.Flags().Changed("scope") {
+		raw, _ := cmd.Flags().GetString("scope")
+		if raw == "" {
+			return []string{}, nil
+		}
 		return strings.Split(raw, ","), nil
 	}
 	return defaultScope(resolveIdentity(cmd))
