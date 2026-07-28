@@ -123,6 +123,23 @@ func TestInvalidTagsReportsBadTag(t *testing.T) {
 	assert.Equal(t, []string{"a"}, findings[0].EntryIDs)
 }
 
+// TestInvalidTagsFlagsBareGlobalTag is TestInvalidTagsReportsBadTag's
+// crn-pa7v regression case (crn-0tsu): the bare literal "global" is a
+// tier-less tag like any other unrecognized shape (ValidateScopeTag never
+// special-cases it -- DESIGN.md §2's global tier is expressed by an empty
+// Scope, never by a tag naming it), so cairn doctor must flag it exactly
+// like "team:alpha" does above. Closes the "doctor did NOT flag them" half
+// of crn-pa7v's own escaped-bug report.
+func TestInvalidTagsFlagsBareGlobalTag(t *testing.T) {
+	e := parseFixture(t, "+++\nid = \"a\"\ntitle = \"a\"\nscope = [\"global\"]\n+++\nx\n")
+
+	findings := invalidTags([]*Entry{e})
+	require.Len(t, findings, 1)
+	assert.Equal(t, CategoryInvalidTag, findings[0].Category)
+	assert.Equal(t, SeverityWarning, findings[0].Severity)
+	assert.Equal(t, []string{"a"}, findings[0].EntryIDs)
+}
+
 // ---- fromDedupFinding (FR-2 adapter over dedup.go's existing Dedup/DedupEntries) ----
 
 func TestFromDedupFindingPreservesShapeAndMessage(t *testing.T) {
