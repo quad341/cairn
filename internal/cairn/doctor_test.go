@@ -86,7 +86,7 @@ func TestTagInvalidReason(t *testing.T) {
 		tag     string
 		invalid bool
 	}{
-		{"global literal", "global", false},
+		{"global literal", "global", true},
 		{"well-formed rig tag", "rig:alpha", false},
 		{"well-formed role tag", "role:investigator", false},
 		{"well-formed agent tag", "agent:bot", false},
@@ -109,7 +109,7 @@ func TestTagInvalidReason(t *testing.T) {
 }
 
 func TestInvalidTagsCleanForWellFormedTags(t *testing.T) {
-	e := parseFixture(t, "+++\nid = \"a\"\ntitle = \"a\"\nscope = [\"global\", \"rig:alpha\"]\n+++\nx\n")
+	e := parseFixture(t, "+++\nid = \"a\"\ntitle = \"a\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
 	assert.Empty(t, invalidTags([]*Entry{e}))
 }
 
