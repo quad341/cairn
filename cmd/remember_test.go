@@ -66,13 +66,26 @@ func runRememberWithGC(t *testing.T, stub func(*testing.T), extraArgs ...string)
 // fresh store per call, which can't exercise it -- the second call must see
 // the first call's own entry as VISIBLE and already committed. Callers own
 // the store's lifecycle (t.TempDir + gitInit) since, unlike a single-call
-// test, more than one invocation needs to agree on it.
+// test, more than one invocation needs to agree on it. Always stubs gc with
+// the always-succeeding stubGC; see runRememberAgainstStoreWithGC for a
+// caller that also needs to observe the stub's own invocation.
 func runRememberAgainstStore(t *testing.T, store string, extraArgs ...string) error {
+	t.Helper()
+	return runRememberAgainstStoreWithGC(t, store, stubGC, extraArgs...)
+}
+
+// runRememberAgainstStoreWithGC is runRememberAgainstStore parameterized on
+// the gc stub, the same split runRemember/runRememberWithGC already make:
+// crn-0tsu FR-6's shared-tier round-trip tests need both an existing store
+// (so a later `cairn review merge` call can see what this remember call
+// wrote) and a capturing stub (to assert the mailed reviewer's recipient),
+// which neither existing single-purpose helper covers alone.
+func runRememberAgainstStoreWithGC(t *testing.T, store string, stub func(*testing.T), extraArgs ...string) error {
 	t.Helper()
 	resetRememberFlags(t)
 	t.Cleanup(func() { resetRememberFlags(t) })
 
-	stubGC(t)
+	stub(t)
 	args := append([]string{"remember", "--store", store}, extraArgs...)
 	rootCmd.SetArgs(args)
 	rootCmd.SetOut(&bytes.Buffer{})
@@ -317,6 +330,76 @@ func TestRememberRejectsAttackScopes(t *testing.T) {
 	}
 }
 
+// TestRememberRejectsMalformedScopeTags is TestRememberRejectsAttackScopes'
+// sibling for crn-pa7v's own escaped shapes (crn-0tsu): none of these are
+// attacks (no traversal, no injection) -- they're just not tier:value, and
+// crn-pa7v shipped because nothing rejected them. "global" and "*" have no
+// tier at all; "tier:global" has a colon, but the component before it --
+// literally the word "tier" -- is not itself one of rig/role/agent (a user
+// typing the tier name as if it were a valid tier, not a placeholder).
+func TestRememberRejectsMalformedScopeTags(t *testing.T) {
+	malformed := map[string]string{
+		"bare word global, no tier":     "global",
+		"bare asterisk, no tier":        "*",
+		"tier component itself invalid": "tier:global",
+	}
+	for name, tag := range malformed {
+		t.Run(name, func(t *testing.T) {
+			store, err := runRemember(t, "--topic", "valid-topic", "--scope", tag, "a body")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "scope tag")
+			assert.Contains(t, err.Error(), tag, "the error must name the offending tag")
+			assertNoFilesWritten(t, store)
+		})
+	}
+}
+
+// TestRememberExplicitEmptyScopeWritesGlobalEntry covers crn-pa7v symptom
+// (a)'s fix directly: --scope '' must actually write a global-tier entry
+// (empty e.Scope), not silently collapse to the private agent: tier the
+// same way an entirely-omitted --scope does. No existing test passed a
+// literal "" as --scope's value at all before crn-0tsu.
+func TestRememberExplicitEmptyScopeWritesGlobalEntry(t *testing.T) {
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "", "a body")
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "global"))
+	assert.Empty(t, e.Scope)
+}
+
+// TestRememberGlobalEntryIsVisibleToItsOwnAuthor is crn-0tsu's "critical
+// one": a doctor-only check would not have caught crn-pa7v, since the
+// escaped bug produced well-formed-looking output that was simply never
+// checked against Visible() before shipping -- "well-formed but never
+// actually checked against Visible()" is exactly how it survived. global is
+// a shared tier like rig:/role: (only agent: is private -- IsPrivateScope),
+// so a --scope '' write lands on its own review branch and mails "mayor"
+// (defaultReviewer's "global" case) rather than becoming visible
+// immediately; this mirrors
+// TestRememberSharedTierRigScopeVisibleAfterReviewMerge's full chain one
+// tier over, proving through the actual CLI surface (cairn review merge,
+// then cairn list) that the identity which authored a global entry can
+// still see it after curation -- not just that Create didn't error.
+func TestRememberGlobalEntryIsVisibleToItsOwnAuthor(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("CAIRN_IDENTITY", "agent:author")
+
+	require.NoError(t, runRememberAgainstStore(t, store, "--topic", "global-roundtrip", "--scope", "", "a body"))
+
+	e := requireSingleEntry(t, filepath.Join(store, "global"))
+	assert.Empty(t, e.Scope)
+	branch := "remember/" + e.ID
+
+	require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store, "--topic-key", "global-roundtrip"))
+
+	var listErr error
+	out := captureStdout(t, func() {
+		listErr = runList(t, store, "global-roundtrip", "--identity", "agent:author")
+	})
+	require.NoError(t, listErr)
+	assert.Contains(t, out, e.ID, "a merged global entry must be visible to any identity, including its own author's, via cairn list")
+}
+
 // TestRememberRejectsUnicodeDotTrickTopics covers crn-419.5 AC1's "unicode
 // dot tricks" corpus entry for --topic at the CLI level. Kept separate from
 // TestRememberRejectsAttackTopics (which asserts the error names "--topic")
@@ -441,11 +524,14 @@ func TestRememberExplicitScopeOverridesIdentity(t *testing.T) {
 }
 
 // TestRememberWritesUnderEachScopeTier covers AC#2: a single-tag scope for
-// each of rig:/role:/agent: lands under that tier's own directory (the
-// global/ tier -- an empty scope -- has no reachable path through this CLI,
-// since rememberScope always defaults to a single agent: tag when --scope is
-// omitted; it's covered directly at the cairn.NewEntry/Create level instead,
-// see internal/cairn/remember_test.go).
+// each of rig:/role:/agent: lands under that tier's own directory.
+// global/'s own CLI path (an explicit --scope '', rather than --scope
+// omitted -- rememberScope still defaults an omitted --scope to a single
+// agent: tag) is covered separately by
+// TestRememberExplicitEmptyScopeWritesGlobalEntry and
+// TestRememberGlobalEntryIsVisibleToItsOwnAuthor (crn-0tsu), since it needs
+// its own dedicated round-trip rather than fitting this table's
+// tag/tierDir/subdirName shape.
 func TestRememberWritesUnderEachScopeTier(t *testing.T) {
 	cases := []struct {
 		tag        string
@@ -638,6 +724,80 @@ func TestRememberCLIRoundTripAllFields(t *testing.T) {
 	assert.Equal(t, "rig:alpha agent:bot", e.CreatedBy, "created_by must be the CLI's resolved identity, space-joined -- not collapsed like scope")
 	_, err = time.Parse(time.DateOnly, e.CreatedAt)
 	assert.NoError(t, err, "created_at must be an ISO-8601 date")
+}
+
+// TestRememberSharedTierRigScopeVisibleAfterReviewMerge is the full rig:
+// scope lifecycle no existing test exercised end to end before crn-0tsu
+// FR-6: every other shared-tier test stops at "the review branch exists" or
+// "the mail stub was invoked with the right recipient" -- none of them ever
+// ran the resulting branch through `cairn review merge` and then checked
+// the merged entry is actually visible to a rig:-carrying identity. That
+// last hop is exactly the shape of crn-pa7v's own escaped bug -- well-formed
+// but never checked against Visible() -- one tier over from the
+// global-scope case TestRememberGlobalEntryIsVisibleToItsOwnAuthor covers
+// directly.
+func TestRememberSharedTierRigScopeVisibleAfterReviewMerge(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	// Pinned explicitly (not just relied on as writeStubGC's side effect):
+	// this round trip's correctness claim is specifically about $GC_RIG
+	// flowing through to the reviewer address, so the test states that
+	// dependency itself rather than borrowing it from the stub helper.
+	t.Setenv("GC_RIG", "test-rig")
+
+	captureFile := filepath.Join(t.TempDir(), "gc-invocation")
+	require.NoError(t, runRememberAgainstStoreWithGC(t, store, func(t *testing.T) {
+		t.Helper()
+		stubGCCapturing(t, captureFile)
+	}, "--topic", "rig-roundtrip", "--scope", "rig:web", "a body"))
+
+	e := requireSingleEntry(t, filepath.Join(store, "rig", "web"))
+	branch := "remember/" + e.ID
+
+	args := readStubGCArgs(t, captureFile)
+	require.Len(t, args, 7, "gc mail send <reviewer> -s <subject> -m <body>")
+	assert.Equal(t, "test-rig/architect", args[2], "a rig:-scope entry's default reviewer must be $GC_RIG/architect")
+
+	require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store, "--topic-key", "rig-roundtrip"))
+
+	var listErr error
+	out := captureStdout(t, func() { listErr = runList(t, store, "rig-roundtrip", "--identity", "rig:web") })
+	require.NoError(t, listErr)
+	assert.Contains(t, out, e.ID, "the merged entry must be visible to a rig:web identity via cairn list")
+}
+
+// TestRememberSharedTierRoleScopeVisibleAfterReviewMerge is
+// TestRememberSharedTierRigScopeVisibleAfterReviewMerge's direct role:
+// counterpart (crn-0tsu FR-6): role:'s reviewer default takes a different
+// branch of defaultReviewer ($GC_RIG + "/" + value, rather than rig:'s
+// $GC_RIG + "/architect") and is otherwise identical wiring -- ResolvedTier
+// and ValidateScopeTag both treat rig:/role:/agent: uniformly. A coverage
+// gap, not a suspected logic bug, but the rig: case above is the only one
+// any existing test exercised this deeply before crn-0tsu.
+func TestRememberSharedTierRoleScopeVisibleAfterReviewMerge(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("GC_RIG", "test-rig")
+
+	captureFile := filepath.Join(t.TempDir(), "gc-invocation")
+	require.NoError(t, runRememberAgainstStoreWithGC(t, store, func(t *testing.T) {
+		t.Helper()
+		stubGCCapturing(t, captureFile)
+	}, "--topic", "role-roundtrip", "--scope", "role:builder", "a body"))
+
+	e := requireSingleEntry(t, filepath.Join(store, "role", "builder"))
+	branch := "remember/" + e.ID
+
+	args := readStubGCArgs(t, captureFile)
+	require.Len(t, args, 7, "gc mail send <reviewer> -s <subject> -m <body>")
+	assert.Equal(t, "test-rig/builder", args[2], "a role:-scope entry's default reviewer must be $GC_RIG/<role value>")
+
+	require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store, "--topic-key", "role-roundtrip"))
+
+	var listErr error
+	out := captureStdout(t, func() { listErr = runList(t, store, "role-roundtrip", "--identity", "role:builder") })
+	require.NoError(t, listErr)
+	assert.Contains(t, out, e.ID, "the merged entry must be visible to a role:builder identity via cairn list")
 }
 
 // TestRememberCrossCallSharedTierRecurrenceReusesReviewBranch covers

@@ -230,6 +230,54 @@ func TestReviewMergeAutoActionableWithoutRemediationKindErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "remediation")
 }
 
+// TestReviewMergeRejectsMalformedScopeTags mirrors
+// TestRememberRejectsMalformedScopeTags at merge time (crn-0tsu): a
+// reviewer curating --scope on merge must be held to the same tier:value
+// grammar a contributor's own --scope already is, not a looser one. Each
+// case gets its own store+branch rather than reusing one across subtests,
+// so a rejected merge attempt can't leave state that would affect the next
+// case regardless of how atomic the rejection actually is.
+func TestReviewMergeRejectsMalformedScopeTags(t *testing.T) {
+	malformed := map[string]string{
+		"bare word global, no tier":     "global",
+		"bare asterisk, no tier":        "*",
+		"tier component itself invalid": "tier:global",
+	}
+	for name, tag := range malformed {
+		t.Run(name, func(t *testing.T) {
+			store := reviewCLIStore(t)
+			branch, _ := seedReviewBranch(t, store, "topic-a", []string{"rig:web"}, "body")
+
+			err := runReviewCmd(t, "review", "merge", branch, "--store", store,
+				"--topic-key", "curated", "--scope", tag)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "scope tag")
+		})
+	}
+}
+
+// TestReviewMergeExplicitEmptyScopeClearsToGlobal is
+// TestRememberExplicitEmptyScopeWritesGlobalEntry's review-merge
+// counterpart (crn-0tsu): --scope '' at merge time must actually clear an
+// existing entry's scope to empty (global) -- the same explicit-intent
+// spelling remember itself now accepts -- not be indistinguishable from
+// "--scope not given at all", which leaves the contributor's own scope
+// untouched (TestReviewMergePassesFlagsThroughAndPrintsSHA covers that
+// unchanged case already).
+func TestReviewMergeExplicitEmptyScopeClearsToGlobal(t *testing.T) {
+	store := reviewCLIStore(t)
+	branch, e := seedReviewBranch(t, store, "topic-a", []string{"rig:web"}, "body")
+
+	captureStdout(t, func() {
+		require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store,
+			"--topic-key", "curated", "--scope", ""))
+	})
+
+	got, err := cairn.Find(t.Context(), store, e.ID)
+	require.NoError(t, err)
+	assert.Empty(t, got.Scope, "an explicit --scope '' at merge time must clear scope to global, not leave it unchanged")
+}
+
 func TestReviewMergeAllowSecretPatternFlagWiring(t *testing.T) {
 	store := reviewCLIStore(t)
 	branch, _ := seedReviewBranch(t, store, "topic-a", nil, "leaked: AKIAIOSFODNN7EXAMPLE")
