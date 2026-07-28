@@ -2,6 +2,7 @@ package cairn
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -42,4 +43,29 @@ func ValidatePathSegment(s string) error {
 		}
 	}
 	return nil
+}
+
+// validScopeTiers are the tier prefixes a "tier:value" scope tag may use.
+var validScopeTiers = map[string]struct{}{"rig": {}, "role": {}, "agent": {}}
+
+// ValidateScopeTag reports whether tag is well-formed as a single scope tag:
+// tier:value, where tier is one of rig/role/agent and value passes
+// ValidatePathSegment. Unlike ValidatePathSegment (a generic path-segment
+// safety check reused for topic keys, anchor types, and identity tags too),
+// this also enforces the scope-tag grammar itself: DESIGN.md §2's global
+// tier is expressed by an *empty* Scope, never by a tag naming it, so a
+// tier-less tag -- including the literal word "global" -- is always
+// rejected here, the same as any other unrecognized shape.
+func ValidateScopeTag(tag string) error {
+	tier, value, ok := strings.Cut(tag, ":")
+	if !ok {
+		return fmt.Errorf("must be tier:value (tier one of rig, role, agent); %q has no tier", tag)
+	}
+	if _, valid := validScopeTiers[tier]; !valid {
+		return fmt.Errorf("unknown tier %q (must be rig, role, or agent)", tier)
+	}
+	if strings.Contains(value, ":") {
+		return errors.New("must not contain more than one colon")
+	}
+	return ValidatePathSegment(value)
 }
