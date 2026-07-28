@@ -355,7 +355,7 @@ func TestRememberRejectsMalformedScopeTags(t *testing.T) {
 }
 
 // TestRememberExplicitEmptyScopeWritesGlobalEntry covers crn-pa7v symptom
-// (a)'s fix directly: --scope '' must actually write a global-tier entry
+// (a)'s fix directly: --scope="" must actually write a global-tier entry
 // (empty e.Scope), not silently collapse to the private agent: tier the
 // same way an entirely-omitted --scope does. No existing test passed a
 // literal "" as --scope's value at all before crn-0tsu.
@@ -372,7 +372,7 @@ func TestRememberExplicitEmptyScopeWritesGlobalEntry(t *testing.T) {
 // checked against Visible() before shipping -- "well-formed but never
 // actually checked against Visible()" is exactly how it survived. global is
 // a shared tier like rig:/role: (only agent: is private -- IsPrivateScope),
-// so a --scope '' write lands on its own review branch and mails "mayor"
+// so a --scope="" write lands on its own review branch and mails "mayor"
 // (defaultReviewer's "global" case) rather than becoming visible
 // immediately; this mirrors
 // TestRememberSharedTierRigScopeVisibleAfterReviewMerge's full chain one
@@ -510,7 +510,7 @@ func TestRememberExplicitScopeOverridesIdentity(t *testing.T) {
 
 // TestRememberWritesUnderEachScopeTier covers AC#2: a single-tag scope for
 // each of rig:/role:/agent: lands under that tier's own directory.
-// global/'s own CLI path (an explicit --scope '', rather than --scope
+// global/'s own CLI path (an explicit --scope="", rather than --scope
 // omitted -- rememberScope still defaults an omitted --scope to a single
 // agent: tag) is covered separately by
 // TestRememberExplicitEmptyScopeWritesGlobalEntry and

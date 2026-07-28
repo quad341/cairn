@@ -258,7 +258,7 @@ func TestReviewMergeRejectsMalformedScopeTags(t *testing.T) {
 
 // TestReviewMergeExplicitEmptyScopeClearsToGlobal is
 // TestRememberExplicitEmptyScopeWritesGlobalEntry's review-merge
-// counterpart (crn-0tsu): --scope '' at merge time must actually clear an
+// counterpart (crn-0tsu): --scope="" at merge time must actually clear an
 // existing entry's scope to empty (global) -- the same explicit-intent
 // spelling remember itself now accepts -- not be indistinguishable from
 // "--scope not given at all", which leaves the contributor's own scope
