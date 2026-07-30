@@ -14,13 +14,18 @@ import (
 // contract: once shipped, a category must never be renamed or repurposed.
 type ErrorCategory string
 
-// The four stable ErrorCategory values in cairn --json's error envelope —
+// The five stable ErrorCategory values in cairn --json's error envelope —
 // see ErrorCategory's doc for the stability contract.
 const (
 	CategoryNotFound       ErrorCategory = "not_found"
 	CategoryInvalidInput   ErrorCategory = "invalid_input"
 	CategoryMalformedStore ErrorCategory = "malformed_store"
 	CategoryInternal       ErrorCategory = "internal"
+	// CategoryConflict marks a request that was well-formed but discarded
+	// because it collided with existing state -- e.g. cairn remember
+	// (crn-qxj3) declining to store a near-identical recurrence of an
+	// existing entry.
+	CategoryConflict ErrorCategory = "conflict"
 )
 
 // ErrorDetail is the body of cairn --json's error envelope.

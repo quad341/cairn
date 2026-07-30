@@ -74,7 +74,7 @@ type Entry struct {
 
 	Kind            string `toml:"kind,omitempty"`             // "" (note, default) | "remediation"
 	AutoActionable  bool   `toml:"auto_actionable,omitempty"`  // only for Kind=="remediation"; reviewer-granted, not self-declared
-	RecurrenceCount int    `toml:"recurrence_count,omitzero"`  // incremented on exact topic_key match at capture time (crn-28ge.1.4)
+	RecurrenceCount int    `toml:"recurrence_count,omitzero"`  // incremented on a genuine recurrence at capture time (crn-28ge.1.4; topic_key + content match, crn-qxj3)
 	PromotedBeadID  string `toml:"promoted_bead_id,omitempty"` // empty until promoted; promotion idempotency guard
 	LastRecalledAt  string `toml:"last_recalled_at,omitempty"` // RFC3339; written only by the get/freshness/verify call site (crn-28ge.1.5)
 	// OverriddenDuplicateOf is set to the matched entry's ID when --force
@@ -148,10 +148,11 @@ func (e *Entry) WriteBack() error {
 // on-disk frontmatter -- the same "patch, don't re-encode" contract
 // WriteBack uses for verified_at/fingerprint above. cmd/remember.go's
 // capture-time recurrence path (crn-28ge.1.4) increments e.RecurrenceCount
-// in memory on an exact topic_key match and calls this to persist it,
-// without disturbing any other field a curator or a prior WriteBack already
-// wrote. As with WriteBack, incrementing the field is the caller's
-// responsibility; this only persists whatever value is already there.
+// in memory on a genuine recurrence match (topic_key AND content, crn-qxj3)
+// and calls this to persist it, without disturbing any other field a
+// curator or a prior WriteBack already wrote. As with WriteBack,
+// incrementing the field is the caller's responsibility; this only persists
+// whatever value is already there.
 func (e *Entry) WriteBackRecurrenceCount() error {
 	return e.writeBackPatched(func(front string) (string, error) {
 		return patchRecurrenceCount(front, e.RecurrenceCount)

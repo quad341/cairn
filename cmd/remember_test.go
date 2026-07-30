@@ -1141,7 +1141,6 @@ func TestRememberJSONPrivateTierOutputsResult(t *testing.T) {
 	assert.NotEmpty(t, result.Commit)
 	assert.Empty(t, result.ReviewBranch)
 	assert.Empty(t, result.Reviewer)
-	assert.False(t, result.Recurrence)
 }
 
 func TestRememberJSONSharedTierOutputsReviewBranchAndReviewer(t *testing.T) {
