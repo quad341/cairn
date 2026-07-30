@@ -84,6 +84,36 @@ func TestNewEntryParamsTitleSummaryDefaultToAutoDerivation(t *testing.T) {
 	assert.Equal(t, "auto title\nauto title\nauto summary from body", e.Summary)
 }
 
+// TestNewEntryParamsTitleOnlyAutoDerivesSummary covers the partial-defaulting
+// case NewEntryParams' own doc comment promises ("a caller that wants only
+// one of Title/Summary auto-derived may leave just that field unset"): an
+// explicit Title with Summary left at its zero value must auto-derive only
+// the Summary from Body, not fall back to auto-deriving Title too.
+func TestNewEntryParamsTitleOnlyAutoDerivesSummary(t *testing.T) {
+	e, err := NewEntry(NewEntryParams{
+		TopicKey: "t",
+		Body:     "auto title line\nauto summary from body",
+		Title:    "explicit title",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "explicit title", e.Title)
+	assert.Equal(t, "auto title line\nauto summary from body", e.Summary)
+}
+
+// TestNewEntryParamsSummaryOnlyAutoDerivesTitle is
+// TestNewEntryParamsTitleOnlyAutoDerivesSummary's mirror image: an explicit
+// Summary with Title left at its zero value must auto-derive only the Title.
+func TestNewEntryParamsSummaryOnlyAutoDerivesTitle(t *testing.T) {
+	e, err := NewEntry(NewEntryParams{
+		TopicKey: "t",
+		Body:     "auto title line\nrest of body",
+		Summary:  "explicit summary",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "auto title line", e.Title)
+	assert.Equal(t, "explicit summary", e.Summary)
+}
+
 // TestNewEntryParamsCallerSuppliedAnchorIsUsedVerbatim covers crn-lzn4.1.1's
 // FR-4: a caller-supplied Anchor (built from --anchor-repo/--anchor-path at
 // the CLI layer) must be stored on the entry exactly as given.
