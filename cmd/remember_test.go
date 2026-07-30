@@ -830,14 +830,15 @@ func TestRememberCrossCallSharedTierRecurrenceReusesReviewBranch(t *testing.T) {
 	branch := "remember/" + e1.ID
 	firstCommit := strings.TrimSpace(gitOutput(t, store, "rev-parse", branch))
 
-	secondOut := captureStdout(t, func() {
-		err := runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "role:reviewer", "configure the shared hook")
-		require.NoError(t, err)
+	var secondErr error
+	stderr := captureStderr(t, func() {
+		captureStdout(t, func() {
+			secondErr = runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "role:reviewer", "configure the shared hook")
+		})
 	})
-	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
-	require.Len(t, secondLines, 2, "a recurrence hit prints the recurrence line then the review-branch line -- no id line for a discarded candidate, no mailed-reviewer line")
-	assert.Equal(t, "recurrence: "+e1.ID+" (count: 1)", secondLines[0])
-	assert.Equal(t, "review branch: "+branch, secondLines[1])
+	require.Error(t, secondErr, "crn-qxj3: a genuine (near-identical body) recurrence must be reported as a discarded write, not silent success")
+	assert.Contains(t, secondErr.Error(), e1.ID)
+	assert.Contains(t, stderr, e1.ID, "the discard must be explained on stderr")
 
 	entries, err := os.ReadDir(filepath.Join(store, "rig", "web"))
 	require.NoError(t, err)
@@ -877,17 +878,18 @@ func TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly(t *testing.T) {
 	// agent:bob's entry (Visible is a subset match: every scope tag on the
 	// entry -- here just "agent:bob" -- must be in the resolved identity).
 	t.Setenv("CAIRN_IDENTITY", "agent:bob agent:alice")
-	secondOut := captureStdout(t, func() {
-		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:alice", "prefer feature flags over env vars")
-		require.NoError(t, err)
+	var secondErr error
+	stderr := captureStderr(t, func() {
+		captureStdout(t, func() {
+			secondErr = runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:alice", "prefer feature flags over env vars")
+		})
 	})
-	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
-	require.Len(t, secondLines, 2, "a recurrence hit prints the recurrence line then the commit SHA")
-	assert.Equal(t, "recurrence: "+e1.ID+" (count: 1)", secondLines[0])
+	require.Error(t, secondErr, "crn-qxj3: a genuine same-body recurrence must be reported as a discarded write, not silent success")
+	assert.Contains(t, secondErr.Error(), e1.ID)
+	assert.Contains(t, stderr, e1.ID, "the discard must be explained on stderr")
 
 	headAfter := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
-	assert.Equal(t, headAfter, secondLines[1], "the recurrence commit's SHA must be the store's new HEAD")
-	assert.NotEqual(t, headBefore, headAfter, "a second, real commit must have landed")
+	assert.NotEqual(t, headBefore, headAfter, "the RecurrenceCount bump must still commit for real even though the write is reported as an error")
 
 	parent := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD~1"))
 	assert.Equal(t, headBefore, parent, "the recurrence commit must land directly on top of the entry's first-capture commit")
@@ -928,9 +930,11 @@ func TestRememberSameScopeTopicKeyRepeatIncrementsRecurrence(t *testing.T) {
 		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "prefer feature flags over env vars")
 		require.NoError(t, err)
 	})
-	secondOut := captureStdout(t, func() {
-		err := runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "prefer feature flags over env vars")
-		require.NoError(t, err)
+	var secondErr error
+	stderr := captureStderr(t, func() {
+		captureStdout(t, func() {
+			secondErr = runRememberAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:test", "prefer feature flags over env vars")
+		})
 	})
 
 	entries, err := os.ReadDir(filepath.Join(store, "agent", "test"))
@@ -941,9 +945,9 @@ func TestRememberSameScopeTopicKeyRepeatIncrementsRecurrence(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, parsed.RecurrenceCount)
 
-	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
-	require.Len(t, secondLines, 2, "a private-tier recurrence hit prints the recurrence line then the commit SHA")
-	assert.Equal(t, "recurrence: "+parsed.ID+" (count: 1)", secondLines[0])
+	require.Error(t, secondErr, "crn-qxj3: a genuine same-body recurrence must exit non-zero, not report silent success")
+	assert.Contains(t, secondErr.Error(), parsed.ID)
+	assert.Contains(t, stderr, parsed.ID, "the discard must be explained on stderr")
 }
 
 // TestRememberNearMissTopicKeyDoesNotIncrementRecurrence proves Conflicts'
@@ -979,6 +983,48 @@ func TestRememberNearMissTopicKeyDoesNotIncrementRecurrence(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 0, parsed.RecurrenceCount)
 	}
+}
+
+// TestRememberDistinctBodySameTopicKeyIsStoredNotDiscarded covers crn-qxj3:
+// recurrenceMatch used to match on a bare topic_key collision alone,
+// ignoring Conflicts' separate "content" (Jaccard) signal entirely -- so any
+// second entry sharing an exact --topic string was discarded as a
+// "recurrence" and its RecurrenceCount-bump reported as success, no matter
+// how unrelated its body was to the first entry's. dedup.go's Conflicts
+// already computes both signals independently for exactly this reason (see
+// pairSignals); recurrenceMatch must require BOTH a topic_key match AND a
+// content match. This is the mirror image of
+// TestRememberNearMissTopicKeyDoesNotIncrementRecurrence above (same body,
+// different topic -- correctly not a recurrence): here the topic is the same
+// and the body is what differs, and it must be no less correctly not a
+// recurrence.
+func TestRememberDistinctBodySameTopicKeyIsStoredNotDiscarded(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("CAIRN_IDENTITY", "agent:test")
+
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "pr-triage", "--scope", "agent:test", "always tag every reviewer before merging a pull request")
+		require.NoError(t, err)
+	})
+	secondOut := captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "pr-triage", "--scope", "agent:test", "rollback scripts must be tested against staging data first")
+		require.NoError(t, err)
+	})
+
+	entries, err := os.ReadDir(filepath.Join(store, "agent", "test"))
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "a shared --topic alone must not discard a genuinely distinct second body -- crn-qxj3")
+	for _, ent := range entries {
+		parsed, err := cairn.ParseEntry(filepath.Join(store, "agent", "test", ent.Name()))
+		require.NoError(t, err)
+		assert.Equal(t, "pr-triage", parsed.TopicKey)
+		assert.Equal(t, 0, parsed.RecurrenceCount, "neither entry was a genuine recurrence, so RecurrenceCount must stay 0 on both")
+	}
+
+	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
+	require.Len(t, secondLines, 2, "the second call must be an ordinary new-entry create (id, commit SHA), not a recurrence report")
+	assert.NotContains(t, secondLines[0], "recurrence", "a distinct body under the same topic must never be reported as a recurrence")
 }
 
 // TestRememberEmptyTopicNeverMatchesForRecurrence covers the AC's own edge
@@ -1138,27 +1184,30 @@ func TestRememberJSONRejectsInvalidIdentityTagNotUsedAsScope(t *testing.T) {
 	assert.Equal(t, "rig/bad", result.Error.Subject)
 }
 
-// TestRememberJSONRecurrencePrivateTierReportsCommit mirrors
+// TestRememberJSONRecurrenceReportsConflictError mirrors
 // TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly's setup exactly:
 // two different agent scopes sharing one topic_key, with a second identity
-// broad enough to see both.
-func TestRememberJSONRecurrencePrivateTierReportsCommit(t *testing.T) {
+// broad enough to see both. crn-qxj3: --json must not shield a genuine
+// recurrence discard from the same non-zero-exit contract the plain-text
+// path now has -- an agent scripting against --json and checking only the
+// exit code must not be fooled either.
+func TestRememberJSONRecurrenceReportsConflictError(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
 
 	t.Setenv("CAIRN_IDENTITY", "agent:bob")
-	_, err := execRememberJSONAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:bob", "prefer feature flags over env vars")
+	firstOut, err := execRememberJSONAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:bob", "prefer feature flags over env vars")
 	require.NoError(t, err)
+	var first RememberResult
+	require.NoError(t, json.Unmarshal([]byte(firstOut), &first))
 
 	t.Setenv("CAIRN_IDENTITY", "agent:bob agent:alice")
 	out, err := execRememberJSONAgainstStore(t, store, "--topic", "build-flags", "--scope", "agent:alice", "prefer feature flags over env vars")
-	require.NoError(t, err)
+	require.Error(t, err, "a genuine recurrence discard must exit non-zero in --json mode too, not report a fake success result")
 
-	var result RememberResult
-	require.NoError(t, json.Unmarshal([]byte(out), &result))
-	assert.True(t, result.Recurrence)
-	assert.Equal(t, 1, result.RecurrenceCount)
-	assert.NotEmpty(t, result.Commit)
+	var result ErrorResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result), "the --json error envelope, not a RememberResult success shape, must be printed")
+	assert.Contains(t, result.Error.Message, first.ID, "the error must name which entry the discarded body recurred against")
 }
 
 // TestRememberReadsBodyFromStdinWhenNoPositionalArg covers crn-lzn4.1.1's
