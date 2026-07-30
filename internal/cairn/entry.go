@@ -74,7 +74,7 @@ type Entry struct {
 
 	Kind            string `toml:"kind,omitempty"`             // "" (note, default) | "remediation"
 	AutoActionable  bool   `toml:"auto_actionable,omitempty"`  // only for Kind=="remediation"; reviewer-granted, not self-declared
-	RecurrenceCount int    `toml:"recurrence_count,omitzero"`  // incremented on a genuine recurrence at capture time (crn-28ge.1.4; topic_key + content match, crn-qxj3)
+	RecurrenceCount int    `toml:"recurrence_count,omitzero"`  // incremented on a recurrence match, topic_key + content (crn-qxj3)
 	PromotedBeadID  string `toml:"promoted_bead_id,omitempty"` // empty until promoted; promotion idempotency guard
 	LastRecalledAt  string `toml:"last_recalled_at,omitempty"` // RFC3339; written only by the get/freshness/verify call site (crn-28ge.1.5)
 	// OverriddenDuplicateOf is set to the matched entry's ID when --force

@@ -360,7 +360,9 @@ func recordRecurrence(cmd *cobra.Command, matched *cairn.Entry) error {
 		}
 	}
 
-	discardErr := fmt.Errorf("not stored: recurrence of %s (count %d); body is a near-identical match of existing content -- pass --force to store it anyway", matched.ID, matched.RecurrenceCount)
+	discardErr := fmt.Errorf(
+		"not stored: recurrence of %s (count %d); body is a near-identical match of existing content -- pass --force to store it anyway",
+		matched.ID, matched.RecurrenceCount)
 	fmt.Fprintf(os.Stderr, "%v\n", discardErr)
 	return emitError(cmd, classifiedErr(CategoryConflict, matched.ID, discardErr))
 }
