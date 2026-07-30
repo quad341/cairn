@@ -136,20 +136,21 @@ var rememberCmd = &cobra.Command{
 	},
 }
 
-// RememberResult is cairn remember --json's top-level shape: the entry a
-// call resulted in -- freshly created, or an existing entry whose
-// RecurrenceCount was bumped instead (recordRecurrence) -- how it was
-// committed, and who (if anyone) was mailed for review. Commit and
-// ReviewBranch are mutually exclusive (private tier vs. shared tier);
-// Reviewer is only ever set alongside ReviewBranch.
+// RememberResult is cairn remember --json's top-level shape: the freshly
+// created entry, how it was committed, and who (if anyone) was mailed for
+// review. Commit and ReviewBranch are mutually exclusive (private tier vs.
+// shared tier); Reviewer is only ever set alongside ReviewBranch.
+//
+// A recurrence hit (recordRecurrence, crn-qxj3) never produces a
+// RememberResult: the candidate body is discarded, not stored, so it is
+// reported through --json's error envelope instead (CategoryConflict), not
+// this success shape.
 type RememberResult struct {
-	ID              string   `json:"id"`
-	Scope           []string `json:"scope"`
-	Commit          string   `json:"commit,omitempty"`
-	ReviewBranch    string   `json:"review_branch,omitempty"`
-	Reviewer        string   `json:"reviewer,omitempty"`
-	Recurrence      bool     `json:"recurrence"`
-	RecurrenceCount int      `json:"recurrence_count,omitempty"`
+	ID           string   `json:"id"`
+	Scope        []string `json:"scope"`
+	Commit       string   `json:"commit,omitempty"`
+	ReviewBranch string   `json:"review_branch,omitempty"`
+	Reviewer     string   `json:"reviewer,omitempty"`
 }
 
 // rememberBody resolves the entry body from exactly one of three sources: a
@@ -236,15 +237,21 @@ func verifyAnchor(cmd *cobra.Command, e *cairn.Entry) {
 }
 
 // recurrenceMatch checks candidate against every entry VISIBLE to the
-// resolved identity for an exact topic_key match (crn-28ge.1.4, FR-02/FR-06):
-// a repeat capture of the same fact should grow an existing entry's
-// RecurrenceCount, not pile up a duplicate. It reuses Conflicts
-// (crn-28ge.1.3's single-candidate primitive) -- the same signal computation
-// `cairn get` already uses (getCmd, cmd/commands.go) -- rather than a second,
-// independent equality check (NFR-05), and only ever acts on Conflicts'
-// "topic_key" (exact, strict) finding, never its "content" (Jaccard
-// word-similarity) finding: that signal is deliberately fuzzier, and a
-// similar-but-different topic is a near-miss, not a repeat.
+// resolved identity for a genuine recurrence (crn-28ge.1.4, FR-02/FR-06,
+// tightened by crn-qxj3): a repeat capture of the same fact should grow an
+// existing entry's RecurrenceCount, not pile up a duplicate -- but a bare
+// topic_key collision alone is not enough evidence of that, since --topic is
+// a short freeform hint an agent can easily reuse for two unrelated facts.
+// It reuses Conflicts (crn-28ge.1.3's single-candidate primitive) -- the same
+// signal computation `cairn get` already uses (getCmd, cmd/commands.go) --
+// rather than a second, independent equality check (NFR-05), and requires
+// BOTH of Conflicts' signals to agree on the same other entry: an exact
+// "topic_key" match AND a "content" (Jaccard word-similarity) match. Conflicts
+// emits these as two separate findings that can both fire for the same pair
+// (see internal/cairn's TestConflictsBothSignalsCanFireForSamePair), so
+// recurrenceMatch tracks each signal per other-entry ID and only matches an
+// entry that cleared both -- a shared topic with a genuinely distinct body
+// clears topic_key alone and is correctly left as a new entry (crn-qxj3).
 // candidate.TopicKey == "" never matches anything (pairSignals' sameTopicKey
 // requires a non-empty key on both sides), so an untopiced remember is
 // unaffected, matching today's behavior.
@@ -287,23 +294,30 @@ func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (*cairn.Entry, 
 		return nil, fmt.Errorf("check for a recurring entry: %w", err)
 	}
 	others := make([]*cairn.Entry, 0, len(visibleIDs))
-	byID := make(map[string]*cairn.Entry, len(visibleIDs))
 	for _, full := range all {
 		if visibleIDs[full.ID] {
 			others = append(others, full)
-			byID[full.ID] = full
 		}
 	}
 
+	topicMatch := make(map[string]bool)
+	contentMatch := make(map[string]bool)
 	for _, c := range cairn.Conflicts(candidate, others) {
-		if c.Kind != "topic_key" {
-			continue
-		}
 		other := c.EntryIDs[0]
 		if other == candidate.ID {
 			other = c.EntryIDs[1]
 		}
-		return byID[other], nil
+		switch c.Kind {
+		case "topic_key":
+			topicMatch[other] = true
+		case "content":
+			contentMatch[other] = true
+		}
+	}
+	for _, o := range others {
+		if topicMatch[o.ID] && contentMatch[o.ID] {
+			return o, nil
+		}
 	}
 	//nolint:nilnil // (nil,nil) = "no match"; sole caller checks matched != nil before use
 	return nil, nil
@@ -322,47 +336,35 @@ func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (*cairn.Entry, 
 // a brand-new shared-tier entry goes through: a recurrence hit reconfirms an
 // entry that may already be awaiting review, it does not need a second,
 // fresh reviewer mail of its own.
+//
+// crn-qxj3: a recurrence match means the candidate's own body is discarded --
+// nothing new was stored -- so this must not report success. The
+// RecurrenceCount bump is real and still committed (it is legitimate
+// telemetry, not the bug), but the discard itself is reported on stderr, and
+// the resulting error is returned so the command exits non-zero in both
+// plain and --json mode: an agent scripting against --json and checking
+// only the exit code must be told too, not just a human reading stdout.
 func recordRecurrence(cmd *cobra.Command, matched *cairn.Entry) error {
 	matched.RecurrenceCount++
 	if err := matched.WriteBackRecurrenceCount(); err != nil {
 		return emitError(cmd, fmt.Errorf("record recurrence for %s: %w", matched.ID, err))
 	}
-	if !wantsJSON(cmd) {
-		fmt.Printf("recurrence: %s (count: %d)\n", matched.ID, matched.RecurrenceCount)
-	}
 
 	if cairn.IsPrivateScope(matched.Scope) {
-		sha, err := matched.CommitDirect(cmd.Context(), storePath())
-		if err != nil {
+		if _, err := matched.CommitDirect(cmd.Context(), storePath()); err != nil {
 			return emitError(cmd, fmt.Errorf("commit recurrence for %s: %w", matched.ID, err))
 		}
-		if wantsJSON(cmd) {
-			return emitJSON(cmd.OutOrStdout(), RememberResult{
-				ID:              matched.ID,
-				Scope:           nonNil(matched.Scope),
-				Commit:          sha,
-				Recurrence:      true,
-				RecurrenceCount: matched.RecurrenceCount,
-			})
+	} else {
+		if _, err := matched.CommitRecurrenceToReviewBranch(cmd.Context(), storePath()); err != nil {
+			return emitError(cmd, fmt.Errorf("commit recurrence for %s to review branch: %w", matched.ID, err))
 		}
-		fmt.Printf("%s\n", sha)
-		return nil
 	}
-	branch, err := matched.CommitRecurrenceToReviewBranch(cmd.Context(), storePath())
-	if err != nil {
-		return emitError(cmd, fmt.Errorf("commit recurrence for %s to review branch: %w", matched.ID, err))
-	}
-	if wantsJSON(cmd) {
-		return emitJSON(cmd.OutOrStdout(), RememberResult{
-			ID:              matched.ID,
-			Scope:           nonNil(matched.Scope),
-			ReviewBranch:    branch,
-			Recurrence:      true,
-			RecurrenceCount: matched.RecurrenceCount,
-		})
-	}
-	fmt.Printf("review branch: %s\n", branch)
-	return nil
+
+	discardErr := fmt.Errorf(
+		"not stored: recurrence of %s (count %d); body is a near-identical match of existing content -- pass --force to store it anyway",
+		matched.ID, matched.RecurrenceCount)
+	fmt.Fprintf(os.Stderr, "%v\n", discardErr)
+	return emitError(cmd, classifiedErr(CategoryConflict, matched.ID, discardErr))
 }
 
 // rememberScope returns the entry's scope tags: --scope if given (a literal
