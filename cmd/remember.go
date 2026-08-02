@@ -219,7 +219,7 @@ func nudgeIfUnanchored(cmd *cobra.Command, e *cairn.Entry) {
 	if e.Anchor.Type == "files" || wantsJSON(cmd) {
 		return
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(),
+	_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 		"note: no source anchor — this entry's freshness will be a guess from its age.\n"+
 			"      add --anchor-repo <repo> --anchor-path <file> --verify to anchor it to the\n"+
 			"      code it describes, or ignore this if it has no source (preferences, people).\n")

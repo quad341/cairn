@@ -62,7 +62,7 @@ func runRememberWithGC(t *testing.T, stub func(*testing.T), extraArgs ...string)
 // runRememberCapturingStderr is runRemember with the command's error stream
 // returned instead of discarded, for tests asserting on advisory output that
 // must not affect the exit status (crn-5wus's unanchored nudge).
-func runRememberCapturingStderr(t *testing.T, extraArgs ...string) (string, string, error) {
+func runRememberCapturingStderr(t *testing.T, extraArgs ...string) (string, error) {
 	t.Helper()
 	resetRememberFlags(t)
 	t.Cleanup(func() { resetRememberFlags(t) })
@@ -76,7 +76,7 @@ func runRememberCapturingStderr(t *testing.T, extraArgs ...string) (string, stri
 	rootCmd.SetOut(&bytes.Buffer{})
 	rootCmd.SetErr(&errBuf)
 	err := rootCmd.Execute()
-	return store, errBuf.String(), err
+	return errBuf.String(), err
 }
 
 // TestRememberNudgesWhenUnanchored is crn-5wus. An entry with no anchor can
@@ -85,7 +85,7 @@ func runRememberCapturingStderr(t *testing.T, extraArgs ...string) (string, stri
 // writing. The nudge names the flags; it must never change the exit status,
 // because plenty of entries legitimately have no source file.
 func TestRememberNudgesWhenUnanchored(t *testing.T) {
-	_, stderr, err := runRememberCapturingStderr(t, "--topic", "valid-topic", "a body")
+	stderr, err := runRememberCapturingStderr(t, "--topic", "valid-topic", "a body")
 	require.NoError(t, err, "the nudge is advisory and must not fail the write")
 	assert.Contains(t, stderr, "--anchor-repo")
 	assert.Contains(t, stderr, "--anchor-path")
@@ -95,7 +95,7 @@ func TestRememberNudgesWhenUnanchored(t *testing.T) {
 // the right thing must not be nagged, or the nudge becomes noise agents learn
 // to filter out -- the same failure mode as a permanently-red test.
 func TestRememberDoesNotNudgeWhenAnchored(t *testing.T) {
-	_, stderr, err := runRememberCapturingStderr(t,
+	stderr, err := runRememberCapturingStderr(t,
 		"--topic", "valid-topic",
 		"--anchor-repo", t.TempDir(),
 		"--anchor-path", "some/file.go",
