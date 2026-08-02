@@ -19,8 +19,18 @@ import (
 // rootCmd.Execute() call, and dozens of existing tests in this package
 // invoke it. Without this, `go test ./cmd/...` would append to the
 // developer's actual ~/.local/state/cairn/debug.jsonl on every run.
+//
+// It also clears the ambient CAIRN_* configuration. Every agent in the fleet
+// runs with CAIRN_IDENTITY (and usually CAIRN_STORE) exported, so inheriting
+// them makes the suite's result depend on who runs it: identity-sensitive
+// commands take their scoped branch and 18 tests fail, while CI — which never
+// exports either — stays green. Tests that need a particular identity or store
+// set it themselves with t.Setenv, which overrides this and restores after.
 func TestMain(m *testing.M) {
 	_ = os.Setenv("XDG_STATE_HOME", filepath.Join(os.TempDir(), "cairn-cmd-test-state"))
+	_ = os.Unsetenv("CAIRN_IDENTITY")
+	_ = os.Unsetenv("CAIRN_STORE")
+	_ = os.Unsetenv("CAIRN_REVIEWER")
 	os.Exit(m.Run())
 }
 
