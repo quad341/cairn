@@ -63,8 +63,40 @@ func TestStorePathWithSourceDefault(t *testing.T) {
 	t.Setenv("CAIRN_STORE", "")
 
 	path, source := storePathWithSource()
-	assert.Equal(t, ".", path)
+	assert.Equal(t, "", path)
 	assert.Equal(t, "default", source)
+}
+
+func TestRootRefusesWhenNoStoreConfigured(t *testing.T) {
+	resetRootFlagsForTest(t)
+	orig := storeFlag
+	storeFlag = ""
+	defer func() { storeFlag = orig }()
+	t.Setenv("CAIRN_STORE", "")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	rootCmd.SetArgs([]string{"status"})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+
+	err := rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no cairn store configured")
+}
+
+func TestRootExemptsVersionFromStoreGate(t *testing.T) {
+	resetRootFlagsForTest(t)
+	orig := storeFlag
+	storeFlag = ""
+	defer func() { storeFlag = orig }()
+	t.Setenv("CAIRN_STORE", "")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	rootCmd.SetArgs([]string{"version"})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+
+	require.NoError(t, rootCmd.Execute())
 }
 
 func TestIdentityWithSourceFlag(t *testing.T) {
