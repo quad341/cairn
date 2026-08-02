@@ -94,6 +94,7 @@ var rememberCmd = &cobra.Command{
 		if verify, _ := cmd.Flags().GetBool("verify"); verify && e.Anchor.Type == "files" {
 			verifyAnchor(cmd, e)
 		}
+		nudgeIfUnanchored(cmd, e)
 
 		matched, err := recurrenceMatch(cmd, e)
 		if err != nil {
@@ -201,6 +202,27 @@ func rememberBody(cmd *cobra.Command, args []string) (string, error) {
 	default:
 		return "", errors.New("a body is required: pass it as a positional argument, --file, or piped stdin")
 	}
+}
+
+// nudgeIfUnanchored points out the anchor flags when an entry is about to be
+// written without one (crn-5wus). An unanchored entry can only ever report
+// time-based freshness, and agents wrote 84% of post-migration entries that
+// way -- not from preference, but because nothing named the alternative at
+// the moment of writing.
+//
+// Advisory on purpose, on stderr, and never touching the exit status:
+// operator preferences and facts about people have no source file to point
+// at, so an unanchored entry is often exactly right. A nudge that blocked
+// those would be filtered out as noise within a day, which is the failure
+// mode this whole change exists to undo.
+func nudgeIfUnanchored(cmd *cobra.Command, e *cairn.Entry) {
+	if e.Anchor.Type == "files" || wantsJSON(cmd) {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(),
+		"note: no source anchor — this entry's freshness will be a guess from its age.\n"+
+			"      add --anchor-repo <repo> --anchor-path <file> --verify to anchor it to the\n"+
+			"      code it describes, or ignore this if it has no source (preferences, people).\n")
 }
 
 // rememberAnchor builds a "files" source anchor from --anchor-repo/

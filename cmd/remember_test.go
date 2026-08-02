@@ -59,6 +59,52 @@ func runRememberWithGC(t *testing.T, stub func(*testing.T), extraArgs ...string)
 	return store, rootCmd.Execute()
 }
 
+// runRememberCapturingStderr is runRemember with the command's error stream
+// returned instead of discarded, for tests asserting on advisory output that
+// must not affect the exit status (crn-5wus's unanchored nudge).
+func runRememberCapturingStderr(t *testing.T, extraArgs ...string) (string, string, error) {
+	t.Helper()
+	resetRememberFlags(t)
+	t.Cleanup(func() { resetRememberFlags(t) })
+
+	t.Setenv("CAIRN_IDENTITY", "agent:tester")
+	store := t.TempDir()
+	gitInit(t, store)
+	stubGC(t)
+	var errBuf bytes.Buffer
+	rootCmd.SetArgs(append([]string{"remember", "--store", store}, extraArgs...))
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&errBuf)
+	err := rootCmd.Execute()
+	return store, errBuf.String(), err
+}
+
+// TestRememberNudgesWhenUnanchored is crn-5wus. An entry with no anchor can
+// only ever report time-based freshness, and agents wrote 84% of new entries
+// that way because nothing ever mentioned the alternative at the moment of
+// writing. The nudge names the flags; it must never change the exit status,
+// because plenty of entries legitimately have no source file.
+func TestRememberNudgesWhenUnanchored(t *testing.T) {
+	_, stderr, err := runRememberCapturingStderr(t, "--topic", "valid-topic", "a body")
+	require.NoError(t, err, "the nudge is advisory and must not fail the write")
+	assert.Contains(t, stderr, "--anchor-repo")
+	assert.Contains(t, stderr, "--anchor-path")
+}
+
+// TestRememberDoesNotNudgeWhenAnchored is the other half: an agent that did
+// the right thing must not be nagged, or the nudge becomes noise agents learn
+// to filter out -- the same failure mode as a permanently-red test.
+func TestRememberDoesNotNudgeWhenAnchored(t *testing.T) {
+	_, stderr, err := runRememberCapturingStderr(t,
+		"--topic", "valid-topic",
+		"--anchor-repo", t.TempDir(),
+		"--anchor-path", "some/file.go",
+		"a body")
+	require.NoError(t, err)
+	assert.NotContains(t, stderr, "--anchor-repo",
+		"an already-anchored write must produce no anchor advice")
+}
+
 // runRememberAgainstStore runs "cairn remember" (plus extraArgs) against an
 // already-existing, already-git-initialized store, for tests that need two
 // remember calls to land in the same store (crn-28ge.1.4's capture-time
