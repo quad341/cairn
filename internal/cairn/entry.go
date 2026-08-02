@@ -144,6 +144,25 @@ func (e *Entry) WriteBack() error {
 	})
 }
 
+// WriteBackAnchor surgically patches the [anchor] table's type/repo/paths
+// into the on-disk frontmatter, under the same "patch, don't re-encode"
+// contract as WriteBack. It is what makes an ALREADY-WRITTEN entry
+// anchorable (crn-01fj): remember's --anchor-repo/--anchor-path only build
+// an anchor at creation time, and verify only recomputes a fingerprint for
+// an entry that already carries repo+paths, so before this there was no
+// path at all from "entry exists, unanchored" to "entry is anchored" short
+// of hand-editing the file. Most of a migrated store is in exactly that
+// state, since flat files had no anchor concept to carry over.
+//
+// Unlike its siblings, this may have to CREATE the [anchor] table: entries
+// hand-authored or written by early versions can lack it entirely, and
+// those are the ones most in need of an anchor.
+func (e *Entry) WriteBackAnchor() error {
+	return e.writeBackPatched(func(front string) (string, error) {
+		return patchAnchor(front, e.Anchor)
+	})
+}
+
 // WriteBackRecurrenceCount surgically patches recurrence_count into the
 // on-disk frontmatter -- the same "patch, don't re-encode" contract
 // WriteBack uses for verified_at/fingerprint above. cmd/remember.go's
@@ -211,6 +230,79 @@ func (e *Entry) writeBackPatched(patch func(front string) (string, error)) error
 // (Anchor.Type is always set, even to "none"), so a missing table means
 // corruption or an unsupported hand-edit, reported as an error rather than
 // guessed at.
+// patchAnchor rewrites the [anchor] table's type/repo/paths in front,
+// appending the table when it is absent. Keys the caller left empty are
+// removed rather than written blank, so re-anchoring an entry that once had
+// a `spec` or a stale `fingerprint` does not leave contradictory leftovers
+// describing an anchor that no longer exists.
+func patchAnchor(front string, a Anchor) (string, error) {
+	lines := strings.Split(front, "\n")
+
+	anchorAt := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "[anchor]" {
+			anchorAt = i
+			break
+		}
+	}
+	if anchorAt < 0 {
+		// No table yet. Append one after a blank separator, matching the
+		// shape marshal emits so a patched file and a freshly created one
+		// are indistinguishable.
+		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		lines = append(lines, "", "[anchor]")
+		anchorAt = len(lines) - 1
+	}
+	anchorEnd := len(lines)
+	for i := anchorAt + 1; i < len(lines); i++ {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "[") {
+			anchorEnd = i
+			break
+		}
+	}
+
+	top := lines[:anchorAt:anchorAt]
+	anchor := lines[anchorAt:anchorEnd:anchorEnd]
+	rest := lines[anchorEnd:]
+
+	anchor = setTOMLLine(anchor, "type", tomlQuote(a.Type))
+	anchor = setOrDropTOMLLine(anchor, "repo", a.Repo != "", tomlQuote(a.Repo))
+	anchor = setOrDropTOMLLine(anchor, "paths", len(a.Paths) > 0, tomlStringArray(a.Paths))
+	anchor = setOrDropTOMLLine(anchor, "spec", a.Spec != "", tomlQuote(a.Spec))
+	anchor = setOrDropTOMLLine(anchor, "fingerprint", a.Fingerprint != "", tomlQuote(a.Fingerprint))
+
+	out := append(append(append([]string{}, top...), anchor...), rest...)
+	return strings.Join(out, "\n"), nil
+}
+
+// setOrDropTOMLLine is setTOMLLine plus removal: when want is false the key
+// is deleted if present rather than written with an empty value, so an
+// anchor never carries a key that contradicts its own type.
+func setOrDropTOMLLine(region []string, key string, want bool, quotedValue string) []string {
+	if want {
+		return setTOMLLine(region, key, quotedValue)
+	}
+	out := region[:0:0]
+	for _, l := range region {
+		if m := tomlKeyLine.FindStringSubmatch(l); m != nil && m[2] == key {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+// tomlStringArray renders paths as a TOML inline array of basic strings.
+func tomlStringArray(vals []string) string {
+	quoted := make([]string, len(vals))
+	for i, v := range vals {
+		quoted[i] = tomlQuote(v)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
 func patchVerification(front, verifiedAt, fingerprint string) (string, error) {
 	lines := strings.Split(front, "\n")
 
