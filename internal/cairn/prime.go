@@ -211,9 +211,22 @@ func RenderPrimeText(r PrimeResult) string {
 	for _, w := range r.Warnings {
 		fmt.Fprintf(&b, "\n%s\n", w)
 	}
+	// Anchor the write advice, not just the write verb (crn-5wus). This
+	// footer is the only cairn text every agent reads every session, and
+	// while it named `remember` alone that is the form agents wrote: after
+	// the flat-file migration -- which had no anchor concept to inherit --
+	// newly created entries were still 84% unanchored. An unanchored entry
+	// can only ever report time-based freshness, so the paragraph above
+	// warning that entries go stale was describing a hazard whose remedy
+	// went unmentioned. Name the remedy in the same breath as the warning.
 	b.WriteString("Capture what you learn: `cairn remember <body>` writes a new entry (private tier\n" +
 		"commits directly; shared tiers route through review — see `cairn remember --help`\n" +
-		"and DESIGN.md §6-§7).\n")
+		"and DESIGN.md §6-§7).\n" +
+		"\nAnchor it to the source it describes:\n" +
+		"  cairn remember <body> --topic <key> --anchor-repo <repo> --anchor-path <file> --verify\n" +
+		"An anchored entry reports real freshness — \"fresh, anchor matches <sha>\" — instead of\n" +
+		"guessing from its age. Skip the anchor only when there is no source file to point at\n" +
+		"(operator preferences, facts about people).\n")
 	return b.String()
 }
 

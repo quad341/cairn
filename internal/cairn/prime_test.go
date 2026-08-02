@@ -68,6 +68,39 @@ func TestPrimeDoesNotClaimRememberMissing(t *testing.T) {
 	assert.Contains(t, out, "cairn remember")
 }
 
+// TestPrimeTeachesAnchoredRemember is crn-5wus. The footer is the only cairn
+// text every agent reads every session, and it taught the unanchored form as
+// THE way to write -- so that is the form agents wrote. Measured on the
+// mayor's store, entries created after the flat-file migration (which had no
+// anchor concept to inherit) were still 84% unanchored. Anchored freshness is
+// what cairn has over flat files; the footer has to name it, or it stays off.
+func TestPrimeTeachesAnchoredRemember(t *testing.T) {
+	dir := t.TempDir()
+	result, err := Prime(t.Context(), dir, nil, testBudget)
+	require.NoError(t, err)
+	out := RenderPrimeText(result)
+
+	assert.Contains(t, out, "--anchor-repo", "the footer must name the flag that makes freshness real")
+	assert.Contains(t, out, "--anchor-path")
+	assert.Contains(t, out, "cairn remember", "and must still teach the write verb itself")
+}
+
+// TestPrimeExplainsWhyAnchoringMatters pins the reason, not just the flags.
+// The same output already warns that entries go stale; stating the hazard
+// without the remedy is what produced the unanchored store in the first
+// place, so the two must travel together.
+func TestPrimeExplainsWhyAnchoringMatters(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
+	result, err := Prime(t.Context(), dir, nil, testBudget)
+	require.NoError(t, err)
+	out := RenderPrimeText(result)
+
+	assert.Contains(t, out, "stale", "the staleness warning is what motivates anchoring")
+	assert.Regexp(t, `(?is)anchor.*freshness|freshness.*anchor`, out,
+		"the footer must connect anchoring to freshness, not just list flags")
+}
+
 // TestPrimeWarnsOnUnmatchedScopeDimension is crn-ln1 acceptance criterion 1
 // and 3 (populated-but-unmatched case): the store has role-scoped entries,
 // the identity carries a role: tag, but no entry's scope matches it -- this
