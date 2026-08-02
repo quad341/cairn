@@ -391,6 +391,15 @@ func (e *Entry) marshal() ([]byte, error) {
 // traversal itself is identical between the two, only the parse-failure
 // policy differs.
 func walkEntries(store string, onParseErr func(path string, err error) error) ([]*Entry, error) {
+	// Absolute-ise the store root before joining, so the BodyPath on every
+	// entry -- and therefore every body_path the indexer records -- describes
+	// the file independently of the cwd this walk ran from. Default store
+	// resolution hands us "." whenever cairn runs from inside the store, and
+	// a relative BodyPath is only openable from that one directory (crn-o6mn).
+	store, err := filepath.Abs(store)
+	if err != nil {
+		return nil, err
+	}
 	var out []*Entry
 	for _, sd := range scopeDirs {
 		base := filepath.Join(store, sd)
@@ -483,7 +492,7 @@ func Find(ctx context.Context, store, id string) (*Entry, error) {
 		return nil, err
 	}
 
-	e, err := ParseEntry(bodyPath)
+	e, err := ParseEntry(resolveBodyPath(store, bodyPath))
 	if err != nil {
 		return nil, err
 	}
@@ -512,6 +521,21 @@ func findBodyPath(ctx context.Context, db *sql.DB, id string) (string, error) {
 		return "", ErrNotFound
 	}
 	return bodyPath, err
+}
+
+// resolveBodyPath interprets an index-recorded body_path against the store it
+// came from. walkEntries now records absolute paths, but indexes already on
+// disk were built before that and carry paths relative to whatever cwd did
+// the indexing -- normally the store root itself, since default resolution
+// passes ".". Those indexes cannot self-heal: a non-git store is never judged
+// stale once built, so it would stay unreadable from every other cwd forever
+// (crn-o6mn). Resolving on read makes them work without a forced reindex, and
+// is a no-op for the absolute paths written from here on.
+func resolveBodyPath(store, bodyPath string) string {
+	if bodyPath == "" || filepath.IsAbs(bodyPath) {
+		return bodyPath
+	}
+	return filepath.Join(store, bodyPath)
 }
 
 // Visible returns entries an identity may see: every scope-tag on the entry

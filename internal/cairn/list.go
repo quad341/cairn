@@ -65,7 +65,7 @@ func ListByTopic(ctx context.Context, store, topicKey string, identity []string)
 
 	out := make([]ListingEntry, 0, len(matches))
 	for _, m := range matches {
-		full, err := ParseEntry(paths[m.ID])
+		full, err := ParseEntry(resolveBodyPath(store, paths[m.ID]))
 		if err != nil {
 			return nil, err
 		}
