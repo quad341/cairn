@@ -108,8 +108,9 @@ doesn't need. On a conflict for the same `topic_key`, **precedence = specificity
 — a `{rig, role}` entry shadows a `{rig}` entry shadows a global one, CSS-style.
 
 Because scope is relevance filtering rather than authorization, direct by-ID
-lookup deliberately bypasses identity. Exact topic lookup and semantic retrieval
-are not implemented yet.
+lookup deliberately bypasses identity. Exact topic lookup ships as `cairn list
+<topic>`, which *is* identity-scoped and returns the visible winner(s) after
+shadowing. Semantic retrieval is not implemented yet.
 
 ### 4. Review — shared-tier gate (friction ∝ blast radius)
 
@@ -139,8 +140,16 @@ private-tier promotion marks and eviction can commit directly.
 ```
 cairn freshness <id>   # freshness of one entry
 cairn status           # freshness of every entry
+cairn anchor <id> --repo <r> --path <f> --verify   # attach an anchor to an existing entry
 cairn verify <id>      # recompute + write back an entry's anchor fingerprint
 ```
+
+An entry with no anchor can only ever report freshness from its **age**, so it is
+`unknown` forever — the mechanism that makes cairn better than a folder of
+markdown is switched off for it. Anchor at capture time with `remember
+--anchor-repo/--anchor-path`, or afterwards with `cairn anchor`. Entries with no
+source to point at (operator preferences, facts about people) are legitimately
+unanchored; everything derived from code is not.
 
 Every entry may carry a source **anchor** — what it was derived from — so drift is
 mechanically detectable:
@@ -181,13 +190,16 @@ Two recurring loops dogfood cairn itself (see [`../formulas/README.md`](../formu
 
 | Verb | Purpose |
 |---|---|
-| `remember <body>` | write a new entry (curation-tier routing via `--scope`) |
+| `remember [body]` | write a new entry (curation-tier routing via `--scope`); body from argument, stdin, or `--file` |
 | `prime` | emit the scoped map + usage (for a SessionStart hook) |
 | `map` | the bounded topic map for an identity |
+| `list <topic>` | exact topic lookup — the visible winner(s) for a topic key |
 | `get <id>` | pull an entry's full body + freshness (bypasses scope) |
 | `freshness <id>` / `status` | freshness of one / of every entry |
+| `anchor <id>` | attach a `files` anchor to an **existing** entry (`--repo`, repeatable `--path`, optional `--verify`) |
 | `verify <id>` | recompute + write back an entry's anchor fingerprint |
 | `sweep` | shared-tier freshness findings (JSON) |
+| `doctor` | full-store health report: malformed entries, duplicate ids, scope problems, dedup and freshness findings, index drift |
 | `review list/show/merge` | inspect and merge shared-tier review branches |
 | `stale-branches` | report and re-notify aging review branches (JSON) |
 | `dedup` | duplicate/re-scope candidates (JSON) |
@@ -195,6 +207,13 @@ Two recurring loops dogfood cairn itself (see [`../formulas/README.md`](../formu
 | `recall-stats` | per-entry recall telemetry (JSON) |
 | `cull-candidates` / `cull-evict` | identify and evict disused entries |
 | `reindex` | rebuild the SQLite index from the bodies |
+| `version` | print version information |
 
 Global flags: `--identity` (recall scope, or `$CAIRN_IDENTITY`), `--store` (store
-repo path, or `$CAIRN_STORE`).
+repo path, or `$CAIRN_STORE`), `--json` (machine-readable output), `--trace`
+(mirror the debug log to stderr).
+
+`doctor` covers every entry in the store rather than one identity's view, so it
+refuses to run while `$CAIRN_IDENTITY` is set — use `env -u CAIRN_IDENTITY cairn
+doctor`. To ask how a *single* identity resolves a topic, use
+`cairn doctor explain --identity ... <topic-key>` instead.
