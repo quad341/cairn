@@ -359,10 +359,12 @@ func findRetrievalOutcomeRecord(t *testing.T, xdg string) map[string]any {
 
 // TestGetLogsRetrievalOutcomeHitOnSuccess covers crn-tekm's core acceptance
 // criterion: a successful `cairn get` on a non-stale entry must emit a
-// per-interaction "retrieval_outcome" record carrying the join keys (run_id,
-// identity_tags) and reuse signal (reuse_count, sourced from Find's own
-// post-increment HitCount, not the pre-hit file value) a later report needs
-// to compute avoided-vs-spent tokens.
+// per-interaction "retrieval_outcome" record carrying identity_tags (the
+// burn-report/transcript join key, paired with the record's own envelope
+// timestamp -- see RetrievalOutcomeFields), run_id (cairn-internal grouping
+// only, not a transcript join key), and reuse signal (reuse_count, sourced
+// from Find's own post-increment HitCount, not the pre-hit file value) a
+// later report needs to compute avoided-vs-spent tokens.
 func TestGetLogsRetrievalOutcomeHitOnSuccess(t *testing.T) {
 	require.NoError(t, resetIdentityFlag())
 	t.Cleanup(func() { _ = resetIdentityFlag() })
@@ -448,9 +450,11 @@ func TestGetLogsRetrievalOutcomeStaleWhenAnchorDrifted(t *testing.T) {
 }
 
 // TestGetRetrievalOutcomeRunIDFromEnv covers $CAIRN_RUN_ID as the fallback
-// join-key source when --run-id isn't passed, mirroring identityWithSource's
-// flag-then-env precedent for the same reason: an agent fleet sets run
-// identity via environment far more often than a literal CLI flag.
+// source for run_id (cairn-internal grouping, not a transcript join key --
+// see RetrievalOutcomeFields) when --run-id isn't passed, mirroring
+// identityWithSource's flag-then-env precedent for the same reason: an
+// agent fleet sets run identity via environment far more often than a
+// literal CLI flag.
 func TestGetRetrievalOutcomeRunIDFromEnv(t *testing.T) {
 	require.NoError(t, resetIdentityFlag())
 	t.Cleanup(func() { _ = resetIdentityFlag() })
