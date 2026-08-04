@@ -253,3 +253,36 @@ func (l *Logger) WritePathStep(f WritePathStepFields) {
 		slog.Int64("duration_ms", f.DurationMS),
 	)
 }
+
+// RetrievalOutcomeFields is the "retrieval_outcome" record: one per `cairn
+// get` invocation, classifying what the lookup actually returned. IdentityTags
+// and RunID are join keys (matching ContextFields.IdentityTags's naming, so
+// the two record kinds can be correlated on the same field name) -- RunID
+// lets a later report join this record against an agent transcript/burn
+// report by task/run id, which obslog's own invocation_id (a
+// pid+timestamp value private to this process) can't do. Outcome is "hit"
+// (found, not stale), "miss" (no such entry), or "stale" (found but
+// freshness-drifted). PayloadTokens is a rough len(body)/4 estimate pending
+// real token counts from burn-report (deliberately not a dependency here).
+// ReuseCount is the entry's post-increment hit_count on a hit/stale
+// (Find's own RETURNING value), left at zero on a miss.
+type RetrievalOutcomeFields struct {
+	IdentityTags  []string
+	RunID         string
+	Outcome       string // "hit" | "miss" | "stale"
+	EntryID       string
+	PayloadTokens int
+	ReuseCount    int
+}
+
+// RetrievalOutcome logs a "retrieval_outcome" record.
+func (l *Logger) RetrievalOutcome(f RetrievalOutcomeFields) {
+	l.sl.Info("", slog.String("kind", "retrieval_outcome"),
+		slog.Any("identity_tags", f.IdentityTags),
+		slog.String("run_id", f.RunID),
+		slog.String("outcome", f.Outcome),
+		slog.String("entry_id", f.EntryID),
+		slog.Int("payload_tokens", f.PayloadTokens),
+		slog.Int("reuse_count", f.ReuseCount),
+	)
+}

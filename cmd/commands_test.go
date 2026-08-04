@@ -323,6 +323,18 @@ func TestGetReportsContentConflict(t *testing.T) {
 	assert.Contains(t, out, "g/hook-b")
 }
 
+// resetRunIDFlag clears rootCmd's --run-id flag around a test, mirroring
+// resetIdentityFlag's rationale: rootCmd is a package-level singleton, so a
+// prior test's --run-id value and Changed bit otherwise leak into whichever
+// test runs next in this binary.
+func resetRunIDFlag(t *testing.T) {
+	t.Helper()
+	f := rootCmd.PersistentFlags().Lookup("run-id")
+	require.NotNil(t, f)
+	require.NoError(t, f.Value.Set(""))
+	f.Changed = false
+}
+
 // findRetrievalOutcomeRecord reads xdg's debug.jsonl and returns the single
 // "retrieval_outcome" record it contains. One execRoot("get", ...) call also
 // logs a "context" record (root's PersistentPreRunE) and usually a
@@ -354,6 +366,8 @@ func findRetrievalOutcomeRecord(t *testing.T, xdg string) map[string]any {
 func TestGetLogsRetrievalOutcomeHitOnSuccess(t *testing.T) {
 	require.NoError(t, resetIdentityFlag())
 	t.Cleanup(func() { _ = resetIdentityFlag() })
+	resetRunIDFlag(t)
+	t.Cleanup(func() { resetRunIDFlag(t) })
 
 	xdg := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdg)
@@ -386,6 +400,8 @@ func TestGetLogsRetrievalOutcomeHitOnSuccess(t *testing.T) {
 func TestGetLogsRetrievalOutcomeMissOnNotFound(t *testing.T) {
 	require.NoError(t, resetIdentityFlag())
 	t.Cleanup(func() { _ = resetIdentityFlag() })
+	resetRunIDFlag(t)
+	t.Cleanup(func() { resetRunIDFlag(t) })
 
 	xdg := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdg)
@@ -412,6 +428,8 @@ func TestGetLogsRetrievalOutcomeMissOnNotFound(t *testing.T) {
 func TestGetLogsRetrievalOutcomeStaleWhenAnchorDrifted(t *testing.T) {
 	require.NoError(t, resetIdentityFlag())
 	t.Cleanup(func() { _ = resetIdentityFlag() })
+	resetRunIDFlag(t)
+	t.Cleanup(func() { resetRunIDFlag(t) })
 
 	xdg := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdg)
@@ -436,6 +454,8 @@ func TestGetLogsRetrievalOutcomeStaleWhenAnchorDrifted(t *testing.T) {
 func TestGetRetrievalOutcomeRunIDFromEnv(t *testing.T) {
 	require.NoError(t, resetIdentityFlag())
 	t.Cleanup(func() { _ = resetIdentityFlag() })
+	resetRunIDFlag(t)
+	t.Cleanup(func() { resetRunIDFlag(t) })
 
 	xdg := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdg)

@@ -30,6 +30,16 @@ func resolveIdentity(cmd *cobra.Command) []string {
 	return tags
 }
 
+// resolveRunID returns the external run/task id to correlate this
+// invocation's telemetry with (e.g. an agent transcript or burn-report run),
+// from the --run-id flag or the CAIRN_RUN_ID env var, defaulting to "".
+func resolveRunID(cmd *cobra.Command) string {
+	if f, _ := cmd.Flags().GetString("run-id"); f != "" {
+		return f
+	}
+	return strings.TrimSpace(os.Getenv("CAIRN_RUN_ID"))
+}
+
 // identityRequested reports whether --identity or $CAIRN_IDENTITY was
 // explicitly supplied, as opposed to left at its default. Unlike
 // resolveIdentity, it distinguishes "explicitly passed" from "absent" —
