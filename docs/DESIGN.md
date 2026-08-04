@@ -41,6 +41,12 @@ isolation. Direct by-ID lookup deliberately bypasses identity filtering.
   Bodies are the **source of truth**: human-readable, git-versioned, diffable,
   reviewable like code.
 
+- **Frontmatter convention: every entry declares a `type`.** Cairn follows
+  OKF's minimum-viable-schema principle — exactly one required field per
+  concept, everything else left to the producer. `Entry.Type` exists in the
+  schema as that field today: an optional, producer-supplied convention, not
+  (yet) a code-enforced requirement.
+
 - **The index** is a gitignored **SQLite** database. Entry content and curated
   metadata come from the bodies; the index also carries operational state such
   as recall counts/timestamps and curation signals. Read paths self-heal the
@@ -74,6 +80,12 @@ tags in practice; cross-cutting `{rig, role}` entries are supported without a
 schema change.
 
 ## 4. Freshness
+
+Cairn detects changes to declared evidence and prevents affected knowledge from being presented as verified without re-investigation.
+
+That is a claim about evidence *change detection*, not about correctness — an
+unchanged anchor proves neither that the derived conclusion was right, nor
+that the anchor selection itself was right.
 
 Every entry may carry a source **anchor** — what it was derived from — so drift
 is *mechanically detectable*:

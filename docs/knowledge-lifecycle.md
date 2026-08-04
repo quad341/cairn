@@ -137,6 +137,11 @@ private-tier promotion marks and eviction can commit directly.
 
 ### 6. Freshness — anchors, lazy verify, write-back
 
+Cairn detects changes to declared evidence and prevents affected knowledge from being presented as verified without re-investigation.
+
+A perfectly fresh anchor on a badly-chosen file is still a wrong memory
+presented as verified — freshness is not a correctness guarantee.
+
 ```
 cairn freshness <id>   # freshness of one entry
 cairn status           # freshness of every entry
