@@ -138,12 +138,13 @@ func TestAllRecordKindsProduceValidJSON(t *testing.T) {
 	l.IndexDrift(IndexDriftFields{Stale: true, Reindexed: true, ReindexCount: 3, DurationMS: 12})
 	l.WritePath(WritePathFields{Operation: "commit_direct", Scope: nil, Tier: "private", Private: true})
 	l.WritePathStep(WritePathStepFields{Operation: "commit_direct", Name: "git_add", Outcome: "ok", DurationMS: 5})
+	l.RetrievalOutcome(RetrievalOutcomeFields{IdentityTags: []string{"rig:web"}, RunID: "run-1", Outcome: "hit", EntryID: "e1", PayloadTokens: 42, ReuseCount: 3})
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 6 {
-		t.Fatalf("got %d lines, want 6:\n%s", len(lines), buf.String())
+	if len(lines) != 7 {
+		t.Fatalf("got %d lines, want 7:\n%s", len(lines), buf.String())
 	}
-	wantKinds := []string{"context", "shadow_decision", "freshness_check", "index_drift", "write_path", "write_path_step"}
+	wantKinds := []string{"context", "shadow_decision", "freshness_check", "index_drift", "write_path", "write_path_step", "retrieval_outcome"}
 	for i, line := range lines {
 		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {

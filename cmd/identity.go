@@ -30,6 +30,20 @@ func resolveIdentity(cmd *cobra.Command) []string {
 	return tags
 }
 
+// resolveRunID returns an external run/task id for cairn-side grouping of
+// this invocation's telemetry (e.g. correlating multiple cairn calls within
+// one agent task), from the --run-id flag or the CAIRN_RUN_ID env var,
+// defaulting to "". Not a join key against burn-report/transcript token
+// usage -- Claude Code transcripts carry no run/task-ID field, so that
+// correlation is by identity+timestamp instead (see obslog's
+// RetrievalOutcomeFields).
+func resolveRunID(cmd *cobra.Command) string {
+	if f, _ := cmd.Flags().GetString("run-id"); f != "" {
+		return f
+	}
+	return strings.TrimSpace(os.Getenv("CAIRN_RUN_ID"))
+}
+
 // identityRequested reports whether --identity or $CAIRN_IDENTITY was
 // explicitly supplied, as opposed to left at its default. Unlike
 // resolveIdentity, it distinguishes "explicitly passed" from "absent" —

@@ -117,6 +117,8 @@ func init() {
 		"store repo path (required; or set $CAIRN_STORE)")
 	rootCmd.PersistentFlags().StringSlice("identity", nil,
 		"scope tags for recall, e.g. --identity rig:web,role:reviewer (or $CAIRN_IDENTITY)")
+	rootCmd.PersistentFlags().String("run-id", "",
+		"correlate this invocation's telemetry with an external run/task id (or $CAIRN_RUN_ID)")
 	rootCmd.Flags().BoolP("version", "v", false, "print version information")
 	rootCmd.PersistentFlags().BoolVar(&traceFlag, "trace", false,
 		"mirror the debug log to stderr in addition to the log file")

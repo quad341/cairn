@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -320,4 +321,156 @@ func TestGetReportsContentConflict(t *testing.T) {
 
 	assert.Contains(t, out, "conflicts: 1")
 	assert.Contains(t, out, "g/hook-b")
+}
+
+// resetRunIDFlag clears rootCmd's --run-id flag around a test, mirroring
+// resetIdentityFlag's rationale: rootCmd is a package-level singleton, so a
+// prior test's --run-id value and Changed bit otherwise leak into whichever
+// test runs next in this binary.
+func resetRunIDFlag(t *testing.T) {
+	t.Helper()
+	f := rootCmd.PersistentFlags().Lookup("run-id")
+	require.NotNil(t, f)
+	require.NoError(t, f.Value.Set(""))
+	f.Changed = false
+}
+
+// findRetrievalOutcomeRecord reads xdg's debug.jsonl and returns the single
+// "retrieval_outcome" record it contains. One execRoot("get", ...) call also
+// logs a "context" record (root's PersistentPreRunE) and usually a
+// "freshness_check" record (cairn.Check), so this filters by kind rather
+// than assuming a fixed line index or count.
+func findRetrievalOutcomeRecord(t *testing.T, xdg string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(xdg, "cairn", "debug.jsonl"))
+	require.NoError(t, err)
+
+	var found []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var rec map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &rec))
+		if rec["kind"] == "retrieval_outcome" {
+			found = append(found, rec)
+		}
+	}
+	require.Len(t, found, 1, "expected exactly one retrieval_outcome record in:\n%s", data)
+	return found[0]
+}
+
+// TestGetLogsRetrievalOutcomeHitOnSuccess covers crn-tekm's core acceptance
+// criterion: a successful `cairn get` on a non-stale entry must emit a
+// per-interaction "retrieval_outcome" record carrying identity_tags (the
+// burn-report/transcript join key, paired with the record's own envelope
+// timestamp -- see RetrievalOutcomeFields), run_id (cairn-internal grouping
+// only, not a transcript join key), and reuse signal (reuse_count, sourced
+// from Find's own post-increment HitCount, not the pre-hit file value) a
+// later report needs to compute avoided-vs-spent tokens.
+func TestGetLogsRetrievalOutcomeHitOnSuccess(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+	resetRunIDFlag(t)
+	t.Cleanup(func() { resetRunIDFlag(t) })
+
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("CAIRN_RUN_ID", "")
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md", "+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n+++\nbody text here\n")
+
+	out, err := execRoot("get", "g/a", "--store", dir, "--identity", "rig:web", "--run-id", "run-123")
+	require.NoError(t, err)
+	assert.Contains(t, out, "g/a")
+
+	rec := findRetrievalOutcomeRecord(t, xdg)
+	assert.Equal(t, "hit", rec["outcome"])
+	assert.Equal(t, "g/a", rec["entry_id"])
+	assert.Equal(t, "run-123", rec["run_id"])
+	assert.Equal(t, []any{"rig:web"}, rec["identity_tags"])
+	assert.EqualValues(t, 1, rec["reuse_count"], "Find's hit_count increment must flow through to reuse_count")
+	tokens, ok := rec["payload_tokens"].(float64)
+	require.True(t, ok, "payload_tokens must be numeric")
+	assert.Greater(t, tokens, float64(0), "a non-empty body must report a positive token estimate")
+}
+
+// TestGetLogsRetrievalOutcomeMissOnNotFound covers the miss branch: a
+// not-found lookup must still emit a retrieval_outcome record (not just the
+// user-facing error) so a miss is visible in the same joinable stream as a
+// hit, with the requested id preserved as entry_id and zeroed cost/reuse
+// fields since nothing was actually retrieved. It also incidentally covers
+// run_id's no-flag/no-env default: empty, not omitted.
+func TestGetLogsRetrievalOutcomeMissOnNotFound(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+	resetRunIDFlag(t)
+	t.Cleanup(func() { resetRunIDFlag(t) })
+
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("CAIRN_RUN_ID", "")
+
+	dir := t.TempDir()
+
+	_, err := execRoot("get", "does-not-exist", "--store", dir)
+	require.Error(t, err)
+
+	rec := findRetrievalOutcomeRecord(t, xdg)
+	assert.Equal(t, "miss", rec["outcome"])
+	assert.Equal(t, "does-not-exist", rec["entry_id"])
+	assert.EqualValues(t, 0, rec["payload_tokens"])
+	assert.EqualValues(t, 0, rec["reuse_count"])
+	assert.Equal(t, "", rec["run_id"])
+}
+
+// TestGetLogsRetrievalOutcomeStaleWhenAnchorDrifted covers the third outcome
+// branch: found but stale must be distinguished from a plain hit. A
+// "commit"-type anchor makes this deterministic with no git repo involved --
+// ComputeFingerprint returns Spec directly for that anchor type, so a
+// Fingerprint that disagrees with Spec is stale by construction.
+func TestGetLogsRetrievalOutcomeStaleWhenAnchorDrifted(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+	resetRunIDFlag(t)
+	t.Cleanup(func() { resetRunIDFlag(t) })
+
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("CAIRN_RUN_ID", "")
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md",
+		"+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n\n[anchor]\ntype = \"commit\"\nspec = \"abc123\"\nfingerprint = \"different456\"\n+++\nbody\n")
+
+	_, err := execRoot("get", "g/a", "--store", dir)
+	require.NoError(t, err)
+
+	rec := findRetrievalOutcomeRecord(t, xdg)
+	assert.Equal(t, "stale", rec["outcome"])
+	assert.Equal(t, "g/a", rec["entry_id"])
+}
+
+// TestGetRetrievalOutcomeRunIDFromEnv covers $CAIRN_RUN_ID as the fallback
+// source for run_id (cairn-internal grouping, not a transcript join key --
+// see RetrievalOutcomeFields) when --run-id isn't passed, mirroring
+// identityWithSource's flag-then-env precedent for the same reason: an
+// agent fleet sets run identity via environment far more often than a
+// literal CLI flag.
+func TestGetRetrievalOutcomeRunIDFromEnv(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+	resetRunIDFlag(t)
+	t.Cleanup(func() { resetRunIDFlag(t) })
+
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("CAIRN_RUN_ID", "env-run-456")
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md", "+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n+++\nbody\n")
+
+	_, err := execRoot("get", "g/a", "--store", dir)
+	require.NoError(t, err)
+
+	rec := findRetrievalOutcomeRecord(t, xdg)
+	assert.Equal(t, "env-run-456", rec["run_id"])
 }

@@ -253,3 +253,41 @@ func (l *Logger) WritePathStep(f WritePathStepFields) {
 		slog.Int64("duration_ms", f.DurationMS),
 	)
 }
+
+// RetrievalOutcomeFields is the "retrieval_outcome" record: one per `cairn
+// get` invocation, classifying what the lookup actually returned.
+// IdentityTags matches ContextFields.IdentityTags's naming so the two kinds
+// correlate on the same field. The join against burn-report/transcript
+// token usage is (identity, wall-clock time) proximity -- this record's own
+// envelope "ts" plus IdentityTags -- never by ID: Claude Code transcripts
+// carry no run/task/session ID field (confirmed against burn.py's
+// harvest(), which reads only timestamp/model/usage per message). RunID is
+// a cairn-internal grouping convenience only (e.g. correlating this record
+// with others from the same agent task); it has no matching field on the
+// transcript side, so a correlation report must not rely on it for that
+// join. Outcome is "hit" (found, not stale), "miss" (no such entry), or
+// "stale" (found but freshness-drifted). PayloadTokens is a rough
+// len(body)/4 estimate pending real token counts from burn-report
+// (deliberately not a dependency here). ReuseCount is the entry's
+// post-increment hit_count on a hit/stale (Find's own RETURNING value),
+// left at zero on a miss.
+type RetrievalOutcomeFields struct {
+	IdentityTags  []string
+	RunID         string
+	Outcome       string // "hit" | "miss" | "stale"
+	EntryID       string
+	PayloadTokens int
+	ReuseCount    int
+}
+
+// RetrievalOutcome logs a "retrieval_outcome" record.
+func (l *Logger) RetrievalOutcome(f RetrievalOutcomeFields) {
+	l.sl.Info("", slog.String("kind", "retrieval_outcome"),
+		slog.Any("identity_tags", f.IdentityTags),
+		slog.String("run_id", f.RunID),
+		slog.String("outcome", f.Outcome),
+		slog.String("entry_id", f.EntryID),
+		slog.Int("payload_tokens", f.PayloadTokens),
+		slog.Int("reuse_count", f.ReuseCount),
+	)
+}

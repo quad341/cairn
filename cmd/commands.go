@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/quad341/cairn/internal/cairn"
+	"github.com/quad341/cairn/internal/obslog"
 	"github.com/spf13/cobra"
 )
 
@@ -129,12 +130,31 @@ var getCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		e, err := cairn.Find(cmd.Context(), storePath(), args[0])
 		if errors.Is(err, cairn.ErrNotFound) {
+			obslog.FromContext(cmd.Context()).RetrievalOutcome(obslog.RetrievalOutcomeFields{
+				IdentityTags: resolveIdentity(cmd),
+				RunID:        resolveRunID(cmd),
+				Outcome:      "miss",
+				EntryID:      args[0],
+			})
 			return emitError(cmd, classifiedErr(CategoryNotFound, args[0], fmt.Errorf("no entry %q: %w", args[0], err)))
 		}
 		if err != nil {
 			return emitError(cmd, err)
 		}
 		st, detail := cairn.Check(cmd.Context(), e)
+
+		outcome := "hit"
+		if st == cairn.Stale {
+			outcome = "stale"
+		}
+		obslog.FromContext(cmd.Context()).RetrievalOutcome(obslog.RetrievalOutcomeFields{
+			IdentityTags:  resolveIdentity(cmd),
+			RunID:         resolveRunID(cmd),
+			Outcome:       outcome,
+			EntryID:       e.ID,
+			PayloadTokens: len(e.Body) / 4,
+			ReuseCount:    e.HitCount,
+		})
 
 		identity, err := resolveIdentityValidated(cmd)
 		if err != nil {

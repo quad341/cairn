@@ -31,6 +31,7 @@ func TestMain(m *testing.M) {
 	_ = os.Unsetenv("CAIRN_IDENTITY")
 	_ = os.Unsetenv("CAIRN_STORE")
 	_ = os.Unsetenv("CAIRN_REVIEWER")
+	_ = os.Unsetenv("CAIRN_RUN_ID")
 	os.Exit(m.Run())
 }
 
