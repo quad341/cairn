@@ -107,8 +107,9 @@ Loops:
 - **Bodies on demand** — pulled by exact id, so context isn't bloated by entries
   the task doesn't need.
 
-The map exposes the menu, but today it does not expose entry IDs. Exact
-topic-to-entry lookup and semantic search remain roadmap work.
+The map exposes the menu *and* the entry IDs, hit counts and freshness needed to
+pull a body, within a byte budget. Exact topic-to-entry lookup ships as
+`cairn list <topic>`; semantic search remains roadmap work.
 
 ## 6. Topic keys
 
@@ -155,10 +156,15 @@ cairn reindex                 # explicit index rebuild/repair
 
 ## 9. Roadmap
 
-- Exact topic-to-entry retrieval, followed by semantic pull if still useful.
-- Machine-readable output for the interactive agent-facing commands.
-- Context-budgeted prime output with retrievable IDs and freshness.
-- Stdin/body-file capture and convenient anchor flags for `remember`.
-- Store validation and visibility/precedence explanations.
+Shipped since this list was written: exact topic-to-entry retrieval (`list`),
+`--json` on every command, context-budgeted `prime` output carrying IDs and
+freshness, stdin/`--file` capture and anchor flags on `remember`, and store
+validation plus precedence explanation (`doctor`, `doctor explain`).
+
+Still open:
+
+- Semantic pull, once exact topic retrieval proves insufficient.
 - Prioritized scheduling around the existing drift sweep.
 - `query` / `external` anchor types.
+- Inferring an anchor from an entry's body rather than being told one.
+- Time-decay freshness confidence.

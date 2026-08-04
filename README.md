@@ -32,9 +32,11 @@ Usage & the knowledge lifecycle (+ how it differs from MEMORY.md / `bd remember`
   identity*. Scope is relevance routing, not access control; direct by-ID lookup is
   intentionally unscoped. Conflict precedence = specificity.
 - **Freshness** = source-anchor drift is checked on reads and by a shared-tier
-  sweep. Unanchored and unsupported anchors are reported as `unknown`.
+  sweep. Unanchored and unsupported anchors are reported as `unknown` — an entry
+  with no anchor can only ever report its age, so anchor anything with a source.
 - **Recall** = a bounded topic **map** in session context + bodies pulled on demand
-  by exact ID. Exact topic lookup and semantic search are not implemented yet.
+  by exact ID, plus exact topic lookup via `list`. Semantic search is not
+  implemented yet.
 - **Curation** = friction ∝ blast radius, via a **local review-branch pipeline**:
   private = direct commit; shared = branch → merge-request → librarian review → merge.
 
@@ -42,10 +44,10 @@ Usage & the knowledge lifecycle (+ how it differs from MEMORY.md / `bd remember`
 
 | Area | Shipped today | Not yet implemented |
 |---|---|---|
-| Recall | identity-scoped `prime`/`map`; unscoped `get <id>`; recall counters and timestamps | topic-to-ID lookup; semantic search; general JSON mode |
-| Freshness | `files` and `commit` anchors; lazy checks; `verify`; shared-tier JSON sweep | time-decay confidence; `query`/`external` verification; prioritized scheduling |
-| Capture | `remember`; optional topic hint; exact-topic recurrence detection; private direct commit | stdin/body-file capture; anchor flags on `remember` |
-| Curation | review branches and `review`; stale-branch reporting; dedup, promotion, and cull candidate workflows | hosted pull requests; fully autonomous curation |
+| Recall | identity-scoped `prime`/`map`; exact topic lookup via `list`; unscoped `get <id>`; recall counters and timestamps; `--json` on every command | semantic search; ranking beyond scope specificity |
+| Freshness | `files` and `commit` anchors; lazy checks; `anchor` to attach one to an existing entry; `verify` to re-fingerprint; shared-tier JSON sweep | time-decay confidence; `query`/`external` verification; prioritized scheduling |
+| Capture | `remember` from argument, stdin, or `--file`; anchor flags at capture time; optional topic hint; recurrence detection on topic **and** body; private direct commit | inferring an anchor from the body instead of being told one |
+| Curation | review branches and `review`; stale-branch reporting; dedup, promotion, and cull candidate workflows; `doctor` store health report | hosted pull requests; fully autonomous curation |
 | Index | self-healing SQLite-backed reads plus operational recall/curation fields | no manual reindex is normally required, but `reindex` remains available for repair |
 
 The CLI is still early and its text output is primarily human-oriented. See
