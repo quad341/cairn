@@ -291,3 +291,33 @@ func (l *Logger) RetrievalOutcome(f RetrievalOutcomeFields) {
 		slog.Int("reuse_count", f.ReuseCount),
 	)
 }
+
+// PrimeEmitFields is the "prime_emit" record: one per `cairn prime`
+// invocation, capturing what was surfaced so a later report can join it
+// against RetrievalOutcomeFields -- "what was surfaced at prime time" vs.
+// "what was actually looked up later" (crn-894i). IdentityTags and RunID
+// match RetrievalOutcomeFields's fields of the same name, including the
+// same join caveat: correlation against burn-report/transcript token usage
+// is by (identity, wall-clock time) proximity, never by RunID (see
+// RetrievalOutcomeFields's doc comment). ItemIDs is the full set of entry
+// IDs itemized in the invocation's PrimeResult.Items, in the same order.
+// TotalVisible and TruncatedCount mirror PrimeResult's fields of the same
+// name.
+type PrimeEmitFields struct {
+	IdentityTags   []string
+	RunID          string
+	ItemIDs        []string
+	TotalVisible   int
+	TruncatedCount int
+}
+
+// PrimeEmit logs a "prime_emit" record.
+func (l *Logger) PrimeEmit(f PrimeEmitFields) {
+	l.sl.Info("", slog.String("kind", "prime_emit"),
+		slog.Any("identity_tags", f.IdentityTags),
+		slog.String("run_id", f.RunID),
+		slog.Any("item_ids", f.ItemIDs),
+		slog.Int("total_visible", f.TotalVisible),
+		slog.Int("truncated_count", f.TruncatedCount),
+	)
+}
