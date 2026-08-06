@@ -139,12 +139,13 @@ func TestAllRecordKindsProduceValidJSON(t *testing.T) {
 	l.WritePath(WritePathFields{Operation: "commit_direct", Scope: nil, Tier: "private", Private: true})
 	l.WritePathStep(WritePathStepFields{Operation: "commit_direct", Name: "git_add", Outcome: "ok", DurationMS: 5})
 	l.RetrievalOutcome(RetrievalOutcomeFields{IdentityTags: []string{"rig:web"}, RunID: "run-1", Outcome: "hit", EntryID: "e1", PayloadTokens: 42, ReuseCount: 3})
+	l.PrimeEmit(PrimeEmitFields{IdentityTags: []string{"rig:web"}, RunID: "run-1", ItemIDs: []string{"e1"}, TotalVisible: 1, TruncatedCount: 0})
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 7 {
-		t.Fatalf("got %d lines, want 7:\n%s", len(lines), buf.String())
+	if len(lines) != 8 {
+		t.Fatalf("got %d lines, want 8:\n%s", len(lines), buf.String())
 	}
-	wantKinds := []string{"context", "shadow_decision", "freshness_check", "index_drift", "write_path", "write_path_step", "retrieval_outcome"}
+	wantKinds := []string{"context", "shadow_decision", "freshness_check", "index_drift", "write_path", "write_path_step", "retrieval_outcome", "prime_emit"}
 	for i, line := range lines {
 		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
@@ -153,5 +154,52 @@ func TestAllRecordKindsProduceValidJSON(t *testing.T) {
 		if rec["kind"] != wantKinds[i] {
 			t.Errorf("line %d kind = %v, want %v", i, rec["kind"], wantKinds[i])
 		}
+	}
+}
+
+// TestPrimeEmitRecordShape covers crn-jkth's core acceptance criterion: a
+// "prime_emit" record must carry identity_tags/run_id (the same
+// burn-report/transcript join fields RetrievalOutcomeFields uses, see its
+// own doc comment) plus item_ids/total_visible/truncated_count sourced from
+// a PrimeResult, so a later report can join "what was surfaced at prime
+// time" against retrieval_outcome's "what was actually looked up later"
+// (crn-894i).
+func TestPrimeEmitRecordShape(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewWithWriter(&buf, Options{Command: "prime"}, &bytes.Buffer{})
+	l.PrimeEmit(PrimeEmitFields{
+		IdentityTags:   []string{"rig:web"},
+		RunID:          "run-1",
+		ItemIDs:        []string{"g/a", "g/b"},
+		TotalVisible:   5,
+		TruncatedCount: 3,
+	})
+
+	line := strings.TrimSpace(buf.String())
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		t.Fatalf("record line is not valid JSON: %v\nline: %s", err, line)
+	}
+
+	if rec["kind"] != "prime_emit" {
+		t.Errorf("kind = %v, want prime_emit", rec["kind"])
+	}
+	if rec["run_id"] != "run-1" {
+		t.Errorf("run_id = %v, want run-1", rec["run_id"])
+	}
+	if rec["total_visible"] != float64(5) {
+		t.Errorf("total_visible = %v, want 5", rec["total_visible"])
+	}
+	if rec["truncated_count"] != float64(3) {
+		t.Errorf("truncated_count = %v, want 3", rec["truncated_count"])
+	}
+
+	tags, ok := rec["identity_tags"].([]any)
+	if !ok || len(tags) != 1 || tags[0] != "rig:web" {
+		t.Errorf("identity_tags = %v, want [rig:web]", rec["identity_tags"])
+	}
+	ids, ok := rec["item_ids"].([]any)
+	if !ok || len(ids) != 2 || ids[0] != "g/a" || ids[1] != "g/b" {
+		t.Errorf("item_ids = %v, want [g/a g/b]", rec["item_ids"])
 	}
 }
