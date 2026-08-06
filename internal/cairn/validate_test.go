@@ -86,3 +86,54 @@ func TestValidatePathSegmentAcceptsSafeValues(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateTitleLengthRejectsOverCap and its siblings cover crn-3476
+// FR-3's write-time layer: explicit --title/--summary over the cap must be
+// rejected with the same UX as --topic/--scope (CategoryInvalidInput in
+// cmd/remember.go), while auto-derived values are silently truncated
+// instead (enforced at read time by Prime, see
+// TestPrimeTruncatesOversizedTitleAndSummaryToCap). titleCap/summaryCap are
+// package-level vars per FR-7, so tests override them rather than depend on
+// the "starting point, not calibrated" defaults.
+func TestValidateTitleLengthRejectsOverCap(t *testing.T) {
+	orig := titleCap
+	titleCap = 5
+	defer func() { titleCap = orig }()
+
+	assert.Error(t, ValidateTitleLength("123456"), "6 runes must be rejected against a cap of 5")
+}
+
+func TestValidateTitleLengthAcceptsAtCap(t *testing.T) {
+	orig := titleCap
+	titleCap = 5
+	defer func() { titleCap = orig }()
+
+	assert.NoError(t, ValidateTitleLength("12345"), "exactly at the cap must be accepted")
+}
+
+// TestValidateTitleLengthCountsRunesNotBytes proves the cap is a rune count,
+// not a byte count -- a 3-rune multi-byte title must be accepted against a
+// cap of 3 even though it is 9 bytes long.
+func TestValidateTitleLengthCountsRunesNotBytes(t *testing.T) {
+	orig := titleCap
+	titleCap = 3
+	defer func() { titleCap = orig }()
+
+	assert.NoError(t, ValidateTitleLength("日本語"), "3 runes must be accepted against a cap of 3 even though it is 9 bytes")
+}
+
+func TestValidateSummaryLengthRejectsOverCap(t *testing.T) {
+	orig := summaryCap
+	summaryCap = 5
+	defer func() { summaryCap = orig }()
+
+	assert.Error(t, ValidateSummaryLength("123456"), "6 runes must be rejected against a cap of 5")
+}
+
+func TestValidateSummaryLengthAcceptsAtCap(t *testing.T) {
+	orig := summaryCap
+	summaryCap = 5
+	defer func() { summaryCap = orig }()
+
+	assert.NoError(t, ValidateSummaryLength("12345"), "exactly at the cap must be accepted")
+}

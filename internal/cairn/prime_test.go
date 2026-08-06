@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -330,4 +331,123 @@ func TestPrimeCapsFreshnessChecksAndFailsTowardUnknown(t *testing.T) {
 	assert.Equal(t, Unknown, byID["b"].Freshness.Status)
 	assert.Contains(t, byID["b"].Freshness.Detail, "not checked this pass",
 		"past the cap, classification must short-circuit rather than actually invoking Check on a bogus repo")
+}
+
+// TestPrimeIndexIncludesPerTopicKeyBreakdown covers crn-3476 FR-1/FR-2: the
+// index view must include a per-topic_key breakdown with counts, restoring
+// DESIGN.md §5's "topic tree with counts" -- an entry that loses the ranking
+// tie-break must still show up as a count somewhere, not simply vanish
+// (crn-zcxq Finding 1).
+func TestPrimeIndexIncludesPerTopicKeyBreakdown(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/a1.md", "+++\nid = \"a1\"\ntitle = \"a1\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nx\n")
+	writeFile(t, dir, "global/a2.md", "+++\nid = \"a2\"\ntitle = \"a2\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nx\n")
+	writeFile(t, dir, "global/b1.md", "+++\nid = \"b1\"\ntitle = \"b1\"\ntopic_key = \"topic-b\"\nscope = []\n+++\nx\n")
+	writeFile(t, dir, "global/u1.md", "+++\nid = \"u1\"\ntitle = \"u1\"\nscope = []\n+++\nx\n")
+
+	result, err := Prime(t.Context(), dir, nil, testBudget)
+	require.NoError(t, err)
+
+	counts := map[string]int{}
+	for _, tc := range result.TopicCounts {
+		counts[tc.TopicKey] = tc.Count
+	}
+	assert.Equal(t, 2, counts["topic-a"])
+	assert.Equal(t, 1, counts["topic-b"])
+	assert.Equal(t, 1, counts[UntopicedLabel], "an untopiced entry must still be counted, not silently dropped from the index view")
+}
+
+// TestPrimeIndexBreakdownIndependentOfByteBudget covers FR-1's "cost
+// independent of entry content size" and NFR-2: the per-topic breakdown
+// belongs to the index view, computed over the full visible set regardless
+// of what the byte budget lets into Items -- the same guarantee
+// TestPrimeTruncatesByByteBudgetWithoutAffectingAggregateCounts already pins
+// for the freshness counts.
+func TestPrimeIndexBreakdownIndependentOfByteBudget(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/a1.md", "+++\nid = \"a1\"\ntitle = \"a1\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nx\n")
+	writeFile(t, dir, "global/a2.md", "+++\nid = \"a2\"\ntitle = \"a2\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nx\n")
+
+	tiny, err := Prime(t.Context(), dir, nil, 1)
+	require.NoError(t, err)
+	require.Less(t, len(tiny.Items), 2, "precondition: the tiny budget must actually truncate something")
+
+	counts := map[string]int{}
+	for _, tc := range tiny.TopicCounts {
+		counts[tc.TopicKey] = tc.Count
+	}
+	assert.Equal(t, 2, counts["topic-a"], "the topic breakdown must reflect the full visible set even when the byte budget truncates Items")
+}
+
+// TestPrimeTruncatesOversizedTitleAndSummaryToCap covers crn-3476 FR-3's
+// read-time layer and NFR-3: an entry written before the cap shipped (or
+// written directly to disk, bypassing cmd/remember's write-time validation)
+// must still have its PrimeItem Title/Summary bounded -- this is what makes
+// itemByteCost a provable constant ceiling regardless of what's on disk.
+func TestPrimeTruncatesOversizedTitleAndSummaryToCap(t *testing.T) {
+	dir := t.TempDir()
+	longTitle := strings.Repeat("t", 500)
+	longSummary := strings.Repeat("s", 1000)
+	writeFile(t, dir, "global/a.md",
+		"+++\nid = \"a\"\ntitle = \""+longTitle+"\"\nsummary = \""+longSummary+"\"\nscope = []\n+++\nx\n")
+
+	result, err := Prime(t.Context(), dir, nil, testBudget)
+	require.NoError(t, err)
+	require.Len(t, result.Items, 1)
+
+	item := result.Items[0]
+	assert.LessOrEqual(t, utf8.RuneCountInString(item.Title), titleCap, "Title must be truncated to the cap regardless of what's stored on disk")
+	assert.LessOrEqual(t, utf8.RuneCountInString(item.Summary), summaryCap, "Summary must be truncated to the cap regardless of what's stored on disk")
+}
+
+// TestPrimeExplorationBandPromotesNewestZeroHitEntries covers crn-3476 FR-5's
+// exploration band: the explorationSlots most-recently-created HitCount==0
+// entries get band 0 and sort ahead of everything else regardless of
+// HitCount -- so a brand-new entry gets at least one prime cycle near the
+// top instead of being buried under a proven, high-hit_count entry it could
+// otherwise never outrank on HitCount alone (crn-zcxq Finding 3).
+func TestPrimeExplorationBandPromotesNewestZeroHitEntries(t *testing.T) {
+	orig := explorationSlots
+	explorationSlots = 2
+	defer func() { explorationSlots = orig }()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "global/old-high.md",
+		"+++\nid = \"old-high\"\ntitle = \"old-high\"\nhit_count = 100\ncreated_at = \"2026-01-01T00:00:00Z\"\nscope = []\n+++\nx\n")
+	writeFile(t, dir, "global/new-1.md",
+		"+++\nid = \"new-1\"\ntitle = \"new-1\"\nhit_count = 0\ncreated_at = \"2026-03-03T00:00:00Z\"\nscope = []\n+++\nx\n")
+	writeFile(t, dir, "global/new-2.md",
+		"+++\nid = \"new-2\"\ntitle = \"new-2\"\nhit_count = 0\ncreated_at = \"2026-03-02T00:00:00Z\"\nscope = []\n+++\nx\n")
+	writeFile(t, dir, "global/new-3.md",
+		"+++\nid = \"new-3\"\ntitle = \"new-3\"\nhit_count = 0\ncreated_at = \"2026-03-01T00:00:00Z\"\nscope = []\n+++\nx\n")
+
+	result, err := Prime(t.Context(), dir, nil, testBudget)
+	require.NoError(t, err)
+	require.Len(t, result.Items, 4)
+
+	ids := make([]string, len(result.Items))
+	for i, it := range result.Items {
+		ids[i] = it.ID
+	}
+	// band 0 = the 2 most-recently-created zero-hit entries (new-1, new-2),
+	// ranked ahead of everything in band 1 regardless of old-high's much
+	// larger HitCount. new-3 is only the 3rd-most-recent zero-hit entry, past
+	// explorationSlots=2, so it falls to band 1 and loses to old-high there
+	// on HitCount desc.
+	assert.Equal(t, []string{"new-1", "new-2", "old-high", "new-3"}, ids)
+}
+
+// TestRenderPrimeTextIncludesSummary covers crn-3476 FR-8: the text path
+// must render each item's (capped) Summary, not just Title -- itemByteCost
+// already prices Summary into the budget (crn-zcxq Finding 2), so the budget
+// was paying for content the default output never showed.
+func TestRenderPrimeTextIncludesSummary(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "global/a.md",
+		"+++\nid = \"a\"\ntitle = \"a title\"\nsummary = \"a distinctive summary sentence\"\nscope = []\n+++\nx\n")
+
+	result, err := Prime(t.Context(), dir, nil, testBudget)
+	require.NoError(t, err)
+	out := RenderPrimeText(result)
+	assert.Contains(t, out, "a distinctive summary sentence")
 }

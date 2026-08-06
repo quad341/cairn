@@ -139,11 +139,17 @@ func TestNewEntryParamsAnchorDefaultsToNoneWhenZeroValue(t *testing.T) {
 	assert.Equal(t, "none", e.Anchor.Type)
 }
 
-func TestNewEntryStampsCreatedAtAsDateOnly(t *testing.T) {
+// TestNewEntryStampsCreatedAtAsRFC3339 covers crn-3476 FR-5: CreatedAt moves
+// from time.DateOnly to full time.RFC3339 at write time, matching
+// VerifiedAt/LastRecalledAt -- needed so same-day entries can still be
+// ordered by the exploration band's CreatedAt-desc tiebreak. Lexicographic
+// order is preserved: a DateOnly legacy value is a strict prefix of a
+// same-day RFC3339 value, see moreSpecific.
+func TestNewEntryStampsCreatedAtAsRFC3339(t *testing.T) {
 	e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: "body"})
 	require.NoError(t, err)
-	_, err = time.Parse(time.DateOnly, e.CreatedAt)
-	assert.NoError(t, err, "created_at must be an ISO-8601 date so lexical and chronological order agree, see moreSpecific")
+	_, err = time.Parse(time.RFC3339, e.CreatedAt)
+	assert.NoError(t, err, "created_at must be a full RFC3339 timestamp so same-day entries remain orderable, see moreSpecific and the exploration band")
 }
 
 func TestScopeDirPicksTierByPriorityWhenScopeSpansMultiple(t *testing.T) {
