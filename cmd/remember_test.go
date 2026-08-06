@@ -792,8 +792,8 @@ func TestRememberCLIRoundTripAllFields(t *testing.T) {
 	assert.Equal(t, "prefer feature flags over env vars", e.Title)
 	assert.Equal(t, "none", e.Anchor.Type)
 	assert.Equal(t, "rig:alpha agent:bot", e.CreatedBy, "created_by must be the CLI's resolved identity, space-joined -- not collapsed like scope")
-	_, err = time.Parse(time.DateOnly, e.CreatedAt)
-	assert.NoError(t, err, "created_at must be an ISO-8601 date")
+	_, err = time.Parse(time.RFC3339, e.CreatedAt)
+	assert.NoError(t, err, "created_at must be an RFC3339 timestamp (crn-3476/crn-zcxq FR-5)")
 }
 
 // TestRememberSharedTierRigScopeVisibleAfterReviewMerge is the full rig:

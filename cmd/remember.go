@@ -76,7 +76,17 @@ var rememberCmd = &cobra.Command{
 		}
 
 		title, _ := cmd.Flags().GetString("title")
+		if title != "" {
+			if err := cairn.ValidateTitleLength(title); err != nil {
+				return emitError(cmd, classifiedErr(CategoryInvalidInput, title, fmt.Errorf("invalid --title: %w", err)))
+			}
+		}
 		summary, _ := cmd.Flags().GetString("summary")
+		if summary != "" {
+			if err := cairn.ValidateSummaryLength(summary); err != nil {
+				return emitError(cmd, classifiedErr(CategoryInvalidInput, summary, fmt.Errorf("invalid --summary: %w", err)))
+			}
+		}
 		createdBy := strings.Join(identity, " ")
 		e, err := cairn.NewEntry(cairn.NewEntryParams{
 			TopicKey:  topic,

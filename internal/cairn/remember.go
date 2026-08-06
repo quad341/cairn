@@ -71,7 +71,7 @@ func NewEntry(p NewEntryParams) (*Entry, error) {
 		Scope:     p.Scope,
 		Anchor:    anchor,
 		CreatedBy: p.CreatedBy,
-		CreatedAt: time.Now().Format(time.DateOnly),
+		CreatedAt: time.Now().Format(time.RFC3339),
 		Body:      p.Body,
 	}, nil
 }
