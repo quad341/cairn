@@ -90,9 +90,14 @@ func TestValidatePathSegmentAcceptsSafeValues(t *testing.T) {
 // TestValidateTitleLengthRejectsOverCap and its siblings cover crn-3476
 // FR-3's write-time layer: explicit --title/--summary over the cap must be
 // rejected with the same UX as --topic/--scope (CategoryInvalidInput in
-// cmd/remember.go), while auto-derived values are silently truncated
-// instead (enforced at read time by Prime, see
-// TestPrimeTruncatesOversizedTitleAndSummaryToCap). titleCap/summaryCap are
+// cmd/remember.go), while auto-derived values are silently truncated to the
+// cap instead of rejected -- there is no user-supplied value to reject (see
+// TestNewEntryTruncatesAutoDerivedTitleAndSummaryToCap). Read time (Prime)
+// then unconditionally re-truncates both explicit and auto-derived values
+// regardless of what's on disk (NFR-3, see
+// TestPrimeTruncatesOversizedTitleAndSummaryToCap), covering entries written
+// before the cap shipped or written directly to disk, bypassing
+// cmd/remember's write-time validation entirely. titleCap/summaryCap are
 // package-level vars per FR-7, so tests override them rather than depend on
 // the "starting point, not calibrated" defaults.
 func TestValidateTitleLengthRejectsOverCap(t *testing.T) {

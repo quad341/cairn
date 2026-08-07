@@ -667,12 +667,9 @@ func visibleFrom(ctx context.Context, entries []*Entry, identity []string) []*En
 
 // scopeMatch returns entries whose every scope tag is satisfied by identity --
 // visibleFrom's subset-match rule without its shadowReason collapse. Factored
-// out for Prime's TopicCounts (crn-3476/crn-zcxq FR-1/FR-2, Finding 1): an
-// entry that loses shadowReason's same-topic_key specificity tie-break must
-// still show up as a count somewhere rather than vanishing, so the per-topic
-// breakdown is computed over this pre-shadow set. TotalVisible, Items
-// ranking, and freshness counts stay on visibleFrom's post-shadow result
-// (crn-0vqk) -- unaffected by this factoring.
+// out as its own step so visibleFrom's two rules (subset-match, then
+// same-topic_key shadow collapse) are each independently readable and
+// testable.
 func scopeMatch(entries []*Entry, identity []string) []*Entry {
 	idset := make(map[string]struct{}, len(identity))
 	for _, t := range identity {

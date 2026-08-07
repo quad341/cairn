@@ -92,11 +92,6 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 		return PrimeResult{}, err
 	}
 	visible := visibleFrom(ctx, all, identity)
-	// scopeMatched (not visible) feeds TopicCounts: visible is shadowReason's
-	// post-collapse winner-per-topic_key set, so counting over it would drop
-	// every entry that lost a same-topic_key specificity tie-break instead of
-	// counting it (crn-3476/crn-zcxq FR-1/FR-2, Finding 1).
-	scopeMatched := scopeMatch(all, identity)
 
 	ordered := make([]*Entry, len(visible))
 	copy(ordered, visible)
@@ -122,7 +117,7 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 		Store:        store,
 		Identity:     identity,
 		TotalVisible: len(ordered),
-		TopicCounts:  topicCounts(scopeMatched),
+		TopicCounts:  topicCounts(visible),
 		Warnings:     scopeMismatchWarnings(all, visible, identity),
 	}
 

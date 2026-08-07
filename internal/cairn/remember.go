@@ -47,14 +47,20 @@ func NewEntry(p NewEntryParams) (*Entry, error) {
 		return nil, err
 	}
 
+	// An explicit p.Title/p.Summary was already validated against the cap by
+	// the caller (cmd/remember.go's ValidateTitleLength/ValidateSummaryLength)
+	// and must be rejected there, not silently altered here -- so only the
+	// auto-derived branch truncates. Auto-derivation can otherwise return the
+	// entry's entire body (titleAndSummary), which has no cap of its own
+	// (crn-3476 FR-3, NFR-3).
 	title, summary := p.Title, p.Summary
 	if title == "" || summary == "" {
 		autoTitle, autoSummary := titleAndSummary(p.Body)
 		if title == "" {
-			title = autoTitle
+			title = truncateRunes(autoTitle, titleCap)
 		}
 		if summary == "" {
-			summary = autoSummary
+			summary = truncateRunes(autoSummary, summaryCap)
 		}
 	}
 

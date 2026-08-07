@@ -335,9 +335,13 @@ func TestPrimeCapsFreshnessChecksAndFailsTowardUnknown(t *testing.T) {
 
 // TestPrimeIndexIncludesPerTopicKeyBreakdown covers crn-3476 FR-1/FR-2: the
 // index view must include a per-topic_key breakdown with counts, restoring
-// DESIGN.md §5's "topic tree with counts" -- an entry that loses the ranking
-// tie-break must still show up as a count somewhere, not simply vanish
-// (crn-zcxq Finding 1).
+// DESIGN.md §5's "topic tree with counts." The breakdown is computed over
+// the same post-shadow visible set as TotalVisible (NFR-2), so its counts
+// must always sum to TotalVisible: a1/a2 share topic-a and so collapse to a
+// single shadow winner (DESIGN.md §3) like any other visible-set member: an
+// untopiced entry is never shadow-collapsed (shadowReason skips
+// TopicKey == ""), so it still shows up as a count under UntopicedLabel
+// rather than vanishing.
 func TestPrimeIndexIncludesPerTopicKeyBreakdown(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "global/a1.md", "+++\nid = \"a1\"\ntitle = \"a1\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nx\n")
@@ -349,12 +353,15 @@ func TestPrimeIndexIncludesPerTopicKeyBreakdown(t *testing.T) {
 	require.NoError(t, err)
 
 	counts := map[string]int{}
+	sum := 0
 	for _, tc := range result.TopicCounts {
 		counts[tc.TopicKey] = tc.Count
+		sum += tc.Count
 	}
-	assert.Equal(t, 2, counts["topic-a"])
+	assert.Equal(t, 1, counts["topic-a"], "a1/a2 share topic-a and shadow-collapse to a single winner")
 	assert.Equal(t, 1, counts["topic-b"])
 	assert.Equal(t, 1, counts[UntopicedLabel], "an untopiced entry must still be counted, not silently dropped from the index view")
+	assert.Equal(t, result.TotalVisible, sum, "topic counts must always sum to TotalVisible (NFR-2)")
 }
 
 // TestPrimeIndexBreakdownIndependentOfByteBudget covers FR-1's "cost
@@ -365,8 +372,14 @@ func TestPrimeIndexIncludesPerTopicKeyBreakdown(t *testing.T) {
 // for the freshness counts.
 func TestPrimeIndexBreakdownIndependentOfByteBudget(t *testing.T) {
 	dir := t.TempDir()
+	// Distinct topic_keys, not a shared one: two entries that share a
+	// topic_key would shadow-collapse to a single visible winner before the
+	// budget is ever applied (see TestPrimeIndexIncludesPerTopicKeyBreakdown),
+	// which would satisfy the "< 2 Items" precondition below for the wrong
+	// reason -- via shadowing, not truncation -- and stop this test from
+	// actually exercising the byte-budget guarantee it's named for.
 	writeFile(t, dir, "global/a1.md", "+++\nid = \"a1\"\ntitle = \"a1\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nx\n")
-	writeFile(t, dir, "global/a2.md", "+++\nid = \"a2\"\ntitle = \"a2\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nx\n")
+	writeFile(t, dir, "global/b1.md", "+++\nid = \"b1\"\ntitle = \"b1\"\ntopic_key = \"topic-b\"\nscope = []\n+++\nx\n")
 
 	tiny, err := Prime(t.Context(), dir, nil, 1)
 	require.NoError(t, err)
@@ -376,7 +389,8 @@ func TestPrimeIndexBreakdownIndependentOfByteBudget(t *testing.T) {
 	for _, tc := range tiny.TopicCounts {
 		counts[tc.TopicKey] = tc.Count
 	}
-	assert.Equal(t, 2, counts["topic-a"], "the topic breakdown must reflect the full visible set even when the byte budget truncates Items")
+	assert.Equal(t, 1, counts["topic-a"], "the topic breakdown must reflect the full visible set even when the byte budget truncates Items")
+	assert.Equal(t, 1, counts["topic-b"], "the topic breakdown must reflect the full visible set even when the byte budget truncates Items")
 }
 
 // TestPrimeTruncatesOversizedTitleAndSummaryToCap covers crn-3476 FR-3's
