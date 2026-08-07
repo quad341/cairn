@@ -391,6 +391,11 @@ func TestGetLogsRetrievalOutcomeHitOnSuccess(t *testing.T) {
 	tokens, ok := rec["payload_tokens"].(float64)
 	require.True(t, ok, "payload_tokens must be numeric")
 	assert.Greater(t, tokens, float64(0), "a non-empty body must report a positive token estimate")
+	assert.Equal(t, "calibrated_chars_per_token_v1", rec["payload_tokens_method"],
+		"payload_tokens is calibrated against measured data, not a bare guess (crn-666s.1) -- the record must name the method so a consumer knows its provenance")
+	errBound, ok := rec["payload_tokens_error_bound_pct"].(float64)
+	require.True(t, ok, "payload_tokens_error_bound_pct must be numeric")
+	assert.Greater(t, errBound, float64(0), "a calibrated estimate must carry its measured error bound, not silently omit it")
 }
 
 // TestGetLogsRetrievalOutcomeMissOnNotFound covers the miss branch: a
@@ -420,6 +425,8 @@ func TestGetLogsRetrievalOutcomeMissOnNotFound(t *testing.T) {
 	assert.EqualValues(t, 0, rec["payload_tokens"])
 	assert.EqualValues(t, 0, rec["reuse_count"])
 	assert.Equal(t, "", rec["run_id"])
+	assert.Equal(t, "", rec["payload_tokens_method"], "nothing was retrieved on a miss, so no estimate method applies")
+	assert.EqualValues(t, 0, rec["payload_tokens_error_bound_pct"], "nothing was retrieved on a miss, so no error bound applies")
 }
 
 // TestGetLogsRetrievalOutcomeStaleWhenAnchorDrifted covers the third outcome
