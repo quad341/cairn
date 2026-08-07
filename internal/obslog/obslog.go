@@ -266,9 +266,43 @@ func (l *Logger) WritePathStep(f WritePathStepFields) {
 // with others from the same agent task); it has no matching field on the
 // transcript side, so a correlation report must not rely on it for that
 // join. Outcome is "hit" (found, not stale), "miss" (no such entry), or
-// "stale" (found but freshness-drifted). PayloadTokens is a rough
-// len(body)/4 estimate pending real token counts from burn-report
-// (deliberately not a dependency here). ReuseCount is the entry's
+// "stale" (found but freshness-drifted). PayloadTokens is a calibrated
+// chars-per-token estimate, not a per-entry measured count -- no offline,
+// axis-correct tokenizer is available (evaluated for crn-666s.1: the only
+// readily available Go option, tiktoken-go, downloads its BPE tables over
+// the network by default, AND is the wrong tokenizer family for a
+// Claude-consumed body even if made offline via its embedded-loader
+// companion; Anthropic's real count_tokens endpoint needs network+API-key,
+// ruled out for a routine per-invocation write path). PayloadTokensMethod
+// and PayloadTokensErrorBoundPct carry the estimate's calibration and
+// measured spread into the record itself (rather than leaving them only in
+// this comment) so a consumer summing payload_tokens cannot mistake it for
+// ground truth. The calibration (crn-666s.1): chars-per-token measured
+// against real Anthropic-API-reported usage.output_tokens from n=418
+// text-only assistant turns (no thinking, no tool_use) across local Claude
+// Code transcripts, grouped by message.id -- median 2.64 chars/token,
+// p5=2.27/p95=3.09 (~17% envelope). Text-only turns were used because
+// tokenization is axis-agnostic (the same BPE vocab applies whether a span
+// of text is consumed as input or produced as output, so a clean
+// output-side ratio for plain text transfers to estimating an input-side
+// body's cost) and because two contaminated alternatives were tried and
+// rejected first: (1) pairing one JSONL line's content chars against that
+// line's output_tokens without grouping by message.id undercounts chars
+// ~5-10x, because Claude Code logs one line per content-block fragment of a
+// turn while repeating that turn's cumulative usage on every fragment; (2)
+// even grouped by message.id, turns containing thinking or tool_use blocks
+// give a chars/token ratio 2-5x lower than text-only turns, because billed
+// output_tokens for those block types doesn't correspond 1:1 with the
+// stored block's character length (thinking is billed for more than the
+// stored/visible thinking text suggests; tool_use's structured generation
+// isn't well-approximated by re-serializing its JSON input). Note this
+// measures chars-per-token, the same axis-agnostic quantity GAP 2's
+// transcript join would need for the reverse direction -- it does NOT
+// close GAP 2's ceiling: Claude Code's usage block is still a whole-turn
+// aggregate, not attributable to one tool result (e.g. one cairn get's
+// output) among others a turn may contain, confirmed against burn.py's
+// harvest(), which only sums usage fields already computed by the API per
+// message, never per content block. ReuseCount is the entry's
 // post-increment hit_count on a hit/stale (Find's own RETURNING value),
 // left at zero on a miss.
 type RetrievalOutcomeFields struct {
@@ -277,7 +311,20 @@ type RetrievalOutcomeFields struct {
 	Outcome       string // "hit" | "miss" | "stale"
 	EntryID       string
 	PayloadTokens int
-	ReuseCount    int
+	// PayloadTokensMethod names how PayloadTokens was derived, e.g.
+	// "calibrated_chars_per_token_v1". Left "" when PayloadTokens wasn't
+	// computed (a miss). Always set alongside a nonzero-eligible
+	// PayloadTokens so the estimate's provenance travels with the number
+	// instead of living only in code comments a downstream consumer never
+	// sees.
+	PayloadTokensMethod string
+	// PayloadTokensErrorBoundPct is the calibration's measured spread as a
+	// symmetric-ish percentage envelope around PayloadTokens (see this
+	// struct's doc comment for how it was derived). Left 0 when
+	// PayloadTokensMethod is "" (a miss) -- never meant to be read as "zero
+	// error" on a hit, only as "not applicable."
+	PayloadTokensErrorBoundPct int
+	ReuseCount                 int
 }
 
 // RetrievalOutcome logs a "retrieval_outcome" record.
@@ -288,6 +335,8 @@ func (l *Logger) RetrievalOutcome(f RetrievalOutcomeFields) {
 		slog.String("outcome", f.Outcome),
 		slog.String("entry_id", f.EntryID),
 		slog.Int("payload_tokens", f.PayloadTokens),
+		slog.String("payload_tokens_method", f.PayloadTokensMethod),
+		slog.Int("payload_tokens_error_bound_pct", f.PayloadTokensErrorBoundPct),
 		slog.Int("reuse_count", f.ReuseCount),
 	)
 }

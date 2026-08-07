@@ -110,6 +110,19 @@ var freshnessCmd = &cobra.Command{
 	},
 }
 
+// payloadTokenCharsPerToken and payloadTokensErrorBoundPct are calibrated
+// from real measured data (crn-666s.1), not assumed: chars-per-token from
+// n=418 text-only assistant turns (no thinking, no tool_use) across local
+// Claude Code transcripts, real usage.output_tokens grouped by message.id.
+// Median 2.64, p5=2.27/p95=3.09 -> ~17% envelope (rounded up from the
+// larger of the two tails). See RetrievalOutcomeFields's doc comment for
+// the full methodology, including the two contaminated pairings this
+// supersedes.
+const (
+	payloadTokenCharsPerToken  = 2.64
+	payloadTokensErrorBoundPct = 17
+)
+
 // EntryResult is cairn get --json's top-level shape.
 type EntryResult struct {
 	ID             string               `json:"id"`
@@ -148,12 +161,14 @@ var getCmd = &cobra.Command{
 			outcome = "stale"
 		}
 		obslog.FromContext(cmd.Context()).RetrievalOutcome(obslog.RetrievalOutcomeFields{
-			IdentityTags:  resolveIdentity(cmd),
-			RunID:         resolveRunID(cmd),
-			Outcome:       outcome,
-			EntryID:       e.ID,
-			PayloadTokens: len(e.Body) / 4,
-			ReuseCount:    e.HitCount,
+			IdentityTags:               resolveIdentity(cmd),
+			RunID:                      resolveRunID(cmd),
+			Outcome:                    outcome,
+			EntryID:                    e.ID,
+			PayloadTokens:              int(float64(len(e.Body)) / payloadTokenCharsPerToken),
+			PayloadTokensMethod:        "calibrated_chars_per_token_v1",
+			PayloadTokensErrorBoundPct: payloadTokensErrorBoundPct,
+			ReuseCount:                 e.HitCount,
 		})
 
 		identity, err := resolveIdentityValidated(cmd)
