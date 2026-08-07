@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // ValidatePathSegment reports whether s is safe to use as a single
@@ -68,4 +69,31 @@ func ValidateScopeTag(tag string) error {
 		return errors.New("must not contain more than one colon")
 	}
 	return ValidatePathSegment(value)
+}
+
+// titleCap and summaryCap bound explicit --title/--summary values at write
+// time (ValidateTitleLength/ValidateSummaryLength) and every PrimeItem's
+// Title/Summary at read time (see prime.go), so itemByteCost is a provable
+// constant ceiling regardless of what's on disk. Starting point, not
+// calibrated -- package-level vars, not consts, so they can be retuned
+// without a signature change (crn-3476/crn-zcxq).
+var (
+	titleCap   = 100
+	summaryCap = 280
+)
+
+// ValidateTitleLength reports whether title is within titleCap runes.
+func ValidateTitleLength(title string) error {
+	if n := utf8.RuneCountInString(title); n > titleCap {
+		return fmt.Errorf("must not exceed %d runes (got %d)", titleCap, n)
+	}
+	return nil
+}
+
+// ValidateSummaryLength reports whether summary is within summaryCap runes.
+func ValidateSummaryLength(summary string) error {
+	if n := utf8.RuneCountInString(summary); n > summaryCap {
+		return fmt.Errorf("must not exceed %d runes (got %d)", summaryCap, n)
+	}
+	return nil
 }

@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS entries (
   auto_actionable INTEGER,
   recurrence_count INTEGER DEFAULT 0,
   promoted_bead_id TEXT,
-  last_recalled_at TEXT
+  last_recalled_at TEXT,
+  overridden_duplicate_of TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_entries_topic ON entries(topic_key);
 CREATE TABLE IF NOT EXISTS index_meta (
@@ -71,6 +72,7 @@ var entriesMigrationCols = []struct{ name, def string }{
 	{"recurrence_count", "INTEGER DEFAULT 0"},
 	{"promoted_bead_id", "TEXT"},
 	{"last_recalled_at", "TEXT"},
+	{"overridden_duplicate_of", "TEXT"},
 }
 
 // IndexPath is the rebuildable SQLite index (gitignored; not source of truth).
@@ -181,8 +183,9 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 				id, title, summary, type, topic_key, body_path,
 				anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
 				verified_at, created_by, created_at, hit_count,
-				kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at
-			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at,
+				overridden_duplicate_of
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(id) DO UPDATE SET
 				title=excluded.title, summary=excluded.summary, type=excluded.type,
 				topic_key=excluded.topic_key, body_path=excluded.body_path,
@@ -190,16 +193,21 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 				anchor_paths=excluded.anchor_paths, anchor_spec=excluded.anchor_spec,
 				anchor_fingerprint=excluded.anchor_fingerprint,
 				verified_at=excluded.verified_at, created_by=excluded.created_by,
-				created_at=excluded.created_at`,
+				created_at=excluded.created_at,
+				overridden_duplicate_of=excluded.overridden_duplicate_of`,
 			// hit_count, kind, auto_actionable, recurrence_count, promoted_bead_id,
 			// and last_recalled_at are deliberately not in the UPDATE SET: like
 			// hit_count (crn-6az.6.1.1), they're index-only state a future call
 			// site writes directly via SQL (crn-28ge.1.1), so a reindex must not
 			// stamp a surviving row back to the body's stale seed value.
+			// overridden_duplicate_of is body-sourced (like created_at), not
+			// index-only, so unlike those it IS in the UPDATE SET -- a --force
+			// correction edited into the body must overwrite a stale indexed copy.
 			e.ID, e.Title, e.Summary, e.Type, e.TopicKey, e.BodyPath,
 			e.Anchor.Type, e.Anchor.Repo, string(anchorPaths), e.Anchor.Spec, e.Anchor.Fingerprint,
 			e.VerifiedAt, e.CreatedBy, e.CreatedAt, e.HitCount,
 			e.Kind, autoActionable, e.RecurrenceCount, e.PromotedBeadID, e.LastRecalledAt,
+			e.OverriddenDuplicateOf,
 		); err != nil {
 			return err
 		}

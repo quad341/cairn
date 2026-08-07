@@ -376,6 +376,30 @@ func TestRememberRejectsAttackScopes(t *testing.T) {
 	}
 }
 
+// TestRememberRejectsOverCapTitle and TestRememberRejectsOverCapSummary
+// cover crn-3476 FR-3's write-time layer at the CLI level, mirroring
+// TestRememberRejectsAttackTopics/Scopes: an explicit --title/--summary over
+// the cap is CategoryInvalidInput, same UX as --topic/--scope, and nothing
+// is written. The exact cap value lives in package cairn (unexported, see
+// internal/cairn/validate_test.go for boundary-precise coverage); these use
+// values far past the design's recommended starting caps (Title 100 runes,
+// Summary 280 runes) so the test stays valid across retuning.
+func TestRememberRejectsOverCapTitle(t *testing.T) {
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test",
+		"--title", strings.Repeat("t", 200), "a body")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--title")
+	assertNoFilesWritten(t, store)
+}
+
+func TestRememberRejectsOverCapSummary(t *testing.T) {
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test",
+		"--summary", strings.Repeat("s", 400), "a body")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--summary")
+	assertNoFilesWritten(t, store)
+}
+
 // TestRememberRejectsMalformedScopeTags is TestRememberRejectsAttackScopes'
 // sibling for crn-pa7v's own escaped shapes (crn-0tsu): none of these are
 // attacks (no traversal, no injection) -- they're just not tier:value, and
@@ -768,8 +792,8 @@ func TestRememberCLIRoundTripAllFields(t *testing.T) {
 	assert.Equal(t, "prefer feature flags over env vars", e.Title)
 	assert.Equal(t, "none", e.Anchor.Type)
 	assert.Equal(t, "rig:alpha agent:bot", e.CreatedBy, "created_by must be the CLI's resolved identity, space-joined -- not collapsed like scope")
-	_, err = time.Parse(time.DateOnly, e.CreatedAt)
-	assert.NoError(t, err, "created_at must be an ISO-8601 date")
+	_, err = time.Parse(time.RFC3339, e.CreatedAt)
+	assert.NoError(t, err, "created_at must be an RFC3339 timestamp (crn-3476/crn-zcxq FR-5)")
 }
 
 // TestRememberSharedTierRigScopeVisibleAfterReviewMerge is the full rig:

@@ -964,6 +964,69 @@ func TestMoreSpecificDelegatesToReason(t *testing.T) {
 	assert.False(t, moreSpecific(b, a))
 }
 
+// TestMoreSpecificReasonOverrideWinsRegardlessOfChain covers crn-3476 FR-6
+// (crn-h5zx): an explicit --force correction must win shadow resolution
+// unconditionally via OverriddenDuplicateOf, checked before the existing
+// scope_size/verified_at/created_at/id_tiebreak chain -- so it still wins
+// even when it loses every existing chain key (smaller scope, earlier
+// verified_at, earlier created_at, and a lexicographically higher id).
+func TestMoreSpecificReasonOverrideWinsRegardlessOfChain(t *testing.T) {
+	old := &Entry{ID: "old", Scope: []string{"rig:x", "role:y", "agent:z"}, VerifiedAt: "2026-06-01", CreatedAt: "2026-06-01T00:00:00Z"}
+	newer := &Entry{ID: "zzz-newer", Scope: []string{"rig:x"}, OverriddenDuplicateOf: "old", VerifiedAt: "2026-01-01", CreatedAt: "2026-01-01T00:00:00Z"}
+
+	more, rule := moreSpecificReason(newer, old)
+	assert.True(t, more, "the entry that explicitly overrides the other must win even though it loses every existing chain key")
+	assert.Equal(t, "override", rule)
+
+	more, rule = moreSpecificReason(old, newer)
+	assert.False(t, more, "the overridden entry must lose regardless of argument order")
+	assert.Equal(t, "override", rule)
+}
+
+// TestMoreSpecificReasonOverrideCycleGuardFallsBackToChain covers crn-3476
+// NFR-4: if both candidates in a comparison claim to override each other (a
+// malformed double-force), the override signal must be discarded entirely
+// and resolution must fall through to the existing chain -- never loop,
+// never pick an undefined winner. Scope sizes differ here specifically so
+// the chain's decision is unambiguous proof the fallback actually ran.
+func TestMoreSpecificReasonOverrideCycleGuardFallsBackToChain(t *testing.T) {
+	a := &Entry{ID: "a", Scope: []string{"rig:x", "role:y"}, OverriddenDuplicateOf: "b"}
+	b := &Entry{ID: "b", Scope: []string{"rig:x"}, OverriddenDuplicateOf: "a"}
+
+	more, rule := moreSpecificReason(a, b)
+	assert.True(t, more, "mutual override claims must be discarded, falling back to the existing chain")
+	assert.Equal(t, "scope_size", rule, "the rule reported must be the chain's, proving the override short-circuit was skipped")
+
+	more, rule = moreSpecificReason(b, a)
+	assert.False(t, more)
+	assert.Equal(t, "scope_size", rule)
+}
+
+// TestVisibleShadowRespectsExplicitOverride is crn-h5zx's real-world shape
+// end-to-end: a --force correction (z-correction) and the entry it corrects
+// (a) share a topic_key and scope, so ordinarily they'd only be told apart
+// by the existing chain -- rigged here so id_tiebreak would pick the WRONG
+// (older, corrected) entry absent FR-6. OverriddenDuplicateOf must win
+// regardless, and since moreSpecific is visibleFrom's one call site, this
+// proves prime/recall/get all inherit the fix uniformly.
+func TestVisibleShadowRespectsExplicitOverride(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "rig/alpha/a.md",
+		"+++\nid = \"a\"\ntitle = \"a\"\ntopic_key = \"tk\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
+	writeFile(t, dir, "rig/alpha/z-correction.md",
+		"+++\nid = \"z-correction\"\ntitle = \"z-correction\"\ntopic_key = \"tk\"\nscope = [\"rig:alpha\"]\noverridden_duplicate_of = \"a\"\n+++\nx\n")
+
+	vs, err := Visible(t.Context(), dir, []string{"rig:alpha"})
+	require.NoError(t, err)
+
+	ids := map[string]bool{}
+	for _, e := range vs {
+		ids[e.ID] = true
+	}
+	assert.True(t, ids["z-correction"], "the entry that explicitly overrides the other must be visible")
+	assert.False(t, ids["a"], "the overridden entry must be shadowed even though its id would otherwise win the tiebreak")
+}
+
 func TestShadowReasonReportsWinnerAndRule(t *testing.T) {
 	rigOnly := &Entry{ID: "r1", TopicKey: "t", Scope: []string{"rig:x"}}
 	rigAndRole := &Entry{ID: "r2", TopicKey: "t", Scope: []string{"rig:x", "role:y"}}

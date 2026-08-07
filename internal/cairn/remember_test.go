@@ -114,6 +114,29 @@ func TestNewEntryParamsSummaryOnlyAutoDerivesTitle(t *testing.T) {
 	assert.Equal(t, "explicit summary", e.Summary)
 }
 
+// TestNewEntryTruncatesAutoDerivedTitleAndSummaryToCap covers crn-3476 FR-3's
+// write-time layer for the auto-derivation path: titleAndSummary can return
+// the entry's entire Body with no cap of its own, so NewEntry must truncate
+// an auto-derived Title/Summary to titleCap/summaryCap itself. This is
+// distinct from an explicit Title/Summary, which cmd/remember.go's
+// ValidateTitleLength/ValidateSummaryLength already rejects over the cap
+// before NewEntry ever runs (see TestValidateTitleLengthRejectsOverCap) --
+// there is no user-supplied value to reject here, only an auto-derived one
+// to bound.
+func TestNewEntryTruncatesAutoDerivedTitleAndSummaryToCap(t *testing.T) {
+	origTitleCap, origSummaryCap := titleCap, summaryCap
+	titleCap, summaryCap = 5, 10
+	defer func() { titleCap, summaryCap = origTitleCap, origSummaryCap }()
+
+	e, err := NewEntry(NewEntryParams{
+		TopicKey: "t",
+		Body:     "0123456789ABCDEF",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "01234", e.Title, "auto-derived title must be truncated to titleCap")
+	assert.Equal(t, "0123456789", e.Summary, "auto-derived summary must be truncated to summaryCap")
+}
+
 // TestNewEntryParamsCallerSuppliedAnchorIsUsedVerbatim covers crn-lzn4.1.1's
 // FR-4: a caller-supplied Anchor (built from --anchor-repo/--anchor-path at
 // the CLI layer) must be stored on the entry exactly as given.
@@ -139,11 +162,17 @@ func TestNewEntryParamsAnchorDefaultsToNoneWhenZeroValue(t *testing.T) {
 	assert.Equal(t, "none", e.Anchor.Type)
 }
 
-func TestNewEntryStampsCreatedAtAsDateOnly(t *testing.T) {
+// TestNewEntryStampsCreatedAtAsRFC3339 covers crn-3476 FR-5: CreatedAt moves
+// from time.DateOnly to full time.RFC3339 at write time, matching
+// VerifiedAt/LastRecalledAt -- needed so same-day entries can still be
+// ordered by the exploration band's CreatedAt-desc tiebreak. Lexicographic
+// order is preserved: a DateOnly legacy value is a strict prefix of a
+// same-day RFC3339 value, see moreSpecific.
+func TestNewEntryStampsCreatedAtAsRFC3339(t *testing.T) {
 	e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: "body"})
 	require.NoError(t, err)
-	_, err = time.Parse(time.DateOnly, e.CreatedAt)
-	assert.NoError(t, err, "created_at must be an ISO-8601 date so lexical and chronological order agree, see moreSpecific")
+	_, err = time.Parse(time.RFC3339, e.CreatedAt)
+	assert.NoError(t, err, "created_at must be a full RFC3339 timestamp so same-day entries remain orderable, see moreSpecific and the exploration band")
 }
 
 func TestScopeDirPicksTierByPriorityWhenScopeSpansMultiple(t *testing.T) {

@@ -24,6 +24,14 @@ func disuseReference(lastRecalledAt, createdAt string) (t time.Time, ok bool) {
 		}
 	}
 	if createdAt != "" {
+		// RFC3339 first: NewEntry has stamped created_at with it since
+		// crn-3476/crn-zcxq FR-5. DateOnly stays as a fallback so entries
+		// written to disk before that change (still legitimately on disk,
+		// unrewritten by a reindex) don't silently stop aging into
+		// cull-eligibility.
+		if parsed, err := time.Parse(time.RFC3339, createdAt); err == nil {
+			return parsed, true
+		}
 		if parsed, err := time.Parse(time.DateOnly, createdAt); err == nil {
 			return parsed, true
 		}

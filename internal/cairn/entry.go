@@ -650,6 +650,27 @@ func Visible(ctx context.Context, store string, identity []string) ([]*Entry, er
 // crn-ln1) can load the store once via Status and derive both from a single
 // pass, instead of Visible re-querying the index a second time.
 func visibleFrom(ctx context.Context, entries []*Entry, identity []string) []*Entry {
+	out := scopeMatch(entries, identity)
+
+	shadowed, reasons := shadowReason(out)
+	logger := obslog.FromContext(ctx)
+	for _, r := range reasons {
+		logger.ShadowDecision(obslog.ShadowDecisionFields{
+			Mode:     "identity",
+			TopicKey: r.TopicKey,
+			WinnerID: r.WinnerID,
+			Rule:     r.Rule,
+		})
+	}
+	return shadowed
+}
+
+// scopeMatch returns entries whose every scope tag is satisfied by identity --
+// visibleFrom's subset-match rule without its shadowReason collapse. Factored
+// out as its own step so visibleFrom's two rules (subset-match, then
+// same-topic_key shadow collapse) are each independently readable and
+// testable.
+func scopeMatch(entries []*Entry, identity []string) []*Entry {
 	idset := make(map[string]struct{}, len(identity))
 	for _, t := range identity {
 		idset[t] = struct{}{}
@@ -668,18 +689,7 @@ func visibleFrom(ctx context.Context, entries []*Entry, identity []string) []*En
 			out = append(out, e)
 		}
 	}
-
-	shadowed, reasons := shadowReason(out)
-	logger := obslog.FromContext(ctx)
-	for _, r := range reasons {
-		logger.ShadowDecision(obslog.ShadowDecisionFields{
-			Mode:     "identity",
-			TopicKey: r.TopicKey,
-			WinnerID: r.WinnerID,
-			Rule:     r.Rule,
-		})
-	}
-	return shadowed
+	return out
 }
 
 // scopeTags loads every entry's scope tags from the index, keyed by entry id.
@@ -779,9 +789,23 @@ func moreSpecific(a, b *Entry) bool {
 }
 
 // moreSpecificReason is moreSpecific's reason-carrying counterpart: rule
-// names which tiebreak decided the comparison ("scope_size", "verified_at",
-// "created_at", or "id_tiebreak"), regardless of which of a/b it favors.
+// names which tiebreak decided the comparison ("override", "scope_size",
+// "verified_at", "created_at", or "id_tiebreak"), regardless of which of a/b
+// it favors.
+//
+// An explicit --force correction (OverriddenDuplicateOf) is checked first
+// and wins unconditionally, before the scope/verified_at/created_at/id
+// chain below ever runs -- otherwise a corrected entry can still lose to
+// the entry it corrects (crn-h5zx). If both sides claim to override the
+// other (a malformed double-force), that is a cycle, not a decision: the
+// override signal is discarded and resolution falls through to the
+// existing chain instead of looping or picking an undefined winner.
 func moreSpecificReason(a, b *Entry) (more bool, rule string) {
+	aOverridesB := a.OverriddenDuplicateOf != "" && a.OverriddenDuplicateOf == b.ID
+	bOverridesA := b.OverriddenDuplicateOf != "" && b.OverriddenDuplicateOf == a.ID
+	if aOverridesB != bOverridesA {
+		return aOverridesB, "override"
+	}
 	if len(a.Scope) != len(b.Scope) {
 		return len(a.Scope) > len(b.Scope), "scope_size"
 	}
@@ -900,13 +924,17 @@ func scopeSuperset(super, sub []string) bool {
 // budgeted item list, which backs both text and --json rendering and needs
 // Title/Summary/HitCount to render entries without a body read, crn-0vqk.2/
 // crn-od2x.2). Check only ever reads e.Anchor, ShadowMap only ever reads ID,
-// TopicKey, Scope, VerifiedAt, and CreatedAt, and Prime additionally reads
-// Title, Summary, and HitCount -- so those are the only fields populated
-// here; Type, CreatedBy, Body, and BodyPath are left zero-valued for every
-// caller. Adding a column here is a deliberate, reviewed cost trade-off
-// (these three were already indexed and populated by reindexTx at zero
-// marginal query cost) -- not a precedent for extending this list on
-// request; any future addition needs the same analysis.
+// TopicKey, Scope, VerifiedAt, CreatedAt, and OverriddenDuplicateOf, and Prime
+// additionally reads Title, Summary, and HitCount -- so those are the only
+// fields populated here; Type, CreatedBy, Body, and BodyPath are left
+// zero-valued for every caller. OverriddenDuplicateOf was added for
+// moreSpecificReason's override check (crn-3476/crn-zcxq FR-6): without it,
+// every entry Visible/Prime ever see from this path has an empty override,
+// silently no-opping the --force correction shadowReason is supposed to
+// honor. Adding a column here is a deliberate, reviewed cost trade-off (these
+// were already indexed and populated by reindexTx at zero marginal query
+// cost) -- not a precedent for extending this list on request; any future
+// addition needs the same analysis.
 func Status(ctx context.Context, store string) ([]*Entry, error) {
 	if err := ensureFresh(ctx, store); err != nil {
 		return nil, err
@@ -924,7 +952,8 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 
 	rows, err := db.QueryContext(ctx, `SELECT
 		id, title, summary, hit_count, topic_key, verified_at, created_at,
-		anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint
+		anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
+		overridden_duplicate_of
 		FROM entries ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -938,6 +967,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 		if err := rows.Scan(
 			&e.ID, &e.Title, &e.Summary, &e.HitCount, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt,
 			&e.Anchor.Type, &e.Anchor.Repo, &anchorPaths, &e.Anchor.Spec, &e.Anchor.Fingerprint,
+			&e.OverriddenDuplicateOf,
 		); err != nil {
 			return nil, err
 		}

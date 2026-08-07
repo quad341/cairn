@@ -112,16 +112,23 @@ Loops:
 
 ## 5. Recall
 
-- **Always in context: a bounded map** — a topic tree with counts, *not* the full
-  index. It scales with topic count (sub-linear in entries), so it stays small at
-  scale, and it makes the agent aware of what exists — which is what prevents
-  "queried wrong, silently missed it."
+- **Always in context: two independent views** — an **index view** (total visible
+  count plus a per-`topic_key` breakdown with counts) whose cost is independent of
+  entry content size, so it stays cheap and complete no matter how large the store
+  gets; and a **payload view** (`Items`) — a ranked, budget-bounded itemization
+  that may be partial. The index view is what makes the agent aware of what
+  exists even when the payload had to truncate, preventing "queried wrong,
+  silently missed it"; the payload view is what actually pulls entry IDs, hit
+  counts, and freshness into context.
 - **Bodies on demand** — pulled by exact id, so context isn't bloated by entries
   the task doesn't need.
 
-The map exposes the menu *and* the entry IDs, hit counts and freshness needed to
-pull a body, within a byte budget. Exact topic-to-entry lookup ships as
-`cairn list <topic>`; semantic search remains roadmap work.
+The payload view's items are ranked by hit count, then recency, with a small
+exploration band that gives brand-new entries a cycle of visibility before
+they've earned any hits — and truncated to a byte budget, stopping at the first
+entry that doesn't fit rather than skipping ahead to a cheaper, lower-priority
+one. Exact topic-to-entry lookup ships as `cairn list <topic>`; semantic search
+remains roadmap work.
 
 ## 6. Topic keys
 
