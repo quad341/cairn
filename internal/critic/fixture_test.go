@@ -12,7 +12,7 @@ import (
 // gitConfigValue reads one config key out of the repo at dir.
 func gitConfigValue(t *testing.T, dir, key string) string {
 	t.Helper()
-	out, err := exec.Command("git", "-C", dir, "config", "--get", key).CombinedOutput()
+	out, err := exec.CommandContext(t.Context(), "git", "-C", dir, "config", "--get", key).CombinedOutput()
 	require.NoError(t, err, "git config --get %s: %s", key, out)
 	return strings.TrimSpace(string(out))
 }
