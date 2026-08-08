@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -39,6 +40,36 @@ func gitAdd(t *testing.T, dir, path string) {
 	t.Helper()
 	out, err := exec.CommandContext(t.Context(), "git", "-C", dir, "add", path).CombinedOutput()
 	require.NoErrorf(t, err, "git add: %s", out)
+}
+
+// gitFixtureRun runs a one-off git subcommand for fixture setup and fails
+// the test on error — a generic counterpart to gitInit/gitCommitAll/gitAdd
+// for the remote/push/fetch calls the origin-tracking tests below need.
+func gitFixtureRun(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	require.NoErrorf(t, err, "git %v: %s", args, out)
+	return string(out)
+}
+
+// newOriginTrackedRepo creates a bare "remote" repo and a local repo with an
+// origin remote already pointed at it, seeds a.go with content, and pushes
+// it to origin/main. The bare repo's HEAD is pinned to refs/heads/main up
+// front so later clones of it check out main cleanly regardless of the
+// sandbox's ambient init.defaultBranch. Returns the local repo's directory.
+func newOriginTrackedRepo(t *testing.T, content string) string {
+	t.Helper()
+	remote := t.TempDir()
+	gitFixtureRun(t, remote, "init", "--bare", "-q")
+	gitFixtureRun(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte(content), 0o600))
+	gitCommitAll(t, repo, "v1")
+	gitFixtureRun(t, repo, "remote", "add", "origin", remote)
+	gitFixtureRun(t, repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+	return repo
 }
 
 func TestCheckNoAnchor(t *testing.T) {
@@ -133,6 +164,100 @@ func TestFileAnchorDrift(t *testing.T) {
 	fp2, err := ComputeFingerprint(ctx, a)
 	require.NoError(t, err)
 	assert.NotEqual(t, fp1, fp2, "fingerprint should change after the source changed")
+}
+
+// TestFileAnchorFingerprintUnaffectedByLocalHeadDrift covers crn-uztp: a
+// files anchor's fingerprint must track the anchor repo's origin/main, not
+// whatever commit its local working copy happens to be checked out to.
+// Before the fix, objectHash resolved paths against bare "HEAD", so a local
+// commit made in the anchor repo -- never pushed, irrelevant to anyone else
+// -- silently changed every fingerprint computed against it. At fleet scale
+// that is the "pending mass false-stale event" crn-uztp describes: every
+// entry anchored to that repo would flip to stale in lockstep the moment its
+// local checkout moved, regardless of whether origin/main (what people
+// actually read) changed at all.
+func TestFileAnchorFingerprintUnaffectedByLocalHeadDrift(t *testing.T) {
+	ctx := t.Context()
+	repo := newOriginTrackedRepo(t, "package a\n")
+
+	a := Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}
+	fp1, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	require.NotEmpty(t, fp1)
+
+	// Local-only change: committed in the anchor repo's working copy, never
+	// pushed. origin/main is untouched.
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n\n// local only\n"), 0o600))
+	gitCommitAll(t, repo, "v2 (local only, not pushed)")
+
+	fp2, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	assert.Equal(t, fp1, fp2, "fingerprint must track origin/main, not the anchor repo's local HEAD")
+}
+
+// TestFileAnchorFingerprintTracksOriginMainDrift covers crn-uztp the other
+// direction: when origin/main genuinely changes, Check must report Stale
+// even if the anchor repo's own local HEAD never moves -- exactly the
+// reported failure mode, where the canonical checkout sat on a stale
+// detached HEAD while origin/main moved 57 commits ahead and every anchor
+// kept reporting "fresh" against the wrong tree. This also guards against a
+// degenerate fix that just freezes on the first-seen hash instead of
+// actually resolving origin/main.
+func TestFileAnchorFingerprintTracksOriginMainDrift(t *testing.T) {
+	ctx := t.Context()
+	repo := newOriginTrackedRepo(t, "package a\n")
+	remote := strings.TrimSpace(gitFixtureRun(t, repo, "remote", "get-url", "origin"))
+
+	a := Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}
+	fp1, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	require.NotEmpty(t, fp1)
+	a.Fingerprint = fp1
+	e := &Entry{ID: "x", Anchor: a}
+	st, detail := Check(ctx, e)
+	require.Equalf(t, Fresh, st, "detail: %s", detail)
+
+	// A second clone pushes new content to origin/main. repo's own local
+	// HEAD is deliberately never touched -- only its remote-tracking ref
+	// moves, via fetch, mirroring "someone else advanced the shared repo".
+	clone := t.TempDir()
+	gitFixtureRun(t, clone, "clone", "-q", remote, ".")
+	gitFixtureRun(t, clone, "config", "user.email", "t@example.com")
+	gitFixtureRun(t, clone, "config", "user.name", "t")
+	gitFixtureRun(t, clone, "config", "commit.gpgsign", "false")
+	require.NoError(t, os.WriteFile(filepath.Join(clone, "a.go"), []byte("package a\n\n// upstream change\n"), 0o600))
+	gitCommitAll(t, clone, "v2")
+	gitFixtureRun(t, clone, "push", "-q", "origin", "HEAD:refs/heads/main")
+	gitFixtureRun(t, repo, "fetch", "-q", "origin")
+
+	st, detail = Check(ctx, e)
+	assert.Equalf(t, Stale, st, "detail: %s", detail)
+}
+
+// TestFileAnchorNoOriginRemoteFallsBackToHead pins crn-uztp's fallback
+// contract: a files anchor repo with no origin remote configured at all
+// (every other fixture in this file is shaped this way) must resolve
+// exactly as before the fix -- against HEAD -- not go silent just because
+// origin/main doesn't exist.
+func TestFileAnchorNoOriginRemoteFallsBackToHead(t *testing.T) {
+	ctx := t.Context()
+	repo := t.TempDir()
+	gitInit(t, repo)
+	src := filepath.Join(repo, "a.go")
+	require.NoError(t, os.WriteFile(src, []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	a := Anchor{Type: "files", Repo: repo, Paths: []string{"a.go"}}
+	fp1, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	require.NotEmpty(t, fp1)
+
+	require.NoError(t, os.WriteFile(src, []byte("package a\n\n// changed\n"), 0o600))
+	gitCommitAll(t, repo, "change")
+
+	fp2, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	assert.NotEqual(t, fp1, fp2, "with no origin remote, fingerprint must still track local HEAD")
 }
 
 // TestCheckMissingRepositoryIsUnknown covers FR-5 class 1: an anchor
