@@ -125,18 +125,34 @@ func ReindexEntries(ctx context.Context, store string, entries []*Entry) (int, e
 	}
 	defer func() { _ = db.Close() }()
 
-	if _, err := db.ExecContext(ctx, entriesSchema); err != nil {
-		return 0, err
-	}
-	for _, col := range entriesMigrationCols {
-		if err := addColumnIfMissing(ctx, db, "entries", col.name, col.def); err != nil {
-			return 0, err
-		}
-	}
-
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
+	}
+	// entriesSchema and the column migrations run INSIDE this tx, not as
+	// autocommit statements before it (crn-t42e). openDB's DSN sets
+	// _txlock=immediate, which takes the write lock at BEGIN -- the one place
+	// busy_timeout's retry loop actually applies. An autocommit CREATE TABLE
+	// upgrades from a read lock to a write lock mid-statement instead, and
+	// SQLite answers that with an immediate SQLITE_BUSY rather than invoking
+	// the busy handler, because retrying a lock upgrade can deadlock. That is
+	// why the old code failed *instantly* instead of after the 5000ms
+	// busy_timeout: the timeout was never consulted.
+	//
+	// Only reachable on a cold store, where several processes race to create
+	// index.sqlite at once -- ensureFresh treats "no watermark row" as stale
+	// and reindexes synchronously, so a fleet cold-start put every agent on
+	// this line simultaneously. Measured before the move: 1 failure per 80
+	// concurrent Reindex calls, ~13% of stress runs.
+	if _, err := tx.ExecContext(ctx, entriesSchema); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	for _, col := range entriesMigrationCols {
+		if err := addColumnIfMissing(ctx, tx, "entries", col.name, col.def); err != nil {
+			_ = tx.Rollback()
+			return 0, err
+		}
 	}
 	// entry_tags carries no index-only state worth preserving across a
 	// rebuild (unlike entries -- see entriesSchema's comment), so it's
@@ -247,7 +263,14 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 // addColumnIfMissing adds a column to an existing table, tolerating the case
 // where it's already present -- SQLite's ADD COLUMN has no IF NOT EXISTS
 // clause portable across the versions cairn might run against.
-func addColumnIfMissing(ctx context.Context, db *sql.DB, table, column, def string) error {
+// execer is the ExecContext half of *sql.DB and *sql.Tx, so schema helpers
+// can run either standalone or inside a caller's transaction. Reindex needs
+// the tx form: see the _txlock=immediate note in ReindexEntries (crn-t42e).
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func addColumnIfMissing(ctx context.Context, db execer, table, column, def string) error {
 	// table/column/def are always our own compile-time literals (entriesMigrationCols
 	// above), never user input, so building the DDL string is safe despite the shape
 	// gosec's G201 flags.
