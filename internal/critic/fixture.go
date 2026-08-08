@@ -44,18 +44,38 @@ func seedEntries(ctx context.Context, store string, entries []*cairn.Entry) (fun
 	return cleanup, nil
 }
 
+// fixtureRepoInit is the git incantation that turns a scratch directory into
+// a usable throwaway fixture repo. Shared by every scenario that builds one,
+// so the auto-maintenance suppression below can't be fixed in one place and
+// forgotten in another.
+//
+// gc.auto/maintenance.auto are the load-bearing pair. `git commit` ends in
+// run_auto_maintenance(), which spawns `git maintenance run --auto --detach`
+// — and --detach means it OUTLIVES the commit that started it. On a fixture
+// repo of a few hundred objects it goes on to run `git repack` and `git
+// pack-objects`, writing .git/objects/pack/.tmp-<pid>-pack while the test
+// that created the repo has already returned. t.TempDir()'s RemoveAll then
+// races those writes and fails with "unlinkat .../.git/objects: directory
+// not empty" — a cleanup-time flake that never touches an assertion, so it
+// reads as unrelated infrastructure noise and got refiled four separate
+// times (crn-9k30, crn-u8c0, crn-mxvn, crn-tw3bl) before anyone traced it.
+// Measured at 13 failures in 30 runs before, 0 in 30 after.
+var fixtureRepoInit = [][]string{
+	{"init", "-q"},
+	{"config", "user.email", "critic@cairn.local"},
+	{"config", "user.name", "cairn-critic"},
+	{"config", "commit.gpgsign", "false"},
+	{"config", "gc.auto", "0"},
+	{"config", "maintenance.auto", "false"},
+}
+
 // commitFixtures makes store's current on-disk state git-observable.
 // Idempotent: it initializes store as a repo (index/ gitignored, since it's
 // the rebuildable SQLite index, not source of truth — see IndexPath) the
 // first time it's called for a given store, a no-op on later calls.
 func commitFixtures(ctx context.Context, store string) error {
 	if _, err := os.Stat(filepath.Join(store, ".git")); os.IsNotExist(err) {
-		for _, args := range [][]string{
-			{"init", "-q"},
-			{"config", "user.email", "critic@cairn.local"},
-			{"config", "user.name", "cairn-critic"},
-			{"config", "commit.gpgsign", "false"},
-		} {
+		for _, args := range fixtureRepoInit {
 			cmd := exec.CommandContext(ctx, "git", append([]string{"-C", store}, args...)...)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("git %v: %s: %w", args, out, err)
