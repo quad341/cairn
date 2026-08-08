@@ -44,6 +44,17 @@ func resetRageFlags(t *testing.T) {
 		f.Changed = false
 	}
 	require.NoError(t, resetIdentityFlag())
+
+	// storeFlag is a package-level var that pflag only overwrites when
+	// --store is actually present in that invocation's args -- an omitted
+	// flag leaves whatever a *prior* test last set. Reset it here (mirroring
+	// resetIdentityFlag's own Changed reset) so a test that relies solely on
+	// $CAIRN_STORE, like TestRageBundleReportsStoreSourceEnv, never inherits
+	// another test's --store value.
+	storeFlag = ""
+	if f := rootCmd.PersistentFlags().Lookup("store"); f != nil {
+		f.Changed = false
+	}
 }
 
 // readBundle parses rage's stdout (bundle path, then issue URL -- exactly

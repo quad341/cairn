@@ -107,9 +107,24 @@ var rootCmd = &cobra.Command{
 
 // Execute runs the root command.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+	os.Exit(executeAndExit())
+}
+
+// executeAndExit is Execute's factored-out body, split out so a test can
+// drive it without an os.Exit call killing the test binary (mirroring
+// doctor.go's own runDoctor split). It uses ExecuteC rather than plain
+// Execute because ExecuteC returns the resolved leaf command alongside the
+// final error regardless of source (RunE, PersistentPreRunE, or nil on
+// success) -- logCommandExit needs that leaf command's full CommandPath,
+// which plain Execute discards.
+func executeAndExit() int {
+	cmd, err := rootCmd.ExecuteC()
+	code := 0
+	if err != nil {
+		code = 1
 	}
+	logCommandExit(cmd, code, err)
+	return code
 }
 
 func init() {

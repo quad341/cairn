@@ -370,3 +370,31 @@ func (l *Logger) PrimeEmit(f PrimeEmitFields) {
 		slog.Int("truncated_count", f.TruncatedCount),
 	)
 }
+
+// ExitFields is the "exit" record: logged exactly once per invocation, at
+// the very end, regardless of success or failure. Command is the full
+// resolved command path (e.g. "cairn doctor explain"), serialized under the
+// JSON key "command_path" rather than "command" -- the envelope already
+// writes a "command" key at construction time (Options.Command, the leaf
+// command name), and reusing that key here would silently collide under
+// encoding/json's unmarshal-into-map, last-key-wins semantics. Flags is the
+// names only of flags the invocation explicitly set (never a value) and
+// never includes positional arguments -- this log is always-on, never
+// opt-in, and command bodies (e.g. cairn remember's entry text) are
+// free-form prose that must never reach it.
+type ExitFields struct {
+	Command  string
+	Flags    []string
+	ExitCode int
+	Error    string
+}
+
+// Exit logs an "exit" record.
+func (l *Logger) Exit(f ExitFields) {
+	l.sl.Info("", slog.String("kind", "exit"),
+		slog.String("command_path", f.Command),
+		slog.Any("flags", f.Flags),
+		slog.Int("exit_code", f.ExitCode),
+		slog.String("error", f.Error),
+	)
+}

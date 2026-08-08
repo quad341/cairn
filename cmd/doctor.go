@@ -30,9 +30,11 @@ var doctorCmd = &cobra.Command{
 		code, err := runDoctor(cmd, args)
 		if err != nil {
 			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), err)
+			logCommandExit(cmd, code, err)
 			os.Exit(code)
 		}
 		if code != 0 {
+			logCommandExit(cmd, code, nil)
 			os.Exit(code)
 		}
 		return nil
