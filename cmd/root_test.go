@@ -212,3 +212,135 @@ func TestTraceFlagMirrorsContextRecordToStderr(t *testing.T) {
 func TestRootHelpDocumentsLogPath(t *testing.T) {
 	assert.Contains(t, rootCmd.Long, filepath.Join("cairn", "debug.jsonl"))
 }
+
+// findExitRecord reads xdg's debug.jsonl and returns the single "exit"
+// record it contains, mirroring findRetrievalOutcomeRecord/
+// findPrimeEmitRecord's kind-filtering convention (commands_test.go,
+// prime_test.go) rather than assuming a fixed line index.
+func findExitRecord(t *testing.T, xdg string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(xdg, "cairn", "debug.jsonl"))
+	require.NoError(t, err)
+
+	var found []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var rec map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &rec))
+		if rec["kind"] == "exit" {
+			found = append(found, rec)
+		}
+	}
+	require.Len(t, found, 1, "expected exactly one exit record in:\n%s", data)
+	return found[0]
+}
+
+// TestExecuteAndExitLogsExitRecordOnSuccess covers crn-n5yaz's FR-8/FR-9
+// acceptance criterion that every invocation logs exactly one "exit" record,
+// using ExecuteC (not the plain Execute) so this observes the exit code
+// derived from the resolved leaf command's own error return.
+// executeAndExit is Execute's factored-out body, mirroring runDoctor's own
+// split (doctor.go) so a test can drive it without an os.Exit call killing
+// the test binary.
+func TestExecuteAndExitLogsExitRecordOnSuccess(t *testing.T) {
+	resetRootFlagsForTest(t)
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("CAIRN_IDENTITY", "")
+
+	dir := t.TempDir()
+	rootCmd.SetArgs([]string{"status", "--store", dir})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+
+	code := executeAndExit()
+	assert.Equal(t, 0, code)
+
+	rec := findExitRecord(t, xdg)
+	assert.Equal(t, "cairn status", rec["command_path"])
+	assert.Equal(t, float64(0), rec["exit_code"])
+	assert.Equal(t, "", rec["error"])
+}
+
+// TestExecuteAndExitLogsExitRecordOnError covers the error-return path (a
+// command that fails via cobra's normal RunE/PersistentPreRunE error return,
+// never via a direct os.Exit call): executeAndExit must still return the
+// process exit code the real Execute() would have used (1, matching
+// Execute's pre-existing os.Exit(1) behavior on any error), and log it.
+func TestExecuteAndExitLogsExitRecordOnError(t *testing.T) {
+	resetRootFlagsForTest(t)
+	orig := storeFlag
+	storeFlag = ""
+	defer func() { storeFlag = orig }()
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("CAIRN_STORE", "")
+	t.Setenv("CAIRN_IDENTITY", "")
+
+	rootCmd.SetArgs([]string{"status"})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+
+	code := executeAndExit()
+	assert.Equal(t, 1, code)
+
+	rec := findExitRecord(t, xdg)
+	assert.Equal(t, float64(1), rec["exit_code"])
+	assert.Contains(t, rec["error"], "no cairn store configured")
+}
+
+// TestExecuteAndExitCommandPathIncludesSubcommand confirms the logged
+// command_path is the resolved leaf command's full path ("cairn doctor
+// explain"), not just rootCmd's own name -- ExecuteC resolves the leaf
+// command that actually ran even when it returns an error, which is the
+// mechanism this whole design relies on (see executeAndExit's doc comment).
+func TestExecuteAndExitCommandPathIncludesSubcommand(t *testing.T) {
+	resetRootFlagsForTest(t)
+	resetDoctorFlags(t)
+	t.Cleanup(func() { resetDoctorFlags(t) })
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("CAIRN_IDENTITY", "")
+
+	dir := t.TempDir()
+	rootCmd.SetArgs([]string{"doctor", "explain", "does-not-exist", "--store", dir})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+
+	code := executeAndExit()
+	assert.Equal(t, 1, code)
+
+	rec := findExitRecord(t, xdg)
+	assert.Equal(t, "cairn doctor explain", rec["command_path"])
+}
+
+// TestExecuteAndExitRememberMarkerTextNeverLeaksIntoExitRecord covers
+// crn-n5yaz's 10th acceptance criterion end-to-end: "cairn remember [body]"
+// takes entry content as a bare positional argument (remember.go), so this
+// is the concrete command the design doc's OQ3/Guardrail #2 redaction rule
+// exists for. No store is configured, so PersistentPreRunE fails before the
+// body is ever read -- exercised here through the real remember command,
+// not just logCommandExit's own synthetic unit tests (exit_test.go).
+func TestExecuteAndExitRememberMarkerTextNeverLeaksIntoExitRecord(t *testing.T) {
+	resetRootFlagsForTest(t)
+	orig := storeFlag
+	storeFlag = ""
+	defer func() { storeFlag = orig }()
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("CAIRN_STORE", "")
+	t.Setenv("CAIRN_IDENTITY", "")
+
+	rootCmd.SetArgs([]string{"remember", "MARKER-TEXT-f7a2c9"})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+
+	code := executeAndExit()
+	assert.Equal(t, 1, code, "remember with no store configured must fail before ever touching the body")
+
+	data, err := os.ReadFile(filepath.Join(xdg, "cairn", "debug.jsonl"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "MARKER-TEXT-f7a2c9", "positional body text must never reach the debug log")
+
+	rec := findExitRecord(t, xdg)
+	assert.Equal(t, "cairn remember", rec["command_path"])
+}

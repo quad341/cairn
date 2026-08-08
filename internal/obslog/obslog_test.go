@@ -140,12 +140,13 @@ func TestAllRecordKindsProduceValidJSON(t *testing.T) {
 	l.WritePathStep(WritePathStepFields{Operation: "commit_direct", Name: "git_add", Outcome: "ok", DurationMS: 5})
 	l.RetrievalOutcome(RetrievalOutcomeFields{IdentityTags: []string{"rig:web"}, RunID: "run-1", Outcome: "hit", EntryID: "e1", PayloadTokens: 42, ReuseCount: 3})
 	l.PrimeEmit(PrimeEmitFields{IdentityTags: []string{"rig:web"}, RunID: "run-1", ItemIDs: []string{"e1"}, TotalVisible: 1, TruncatedCount: 0})
+	l.Exit(ExitFields{Command: "status", Flags: []string{"store"}, ExitCode: 0, Error: ""})
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 8 {
-		t.Fatalf("got %d lines, want 8:\n%s", len(lines), buf.String())
+	if len(lines) != 9 {
+		t.Fatalf("got %d lines, want 9:\n%s", len(lines), buf.String())
 	}
-	wantKinds := []string{"context", "shadow_decision", "freshness_check", "index_drift", "write_path", "write_path_step", "retrieval_outcome", "prime_emit"}
+	wantKinds := []string{"context", "shadow_decision", "freshness_check", "index_drift", "write_path", "write_path_step", "retrieval_outcome", "prime_emit", "exit"}
 	for i, line := range lines {
 		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
@@ -201,5 +202,84 @@ func TestPrimeEmitRecordShape(t *testing.T) {
 	ids, ok := rec["item_ids"].([]any)
 	if !ok || len(ids) != 2 || ids[0] != "g/a" || ids[1] != "g/b" {
 		t.Errorf("item_ids = %v, want [g/a g/b]", rec["item_ids"])
+	}
+}
+
+// TestExitRecordShape covers crn-n5yaz's FR-8/FR-9 core acceptance
+// criterion: every invocation logs exactly one "exit" record carrying the
+// resolved command path, the names of flags explicitly set, the process
+// exit code, and any top-level error text. Command is asserted under the
+// "command_path" key, not "command" -- the envelope already writes a
+// "command" key at construction time (Options.Command, the leaf command
+// name); reusing that key for ExitFields.Command would silently collide
+// under encoding/json's unmarshal-into-map, last-key-wins semantics.
+func TestExitRecordShape(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewWithWriter(&buf, Options{Command: "doctor"}, &bytes.Buffer{})
+	l.Exit(ExitFields{
+		Command:  "cairn doctor explain",
+		Flags:    []string{"store", "json"},
+		ExitCode: 1,
+		Error:    "2 findings",
+	})
+
+	line := strings.TrimSpace(buf.String())
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		t.Fatalf("record line is not valid JSON: %v\nline: %s", err, line)
+	}
+
+	if rec["kind"] != "exit" {
+		t.Errorf("kind = %v, want exit", rec["kind"])
+	}
+	if rec["command_path"] != "cairn doctor explain" {
+		t.Errorf("command_path = %v, want %q", rec["command_path"], "cairn doctor explain")
+	}
+	if rec["exit_code"] != float64(1) {
+		t.Errorf("exit_code = %v, want 1", rec["exit_code"])
+	}
+	if rec["error"] != "2 findings" {
+		t.Errorf("error = %v, want %q", rec["error"], "2 findings")
+	}
+	flags, ok := rec["flags"].([]any)
+	if !ok || len(flags) != 2 || flags[0] != "store" || flags[1] != "json" {
+		t.Errorf("flags = %v, want [store json]", rec["flags"])
+	}
+	// command_path must never collide with the envelope's own "command" key
+	// (the leaf command name set at NewWithWriter time).
+	if rec["command"] != "doctor" {
+		t.Errorf("command = %v, want unchanged envelope value %q (must not be overwritten by ExitFields.Command)", rec["command"], "doctor")
+	}
+}
+
+// TestExitRecordOmitsPositionalArgsAndFlagValues covers the design's
+// redaction guardrail (OQ3): the "exit" record's Flags field carries only
+// flag *names* -- Exit itself has no way to smuggle a flag value or
+// positional argument into the record, because ExitFields has no field for
+// either. This test pins that shape: adding an Args []string field or a
+// map[string]string of flag values back onto ExitFields would be a
+// regression, since cairn remember's entry-body argument is free-form prose
+// and this log is always-on, never opt-in.
+func TestExitRecordOmitsPositionalArgsAndFlagValues(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewWithWriter(&buf, Options{Command: "remember"}, &bytes.Buffer{})
+	l.Exit(ExitFields{
+		Command:  "cairn remember",
+		Flags:    []string{"store"},
+		ExitCode: 0,
+	})
+
+	line := strings.TrimSpace(buf.String())
+	if strings.Contains(line, "MARKER-TEXT") {
+		t.Errorf("exit record must never contain positional argument content, got: %s", line)
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		t.Fatalf("record line is not valid JSON: %v\nline: %s", err, line)
+	}
+	for _, forbidden := range []string{"args", "positional", "flag_values"} {
+		if _, ok := rec[forbidden]; ok {
+			t.Errorf("exit record contains forbidden key %q: %v", forbidden, rec)
+		}
 	}
 }
