@@ -279,7 +279,7 @@ func TestImportEntryCommitFailureExcludesOnlyThatEntryFromManifest(t *testing.T)
 	// The doomed entry's file must survive on disk: entry.Create succeeded
 	// before CommitToReviewBranch was ever attempted, and a downstream
 	// commit failure must not roll back an already-durable write.
-	_, statErr := os.Stat(filepath.Join(store, "rig", "web", "imp-fr3-doomed.md"))
+	_, statErr := os.Stat(filepath.Join(store, "role", "doomed-reviewer", "imp-fr3-doomed.md"))
 	assert.NoError(t, statErr, "a commit failure must not roll back the entry's already-written file")
 }
 
