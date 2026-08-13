@@ -1068,6 +1068,16 @@ func TestRememberNearMissTopicKeyDoesNotIncrementRecurrence(t *testing.T) {
 // different topic -- correctly not a recurrence): here the topic is the same
 // and the body is what differs, and it must be no less correctly not a
 // recurrence.
+//
+// crn-pip8: storing it was never the whole story. A topic-only match (no
+// --force) used to fall through with no link between the two entries at
+// all, leaving shadow resolution to moreSpecificReason's scope_size ->
+// verified_at -> created_at -> id_tiebreak chain -- and since both calls
+// here share a scope and typically tie on CreatedAt's second-precision
+// timestamp, id_tiebreak (unrelated to write recency) could just as easily
+// pick the FIRST (superseded) body as the second. The second call must now
+// record OverriddenDuplicateOf against the first automatically, same as an
+// explicit --force override, so the correction deterministically wins.
 func TestRememberDistinctBodySameTopicKeyIsStoredNotDiscarded(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
@@ -1077,6 +1087,7 @@ func TestRememberDistinctBodySameTopicKeyIsStoredNotDiscarded(t *testing.T) {
 		err := runRememberAgainstStore(t, store, "--topic", "pr-triage", "--scope", "agent:test", "always tag every reviewer before merging a pull request")
 		require.NoError(t, err)
 	})
+	first := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
 	secondOut := captureStdout(t, func() {
 		err := runRememberAgainstStore(t, store, "--topic", "pr-triage", "--scope", "agent:test", "rollback scripts must be tested against staging data first")
 		require.NoError(t, err)
@@ -1085,16 +1096,25 @@ func TestRememberDistinctBodySameTopicKeyIsStoredNotDiscarded(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(store, "agent", "test"))
 	require.NoError(t, err)
 	require.Len(t, entries, 2, "a shared --topic alone must not discard a genuinely distinct second body -- crn-qxj3")
+	var second *cairn.Entry
 	for _, ent := range entries {
 		parsed, err := cairn.ParseEntry(filepath.Join(store, "agent", "test", ent.Name()))
 		require.NoError(t, err)
 		assert.Equal(t, "pr-triage", parsed.TopicKey)
 		assert.Equal(t, 0, parsed.RecurrenceCount, "neither entry was a genuine recurrence, so RecurrenceCount must stay 0 on both")
+		if parsed.ID != first.ID {
+			second = parsed
+		}
 	}
+	require.NotNil(t, second)
+	assert.Equal(t, first.ID, second.OverriddenDuplicateOf,
+		"crn-pip8: a topic-only match must auto-record the override, same as --force does for a content match, so shadow resolution can never fall through to the recency-blind id_tiebreak for a plain correction")
 
 	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
-	require.Len(t, secondLines, 2, "the second call must be an ordinary new-entry create (id, commit SHA), not a recurrence report")
+	require.Len(t, secondLines, 3, "the second call now reports the auto-override: id, override line, commit SHA")
 	assert.NotContains(t, secondLines[0], "recurrence", "a distinct body under the same topic must never be reported as a recurrence")
+	assert.Equal(t, "override: supersedes prior entry "+first.ID+" for topic \"pr-triage\"", secondLines[1],
+		"the auto-override line must not claim --force was used ('forced past duplicate') when it was not")
 }
 
 // TestRememberEmptyTopicNeverMatchesForRecurrence covers the AC's own edge
