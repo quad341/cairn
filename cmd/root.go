@@ -84,6 +84,7 @@ var rootCmd = &cobra.Command{
 			StoreSource:    storeSource,
 			IdentityTags:   identityTags,
 			IdentitySource: identitySource,
+			Args:           os.Args,
 		})
 
 		if storeP == "" && !commandsExemptFromStoreGate[cmd.Name()] {
