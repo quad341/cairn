@@ -203,3 +203,30 @@ func TestPrimeEmitRecordShape(t *testing.T) {
 		t.Errorf("item_ids = %v, want [g/a g/b]", rec["item_ids"])
 	}
 }
+
+// TestContextRecordIncludesArgs covers ContextFields.Args: the invoking
+// process's argv must round-trip into the "context" record's "args" field
+// so a later rage bundle can answer "what command line produced this run"
+// from the log alone.
+func TestContextRecordIncludesArgs(t *testing.T) {
+	var buf bytes.Buffer
+	l := NewWithWriter(&buf, Options{Command: "status"}, &bytes.Buffer{})
+	l.Context(ContextFields{Args: []string{"cairn", "status", "--store", "/tmp/x"}})
+
+	line := strings.TrimSpace(buf.String())
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		t.Fatalf("record line is not valid JSON: %v\nline: %s", err, line)
+	}
+
+	rawArgs, ok := rec["args"].([]any)
+	if !ok || len(rawArgs) != 4 {
+		t.Fatalf("args = %v, want a 4-element array", rec["args"])
+	}
+	want := []string{"cairn", "status", "--store", "/tmp/x"}
+	for i, w := range want {
+		if rawArgs[i] != w {
+			t.Errorf("args[%d] = %v, want %q", i, rawArgs[i], w)
+		}
+	}
+}
