@@ -2,6 +2,7 @@ package cairn
 
 import (
 	"database/sql"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,6 +82,45 @@ func TestRecallStatsReportsHitCountAndLastRecalledAt(t *testing.T) {
 	assert.Equal(t, RecallStatsFinding{
 		EntryID: "b", TopicKey: "", HitCount: 0, LastRecalledAt: "",
 	}, findings[1], "an entry with no recall history is still reported, not filtered out")
+}
+
+// TestRecallStatsJSONEmitsNullNotOmittedForNeverRecalled pins the --json
+// wire contract (crn-snba's acceptance criterion): a never-recalled entry
+// must serialize last_recalled_at as an explicit JSON null, not omit the
+// key. omitempty on a plain string does the latter -- present-but-blank and
+// absent read identically to a Go caller but differently to a JSON one, and
+// "omitted" was never one of the two options the bug report weighed.
+func TestRecallStatsJSONEmitsNullNotOmittedForNeverRecalled(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/a.md", "+++\n"+
+		"id = \"a\"\n"+
+		"title = \"A\"\n"+
+		"hit_count = 5\n"+
+		"last_recalled_at = \"2026-07-20T00:00:00Z\"\n"+
+		"+++\n"+
+		"body\n")
+	// never recalled: last_recalled_at left at its zero value.
+	writeFile(t, store, "global/b.md", "+++\nid = \"b\"\ntitle = \"B\"\n+++\nbody\n")
+
+	findings, err := RecallStats(ctx, store)
+	require.NoError(t, err)
+	require.Len(t, findings, 2)
+
+	raw, err := json.Marshal(findings)
+	require.NoError(t, err)
+
+	var decoded []map[string]any
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+	require.Len(t, decoded, 2)
+
+	val, present := decoded[0]["last_recalled_at"]
+	assert.True(t, present, "a recalled entry must carry last_recalled_at")
+	assert.Equal(t, "2026-07-20T00:00:00Z", val)
+
+	val, present = decoded[1]["last_recalled_at"]
+	assert.True(t, present, "last_recalled_at must be present as JSON null, not omitted, for a never-recalled entry")
+	assert.Nil(t, val, "a never-recalled entry's last_recalled_at must serialize as null, not omitted or empty string")
 }
 
 func TestPromoteCandidatesFiltersByThresholdAndIdempotency(t *testing.T) {
