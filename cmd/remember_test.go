@@ -620,6 +620,17 @@ func TestRememberWritesUnderEachScopeTier(t *testing.T) {
 			assert.Equal(t, []string{tc.tag}, e.Scope)
 		})
 	}
+	// global's own path has no subdirName segment (global/<id>.md, not
+	// <tier>/<value>/<id>.md), so it can't fit the table above as a naive
+	// fourth row; this dedicated case only proves the directory-selection
+	// half of AC#2 that the doc comment's two dedicated round-trip tests
+	// don't -- it does not replace them.
+	t.Run("global", func(t *testing.T) {
+		store, err := runRemember(t, "--topic", "valid-topic", "--scope", "", "a body")
+		require.NoError(t, err)
+		e := requireSingleEntry(t, filepath.Join(store, "global"))
+		assert.Empty(t, e.Scope)
+	})
 }
 
 // TestRememberPrivateTierCommitsDirectlyAndReportsSHA covers crn-419.3's CLI
@@ -672,6 +683,52 @@ func TestRememberNonPrivateTierDoesNotCommit(t *testing.T) {
 	assert.NotContains(t, lines[0], "/", "the first line must be the bare entry id, not a branch or reviewer address")
 }
 
+// TestRememberNonPrivateTierDoesNotCommitGlobalTier is
+// TestRememberNonPrivateTierDoesNotCommit's global-tier counterpart: global
+// is a shared tier exactly like rig:/role: (only agent: is private --
+// IsPrivateScope), so an explicit --scope="" write must be left untracked on
+// the store's own branch too, not auto-committed.
+func TestRememberNonPrivateTierDoesNotCommitGlobalTier(t *testing.T) {
+	var store string
+	var runErr error
+	stdout := captureStdout(t, func() {
+		store, runErr = runRemember(t, "--topic", "valid-topic", "--scope", "", "a body")
+	})
+	require.NoError(t, runErr)
+
+	requireSingleEntry(t, filepath.Join(store, "global"))
+
+	status := gitOutput(t, store, "status", "--porcelain")
+	assert.Contains(t, status, "??", "a global-tier entry must be left untracked on the store's own branch, not auto-committed")
+
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.Len(t, lines, 3, "a non-private-tier remember must print the entry id, the review branch, and the mailed reviewer -- no commit SHA")
+	assert.NotContains(t, lines[0], "/", "the first line must be the bare entry id, not a branch or reviewer address")
+}
+
+// TestRememberNonPrivateTierDoesNotCommitRoleTier is
+// TestRememberNonPrivateTierDoesNotCommit's role:-tier counterpart: role: is
+// a shared tier exactly like rig:/global (only agent: is private --
+// IsPrivateScope), so a role:-scope write must be left untracked on the
+// store's own branch too, not auto-committed.
+func TestRememberNonPrivateTierDoesNotCommitRoleTier(t *testing.T) {
+	var store string
+	var runErr error
+	stdout := captureStdout(t, func() {
+		store, runErr = runRemember(t, "--topic", "valid-topic", "--scope", "role:reviewer", "a body")
+	})
+	require.NoError(t, runErr)
+
+	requireSingleEntry(t, filepath.Join(store, "role", "reviewer"))
+
+	status := gitOutput(t, store, "status", "--porcelain")
+	assert.Contains(t, status, "??", "a role:-tier entry must be left untracked on the store's own branch, not auto-committed")
+
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.Len(t, lines, 3, "a non-private-tier remember must print the entry id, the review branch, and the mailed reviewer -- no commit SHA")
+	assert.NotContains(t, lines[0], "/", "the first line must be the bare entry id, not a branch or reviewer address")
+}
+
 // TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsError covers
 // crn-419.4 AC4 (crn-kbf): a shared-tier remember call whose reviewer-mail
 // step fails must not roll back the review-branch commit -- the entry is
@@ -706,6 +763,60 @@ func TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsError(t *testi
 	// gitOutput's own require.NoErrorf is the assertion here: if the review
 	// branch didn't survive the mail failure, "rev-parse --verify" fails and
 	// the test fails with git's own error text.
+	gitOutput(t, store, "rev-parse", "--verify", branch)
+}
+
+// TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsErrorGlobalTier
+// is TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsError's
+// global-tier counterpart: the already-durable review-branch commit must
+// survive a mail failure regardless of which shared tier the entry resolved
+// to.
+func TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsErrorGlobalTier(t *testing.T) {
+	var store string
+	var runErr error
+	stdout := captureStdout(t, func() {
+		store, runErr = runRememberWithGC(t, stubGCFail, "--topic", "valid-topic", "--scope", "", "a body")
+	})
+	require.Error(t, runErr, "a failed reviewer-mail step must surface as a command error (and thus a non-zero process exit via cmd/root.go), not be swallowed")
+
+	e := requireSingleEntry(t, filepath.Join(store, "global"))
+	branch := "remember/" + e.ID
+
+	assert.Contains(t, runErr.Error(), branch, "the error must name the review branch the entry already landed on")
+	assert.Contains(t, runErr.Error(), "mail", "the error must make clear the mail step is what failed")
+
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.Len(t, lines, 2, "the id and review-branch lines print before the mail step fails; no third 'mailed reviewer' line follows")
+	assert.Equal(t, e.ID, lines[0])
+	assert.Equal(t, "review branch: "+branch, lines[1])
+
+	gitOutput(t, store, "rev-parse", "--verify", branch)
+}
+
+// TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsErrorRoleTier
+// is TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsError's
+// role:-tier counterpart: the already-durable review-branch commit must
+// survive a mail failure regardless of which shared tier the entry resolved
+// to.
+func TestRememberSharedTierMailFailureLeavesReviewBranchAndReportsErrorRoleTier(t *testing.T) {
+	var store string
+	var runErr error
+	stdout := captureStdout(t, func() {
+		store, runErr = runRememberWithGC(t, stubGCFail, "--topic", "valid-topic", "--scope", "role:reviewer", "a body")
+	})
+	require.Error(t, runErr, "a failed reviewer-mail step must surface as a command error (and thus a non-zero process exit via cmd/root.go), not be swallowed")
+
+	e := requireSingleEntry(t, filepath.Join(store, "role", "reviewer"))
+	branch := "remember/" + e.ID
+
+	assert.Contains(t, runErr.Error(), branch, "the error must name the review branch the entry already landed on")
+	assert.Contains(t, runErr.Error(), "mail", "the error must make clear the mail step is what failed")
+
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.Len(t, lines, 2, "the id and review-branch lines print before the mail step fails; no third 'mailed reviewer' line follows")
+	assert.Equal(t, e.ID, lines[0])
+	assert.Equal(t, "review branch: "+branch, lines[1])
+
 	gitOutput(t, store, "rev-parse", "--verify", branch)
 }
 
@@ -772,6 +883,67 @@ func TestRememberSharedTierMailInvokedWithExpectedRecipientAndContent(t *testing
 	assert.Contains(t, args[6], "rig:web", "the mail body must name the entry's scope")
 }
 
+// TestRememberSharedTierMailInvokedWithExpectedRecipientAndContentGlobalTier
+// is TestRememberSharedTierMailInvokedWithExpectedRecipientAndContent's
+// global-tier counterpart. Unlike rig:/role:, a global-tier entry's Scope is
+// empty (strings.Join(e.Scope, " ") in sendReviewMail's body template
+// yields ""), so there is no scope tag for the mail body to name -- that one
+// assertion has no global equivalent; every other assertion carries over
+// unchanged.
+func TestRememberSharedTierMailInvokedWithExpectedRecipientAndContentGlobalTier(t *testing.T) {
+	captureFile := filepath.Join(t.TempDir(), "gc-invocation")
+	var store string
+	var runErr error
+	captureStdout(t, func() {
+		store, runErr = runRememberWithGC(t, func(t *testing.T) {
+			t.Helper()
+			stubGCCapturing(t, captureFile)
+		}, "--topic", "valid-topic", "--scope", "", "--reviewer", "custom-reviewer", "a body")
+	})
+	require.NoError(t, runErr)
+
+	e := requireSingleEntry(t, filepath.Join(store, "global"))
+	branch := "remember/" + e.ID
+
+	args := readStubGCArgs(t, captureFile)
+	require.Len(t, args, 7, "gc mail send <reviewer> -s <subject> -m <body>")
+	assert.Equal(t, []string{"mail", "send", "custom-reviewer", "-s"}, args[:4],
+		"the --reviewer flag's value must be passed through verbatim as the mail recipient")
+	assert.Contains(t, args[4], e.TopicKey, "the subject must name the entry's topic")
+	assert.Equal(t, "-m", args[5])
+	assert.Contains(t, args[6], e.ID, "the mail body must name the entry id")
+	assert.Contains(t, args[6], branch, "the mail body must name the review branch")
+}
+
+// TestRememberSharedTierMailInvokedWithExpectedRecipientAndContentRoleTier is
+// TestRememberSharedTierMailInvokedWithExpectedRecipientAndContent's
+// role:-tier counterpart.
+func TestRememberSharedTierMailInvokedWithExpectedRecipientAndContentRoleTier(t *testing.T) {
+	captureFile := filepath.Join(t.TempDir(), "gc-invocation")
+	var store string
+	var runErr error
+	captureStdout(t, func() {
+		store, runErr = runRememberWithGC(t, func(t *testing.T) {
+			t.Helper()
+			stubGCCapturing(t, captureFile)
+		}, "--topic", "valid-topic", "--scope", "role:reviewer", "--reviewer", "custom-reviewer", "a body")
+	})
+	require.NoError(t, runErr)
+
+	e := requireSingleEntry(t, filepath.Join(store, "role", "reviewer"))
+	branch := "remember/" + e.ID
+
+	args := readStubGCArgs(t, captureFile)
+	require.Len(t, args, 7, "gc mail send <reviewer> -s <subject> -m <body>")
+	assert.Equal(t, []string{"mail", "send", "custom-reviewer", "-s"}, args[:4],
+		"the --reviewer flag's value must be passed through verbatim as the mail recipient")
+	assert.Contains(t, args[4], e.TopicKey, "the subject must name the entry's topic")
+	assert.Equal(t, "-m", args[5])
+	assert.Contains(t, args[6], e.ID, "the mail body must name the entry id")
+	assert.Contains(t, args[6], branch, "the mail body must name the review branch")
+	assert.Contains(t, args[6], "role:reviewer", "the mail body must name the entry's scope")
+}
+
 // TestRememberCLIRoundTripAllFields covers AC2 through the actual `cairn
 // remember` command, not cairn.NewEntry/Create called directly (already
 // covered exhaustively at that level by TestEntryCreateRoundTrip in
@@ -788,6 +960,50 @@ func TestRememberCLIRoundTripAllFields(t *testing.T) {
 	assert.True(t, strings.HasPrefix(e.ID, "build-flags-"), "id must be derived from topic_key")
 	assert.Equal(t, "build-flags", e.TopicKey)
 	assert.Equal(t, []string{"agent:bot"}, e.Scope, "default scope must collapse to the agent: tag")
+	assert.Equal(t, "prefer feature flags over env vars", e.Body)
+	assert.Equal(t, "prefer feature flags over env vars", e.Title)
+	assert.Equal(t, "none", e.Anchor.Type)
+	assert.Equal(t, "rig:alpha agent:bot", e.CreatedBy, "created_by must be the CLI's resolved identity, space-joined -- not collapsed like scope")
+	_, err = time.Parse(time.RFC3339, e.CreatedAt)
+	assert.NoError(t, err, "created_at must be an RFC3339 timestamp (crn-3476/crn-zcxq FR-5)")
+}
+
+// TestRememberCLIRoundTripAllFieldsGlobalTier is
+// TestRememberCLIRoundTripAllFields' global-tier counterpart: defaultScope
+// only ever produces a private agent: tag, so global -- unlike the private
+// tier the original exercises via identity resolution alone -- can only be
+// reached with an explicit --scope="". Every other field-level assertion
+// carries over unchanged.
+func TestRememberCLIRoundTripAllFieldsGlobalTier(t *testing.T) {
+	t.Setenv("CAIRN_IDENTITY", "rig:alpha agent:bot")
+	store, err := runRemember(t, "--topic", "build-flags", "--scope", "", "prefer feature flags over env vars")
+	require.NoError(t, err)
+
+	e := requireSingleEntry(t, filepath.Join(store, "global"))
+	assert.True(t, strings.HasPrefix(e.ID, "build-flags-"), "id must be derived from topic_key")
+	assert.Equal(t, "build-flags", e.TopicKey)
+	assert.Empty(t, e.Scope, "an explicit --scope=\"\" must write a global-tier entry with no scope tags")
+	assert.Equal(t, "prefer feature flags over env vars", e.Body)
+	assert.Equal(t, "prefer feature flags over env vars", e.Title)
+	assert.Equal(t, "none", e.Anchor.Type)
+	assert.Equal(t, "rig:alpha agent:bot", e.CreatedBy, "created_by must be the CLI's resolved identity, space-joined -- not collapsed like scope")
+	_, err = time.Parse(time.RFC3339, e.CreatedAt)
+	assert.NoError(t, err, "created_at must be an RFC3339 timestamp (crn-3476/crn-zcxq FR-5)")
+}
+
+// TestRememberCLIRoundTripAllFieldsRoleTier is
+// TestRememberCLIRoundTripAllFields' role:-tier counterpart: reached with an
+// explicit --scope the same way the global-tier equivalent is, since
+// defaultScope never produces a role: tag either.
+func TestRememberCLIRoundTripAllFieldsRoleTier(t *testing.T) {
+	t.Setenv("CAIRN_IDENTITY", "rig:alpha agent:bot")
+	store, err := runRemember(t, "--topic", "build-flags", "--scope", "role:reviewer", "prefer feature flags over env vars")
+	require.NoError(t, err)
+
+	e := requireSingleEntry(t, filepath.Join(store, "role", "reviewer"))
+	assert.True(t, strings.HasPrefix(e.ID, "build-flags-"), "id must be derived from topic_key")
+	assert.Equal(t, "build-flags", e.TopicKey)
+	assert.Equal(t, []string{"role:reviewer"}, e.Scope, "an explicit --scope must be used verbatim, not collapsed like the default agent: scope")
 	assert.Equal(t, "prefer feature flags over env vars", e.Body)
 	assert.Equal(t, "prefer feature flags over env vars", e.Title)
 	assert.Equal(t, "none", e.Anchor.Type)
@@ -1241,6 +1457,42 @@ func TestRememberJSONSharedTierOutputsReviewBranchAndReviewer(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &result))
 	assert.NotEmpty(t, result.ID)
 	assert.Equal(t, []string{"rig:web"}, result.Scope)
+	assert.Empty(t, result.Commit)
+	assert.NotEmpty(t, result.ReviewBranch)
+	assert.NotEmpty(t, result.Reviewer)
+}
+
+// TestRememberJSONSharedTierOutputsReviewBranchAndReviewerGlobalTier is
+// TestRememberJSONSharedTierOutputsReviewBranchAndReviewer's global-tier
+// counterpart. result.Scope is asserted with assert.Empty rather than
+// assert.Equal against a literal []string{}: nonNil's exact empty-vs-nil
+// slice shape isn't this test's concern (TestRememberExplicitEmptyScopeWritesGlobalEntry
+// already covers e.Scope itself with the same assert.Empty idiom), only
+// that --json surfaces no scope tags for a global-tier entry.
+func TestRememberJSONSharedTierOutputsReviewBranchAndReviewerGlobalTier(t *testing.T) {
+	out, err := runRememberJSON(t, "--scope", "", "capture this")
+	require.NoError(t, err)
+
+	var result RememberResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.NotEmpty(t, result.ID)
+	assert.Empty(t, result.Scope)
+	assert.Empty(t, result.Commit)
+	assert.NotEmpty(t, result.ReviewBranch)
+	assert.NotEmpty(t, result.Reviewer)
+}
+
+// TestRememberJSONSharedTierOutputsReviewBranchAndReviewerRoleTier is
+// TestRememberJSONSharedTierOutputsReviewBranchAndReviewer's role:-tier
+// counterpart.
+func TestRememberJSONSharedTierOutputsReviewBranchAndReviewerRoleTier(t *testing.T) {
+	out, err := runRememberJSON(t, "--scope", "role:reviewer", "capture this")
+	require.NoError(t, err)
+
+	var result RememberResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.NotEmpty(t, result.ID)
+	assert.Equal(t, []string{"role:reviewer"}, result.Scope)
 	assert.Empty(t, result.Commit)
 	assert.NotEmpty(t, result.ReviewBranch)
 	assert.NotEmpty(t, result.Reviewer)
