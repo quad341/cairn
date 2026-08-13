@@ -366,18 +366,31 @@ func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (matched *cairn
 			contentMatch[other] = true
 		}
 	}
+	matched, isRecurrence = bestMatch(others, topicMatch, contentMatch)
+	if matched == nil {
+		//nolint:nilnil // (nil,false,nil) = "no match"; sole caller checks matched != nil before use
+		return nil, false, nil
+	}
+	return matched, isRecurrence, nil
+}
+
+// bestMatch picks recurrenceMatch's winner: a genuine recurrence (both
+// topicMatch and contentMatch) outranks a topic-only match even when the
+// topic-only candidate appears first in others, since a true recurrence is
+// the stricter finding. Split out of recurrenceMatch to keep that function's
+// cyclomatic complexity under the repo's gocyclo limit.
+func bestMatch(others []*cairn.Entry, topicMatch, contentMatch map[string]bool) (*cairn.Entry, bool) {
 	for _, o := range others {
 		if topicMatch[o.ID] && contentMatch[o.ID] {
-			return o, true, nil
+			return o, true
 		}
 	}
 	for _, o := range others {
 		if topicMatch[o.ID] {
-			return o, false, nil
+			return o, false
 		}
 	}
-	//nolint:nilnil // (nil,false,nil) = "no match"; sole caller checks matched != nil before use
-	return nil, false, nil
+	return nil, false
 }
 
 // recordRecurrence persists a capture-time recurrence hit (crn-28ge.1.4,
