@@ -205,12 +205,7 @@ func checkFreshnessInvocationIncomplete(ctx context.Context, store, n, repo stri
 // gitInit/gitCommitAll build, but as runtime code rather than test code,
 // since this scenario builds its git fixture at real runtime too.
 func gitInitAndCommit(ctx context.Context, dir, file, contents string) error {
-	for _, args := range [][]string{
-		{"init", "-q"},
-		{"config", "user.email", "critic@cairn.local"},
-		{"config", "user.name", "cairn-critic"},
-		{"config", "commit.gpgsign", "false"},
-	} {
+	for _, args := range fixtureRepoInit {
 		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git %v: %s: %w", args, out, err)

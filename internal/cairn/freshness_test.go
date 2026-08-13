@@ -20,6 +20,15 @@ func gitInit(t *testing.T, dir string) {
 		{"config", "user.email", "t@example.com"},
 		{"config", "user.name", "t"},
 		{"config", "commit.gpgsign", "false"},
+		// Preventive, not a reported failure here: `git commit` ends in a
+		// DETACHED `git maintenance run --auto`, which repacks after the
+		// test that made the repo has returned and races t.TempDir()'s
+		// RemoveAll ("unlinkat .../.git/objects: directory not empty").
+		// internal/critic hit exactly that and it was refiled four times
+		// before anyone traced it (crn-9k30); this helper builds fixture
+		// repos the same way for ~20 tests, so it gets the same guard.
+		{"config", "gc.auto", "0"},
+		{"config", "maintenance.auto", "false"},
 	} {
 		out, err := exec.CommandContext(t.Context(), "git", append([]string{"-C", dir}, args...)...).CombinedOutput()
 		require.NoErrorf(t, err, "git %v: %s", args, out)
