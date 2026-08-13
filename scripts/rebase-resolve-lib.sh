@@ -63,7 +63,32 @@
 # whole file is declared a REAL conflict and resolution fails — the caller
 # aborts the rebase and routes to the builder.
 #
-# Required external commands: git, awk, cmp, mktemp.
+# Required external commands: git, awk, cmp, mktemp, tr.
+#
+# PORTABILITY — this file is SOURCED, so it runs in the CALLER's shell.
+# Callers include zsh sessions (the Bash-tool default shell in this fleet's
+# worktrees), not just bash. A shebang is inert when a file is sourced (no new
+# interpreter is invoked), so bash-only syntax here is a runtime fault in the
+# caller's process. Two distinct hazards, both live (crn-k1hw), both verified
+# under zsh 5.9:
+#
+#   1. BASH-ONLY SYNTAX is fatal, not degraded. `${var,,}` and friends raise
+#      "bad substitution", which zsh treats as fatal: it tears down the whole
+#      calling script, so the caller never reaches its route-to-the-builder
+#      branch — and the torn-down caller exits 0, so the failure also reads
+#      as success to anything checking status. Use `tr` and the POSIX subset.
+#
+#   2. ZSH SPECIAL PARAMETER NAMES must never be used as locals. zsh ties the
+#      scalar `PATH` to an array named `path`; `local path="$1"` therefore
+#      OVERWRITES THE COMMAND SEARCH PATH for the body of the function, and
+#      every external command in it (tr, mktemp, awk, mv, rm) fails with
+#      "command not found". This is why the parameter below is `file_path`
+#      and not the obvious `path`. Same trap applies to `status`, `argv`,
+#      `cdpath`, `fpath`, `manpath`, `module_path`, `prompt`, and `psvar`.
+#
+# Keep every construct below POSIX-or-common-subset, and run
+# scripts/test-shell-portability.sh after editing — it enforces both rules
+# statically AND by executing this library under a real zsh.
 
 # is_additive_keepboth_path <path>
 #
@@ -73,11 +98,31 @@
 # whose semantics are "a bag of independent entries" (tests, docs, fixtures,
 # changelog/news fragments), never on importable source.
 is_additive_keepboth_path() {
-    local path="$1"
-    # Normalize to lowercase for matching; keep original for extension checks.
-    local lower="${path,,}"
-    local base="${path##*/}"
-    local lbase="${base,,}"
+    # NOT `local path` — see PORTABILITY note 2 in the header. Under zsh that
+    # name is tied to $PATH, and assigning it here would blank the command
+    # search path for this whole function, breaking the `tr` call below.
+    local file_path="$1"
+    # Normalize to lowercase for matching.
+    #
+    # Uses `tr`, NOT bash-4's ${var,,}: this file is SOURCED, and callers run
+    # under zsh as well as bash — the deployer's own worktrees are the
+    # confirmed case. ${var,,} is a bash-only parameter expansion, and under
+    # zsh it raises a FATAL "bad substitution" that aborts the whole calling
+    # script — not just this function — so the caller never reaches its
+    # route-to-the-builder path. That turns a fail-safe into a fail-dead
+    # (crn-k1hw). A shebang cannot fix it: sourcing never invokes a new
+    # interpreter.
+    #
+    # LC_ALL=C keeps the mapping to plain ASCII A-Z. Every pattern matched
+    # below is ASCII, and it sidesteps locales where I lowercases to a
+    # dotless i (tr_TR).
+    #
+    # The basename is derived from the already-lowercased path — lowercasing
+    # then taking the basename is identical to the reverse — so one `tr` call
+    # serves both matches.
+    local lower lbase
+    lower="$(printf '%s' "$file_path" | LC_ALL=C tr 'A-Z' 'a-z')"
+    lbase="${lower##*/}"
 
     # --- documentation ---
     case "$lbase" in
@@ -131,9 +176,12 @@ is_additive_keepboth_path() {
 # the logic is auditable in one place. awk exits 0 (resolved) / 1 (real
 # conflict) / 2 (malformed markers); we mirror that exit code.
 resolve_conflict_markers_in_file() {
-    local path="$1"
+    # NOT `local path` — see PORTABILITY note 2 in the header. This function
+    # shells out to mktemp/awk/mv/rm, all of which fail with "command not
+    # found" under zsh if $PATH is shadowed by a local named `path`.
+    local file_path="$1"
     local allow_keepboth="${2:-0}"
-    [[ -f "$path" ]] || return 2
+    [[ -f "$file_path" ]] || return 2
 
     local tmp
     tmp="$(mktemp "${TMPDIR:-/tmp}/gc-rebase-resolve.XXXXXX")" || return 2
@@ -224,9 +272,9 @@ resolve_conflict_markers_in_file() {
         END {
             if (state != 0) { exit 2 }       # unterminated conflict marker
         }
-    ' "$path" > "$tmp"; then
+    ' "$file_path" > "$tmp"; then
         # awk exited 0 — fully resolved. Replace the file.
-        mv -f "$tmp" "$path"
+        mv -f "$tmp" "$file_path"
         return 0
     else
         local rc=$?
