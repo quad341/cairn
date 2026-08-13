@@ -77,7 +77,7 @@ func tailAccumulate(segments [][]byte, budgetBytes int) (lines []json.RawMessage
 
 	start := len(segments) - kept
 	lines = make([]json.RawMessage, kept)
-	for i := 0; i < kept; i++ {
+	for i := range kept {
 		lines[i] = json.RawMessage(append([]byte(nil), segments[start+i]...))
 	}
 	return lines, kept < len(segments)

@@ -247,7 +247,12 @@ func agentFreshness(ctx context.Context, store string, entries []*Entry) []Findi
 // result is returned alongside the findings, so a caller populating both the
 // index_drift Finding and Report.Stats.IndexDrift can do so from this one
 // call instead of checking staleness twice.
-func indexDrift(ctx context.Context, store string, entries []*Entry, indexStaleFn func(context.Context, string) (bool, error)) ([]Finding, bool) {
+func indexDrift(
+	ctx context.Context,
+	store string,
+	entries []*Entry,
+	indexStaleFn func(context.Context, string) (bool, error),
+) ([]Finding, bool) {
 	var out []Finding
 
 	stale, err := indexStaleFn(ctx, store)
