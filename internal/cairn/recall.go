@@ -1,6 +1,9 @@
 package cairn
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // RecallStatsFinding is one entry's recall signal (FR-08): HitCount and
 // LastRecalledAt as stamped by Find on a hit (crn-28ge.1.5). Every entry in
@@ -11,6 +14,23 @@ type RecallStatsFinding struct {
 	TopicKey       string `json:"topic_key,omitempty"`
 	HitCount       int    `json:"hit_count"`
 	LastRecalledAt string `json:"last_recalled_at,omitempty"`
+}
+
+// MarshalJSON emits last_recalled_at as an explicit JSON null for a
+// never-recalled entry rather than omitting the key: omitempty on a plain
+// string can't tell "no value" from "empty string," and a consumer probing
+// the --json output for recall history needs the key present either way.
+func (f RecallStatsFinding) MarshalJSON() ([]byte, error) {
+	var lastRecalledAt *string
+	if f.LastRecalledAt != "" {
+		lastRecalledAt = &f.LastRecalledAt
+	}
+	return json.Marshal(struct {
+		EntryID        string  `json:"entry_id"`
+		TopicKey       string  `json:"topic_key,omitempty"`
+		HitCount       int     `json:"hit_count"`
+		LastRecalledAt *string `json:"last_recalled_at"`
+	}{f.EntryID, f.TopicKey, f.HitCount, lastRecalledAt})
 }
 
 // PromoteCandidateFinding is one entry recurring at least threshold times
