@@ -45,11 +45,26 @@ func git(ctx context.Context, repo string, args ...string) (string, bool, error)
 	return strings.TrimSpace(string(out)), true, nil
 }
 
-// objectHash is the git object id of a path at HEAD (blob for files, tree for
-// dirs). ok is false only on a confirmed negative (path not resolvable at
-// HEAD); err is non-nil only for a genuine git invocation failure -- a
-// direct passthrough of git()'s own (result, ok, err) classification.
+// objectHash is the git object id of a path (blob for files, tree for dirs),
+// preferring origin/main over the anchor repo's own checked-out HEAD --
+// HEAD is incidental local state (detached, behind, mid-rebase) that has
+// nothing to do with the tree people actually read, and fingerprinting
+// against it produces false "fresh" verdicts against a stale tree and
+// fleet-wide false "stale" storms the moment the local checkout moves
+// (crn-uztp). Falls back to HEAD when origin/main doesn't resolve (no
+// remote configured, or the path isn't tracked there), preserving the
+// original behavior for repos with no origin. ok is false only on a
+// confirmed negative from both attempts; err is non-nil only for a genuine
+// git invocation failure -- a direct passthrough of git()'s own
+// (result, ok, err) classification.
 func objectHash(ctx context.Context, repo, path string) (hash string, ok bool, err error) {
+	hash, ok, err = git(ctx, repo, "rev-parse", "origin/main:"+path)
+	if err != nil {
+		return "", false, err
+	}
+	if ok {
+		return hash, true, nil
+	}
 	return git(ctx, repo, "rev-parse", "HEAD:"+path)
 }
 
