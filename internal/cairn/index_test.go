@@ -717,11 +717,10 @@ func TestConcurrentFindAndReindexDoNotHardFail(t *testing.T) {
 //
 // The seed Reindex call below is deliberate: it ensures index.sqlite already
 // exists before the concurrent goroutines start, isolating this test to the
-// entry_tags DDL race this bead fixes. Racing concurrent Reindex calls
-// against a store where index.sqlite does not exist yet hits a separate,
-// still-open intermittent SQLITE_BUSY gap during first-time file/WAL
-// creation (crn-t42e) -- a different, narrower failure mode that doesn't
-// belong in this test either.
+// entry_tags DDL race this bead fixes. The cold-store case -- racing Reindex
+// calls against a store where index.sqlite does not exist yet -- was a
+// separate, narrower SQLITE_BUSY failure (crn-t42e); it is covered by
+// TestConcurrentReindexOnColdStoreDoesNotHardFail below rather than here.
 func TestConcurrentReindexDoesNotRaceOnEntryTagsSchema(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
@@ -766,6 +765,67 @@ func TestConcurrentReindexDoesNotRaceOnEntryTagsSchema(t *testing.T) {
 
 	if len(errs) > 0 {
 		t.Fatalf(`%d/%d concurrent Reindex calls failed (want 0) -- first error: %v (entry_tags DROP+CREATE must run inside the same tx as the rest of Reindex so concurrent rebuilds serialize instead of racing on the DDL)`,
+			len(errs), reindexers*iterations, errs[0])
+	}
+}
+
+// TestConcurrentReindexOnColdStoreDoesNotHardFail is the crn-t42e regression
+// test: the same shape as TestConcurrentReindexDoesNotRaceOnEntryTagsSchema
+// but with NO seed Reindex, so index.sqlite does not exist when the
+// goroutines start and they all race to create it.
+//
+// entriesSchema used to run as an autocommit statement before BeginTx. An
+// autocommit CREATE TABLE upgrades a read lock to a write lock mid-statement,
+// and SQLite answers a contended upgrade with an immediate SQLITE_BUSY
+// instead of invoking the busy handler -- so busy_timeout was never
+// consulted and the call failed instantly. Moving it inside the
+// _txlock=immediate transaction takes the write lock at BEGIN, where the
+// retry loop does apply.
+//
+// This is the production path, not a synthetic one: ensureFresh treats "no
+// watermark row" (which includes "index.sqlite doesn't exist yet") as stale
+// and reindexes synchronously, so a fleet cold-start against a fresh
+// CAIRN_STORE puts every agent on this line at once.
+//
+// The failure was probabilistic -- measured at 1 bad call per 80, in ~13% of
+// stress runs -- so a single pass here does not prove much on its own; the
+// fix was verified at -count=30. What this test pins cheaply is that the
+// cold-store path stays exercised at all, and it still catches a hard
+// regression (an unconditional failure) on the first run.
+func TestConcurrentReindexOnColdStoreDoesNotHardFail(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	for _, id := range []string{"a", "b", "c"} {
+		body := "+++\nid = \"" + id + "\"\ntitle = \"" + id + "\"\n+++\nbody\n"
+		require.NoError(t, os.WriteFile(filepath.Join(store, "global", id+".md"), []byte(body), 0o600))
+	}
+	// Deliberately NO seed Reindex here -- that absence is the whole test.
+
+	const (
+		reindexers = 4
+		iterations = 20
+	)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+	wg.Add(reindexers)
+	for range reindexers {
+		go func() {
+			defer wg.Done()
+			for range iterations {
+				if _, err := Reindex(ctx, store); err != nil {
+					mu.Lock()
+					errs = append(errs, err)
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(errs) > 0 {
+		t.Fatalf(`%d/%d concurrent Reindex calls against a COLD store failed (want 0) -- first error: %v (entriesSchema must run inside ReindexEntries' _txlock=immediate tx; as an autocommit statement its lock upgrade returns SQLITE_BUSY without consulting busy_timeout)`,
 			len(errs), reindexers*iterations, errs[0])
 	}
 }
