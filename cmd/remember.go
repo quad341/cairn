@@ -106,16 +106,30 @@ var rememberCmd = &cobra.Command{
 		}
 		nudgeIfUnanchored(cmd, e)
 
-		matched, err := recurrenceMatch(cmd, e)
+		matched, isRecurrence, err := recurrenceMatch(cmd, e)
 		if err != nil {
 			return emitError(cmd, err)
 		}
 		force, _ := cmd.Flags().GetBool("force")
-		if matched != nil && !force {
+		if matched != nil && isRecurrence && !force {
 			return recordRecurrence(cmd, matched)
 		}
-		if matched != nil {
+
+		// A genuine recurrence (topic_key AND content) only reaches here
+		// past an explicit --force -- overrideLine says so. A topic-only
+		// match is never a duplicate to begin with, so it always links
+		// regardless of --force (crn-pip8): gating it on --force would
+		// leave the correction's shadow-resolution outcome dependent on
+		// moreSpecificReason's recency-blind id_tiebreak whenever
+		// created_at happens to tie with the entry it was meant to replace.
+		var overrideLine string
+		switch {
+		case matched != nil && isRecurrence:
 			e.OverriddenDuplicateOf = matched.ID
+			overrideLine = fmt.Sprintf("override: forced past duplicate of %s", matched.ID)
+		case matched != nil:
+			e.OverriddenDuplicateOf = matched.ID
+			overrideLine = fmt.Sprintf("override: supersedes prior entry %s for topic %q", matched.ID, topic)
 		}
 
 		if err := e.Create(storePath()); err != nil {
@@ -123,8 +137,8 @@ var rememberCmd = &cobra.Command{
 		}
 		if !wantsJSON(cmd) {
 			fmt.Printf("%s\n", e.ID)
-			if matched != nil {
-				fmt.Printf("override: forced past duplicate of %s\n", matched.ID)
+			if overrideLine != "" {
+				fmt.Printf("%s\n", overrideLine)
 			}
 		}
 
@@ -276,14 +290,20 @@ func verifyAnchor(cmd *cobra.Command, e *cairn.Entry) {
 // a short freeform hint an agent can easily reuse for two unrelated facts.
 // It reuses Conflicts (crn-28ge.1.3's single-candidate primitive) -- the same
 // signal computation `cairn get` already uses (getCmd, cmd/commands.go) --
-// rather than a second, independent equality check (NFR-05), and requires
-// BOTH of Conflicts' signals to agree on the same other entry: an exact
-// "topic_key" match AND a "content" (Jaccard word-similarity) match. Conflicts
-// emits these as two separate findings that can both fire for the same pair
-// (see internal/cairn's TestConflictsBothSignalsCanFireForSamePair), so
-// recurrenceMatch tracks each signal per other-entry ID and only matches an
-// entry that cleared both -- a shared topic with a genuinely distinct body
-// clears topic_key alone and is correctly left as a new entry (crn-qxj3).
+// rather than a second, independent equality check (NFR-05). Conflicts emits
+// "topic_key" and "content" (Jaccard word-similarity) as two separate
+// findings that can both fire for the same pair (see internal/cairn's
+// TestConflictsBothSignalsCanFireForSamePair), so recurrenceMatch tracks
+// each signal per other-entry ID and reports which combination fired via its
+// bool result: true means both cleared -- a genuine recurrence, handled by
+// Run as discard-unless---force (crn-qxj3). false with a non-nil entry means
+// topic_key alone cleared -- a shared topic hint reused for a genuinely
+// distinct body, i.e. a correction rather than a duplicate. Run links that
+// case via OverriddenDuplicateOf unconditionally (crn-pip8): unlike a true
+// recurrence, there is no duplicate here to force past, so gating the link
+// on --force would leave the correction's shadow-resolution outcome
+// dependent on moreSpecificReason's recency-blind id_tiebreak whenever
+// created_at happens to tie, exactly the bug crn-pip8 describes.
 // candidate.TopicKey == "" never matches anything (pairSignals' sameTopicKey
 // requires a non-empty key on both sides), so an untopiced remember is
 // unaffected, matching today's behavior.
@@ -294,7 +314,7 @@ func verifyAnchor(cmd *cobra.Command, e *cairn.Entry) {
 // content signal), and Find's hit_count/last_recalled_at side effect would
 // conflate a write-time re-affirmation with recall-time telemetry
 // (crn-28ge.1.5/.1.6).
-func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (*cairn.Entry, error) {
+func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (matched *cairn.Entry, isRecurrence bool, err error) {
 	identity := resolveIdentity(cmd)
 	store := storePath()
 
@@ -310,12 +330,12 @@ func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (*cairn.Entry, 
 	// disk, and Visible would silently miss it. Find hits this exact same
 	// gap for the identical reason and fixes it the same way (entry.go).
 	if _, err := cairn.Reindex(cmd.Context(), store); err != nil {
-		return nil, fmt.Errorf("check for a recurring entry: %w", err)
+		return nil, false, fmt.Errorf("check for a recurring entry: %w", err)
 	}
 
 	visible, err := cairn.Visible(cmd.Context(), store, identity)
 	if err != nil {
-		return nil, fmt.Errorf("check for a recurring entry: %w", err)
+		return nil, false, fmt.Errorf("check for a recurring entry: %w", err)
 	}
 	visibleIDs := make(map[string]bool, len(visible))
 	for _, v := range visible {
@@ -323,7 +343,7 @@ func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (*cairn.Entry, 
 	}
 	all, err := cairn.IterEntries(store)
 	if err != nil {
-		return nil, fmt.Errorf("check for a recurring entry: %w", err)
+		return nil, false, fmt.Errorf("check for a recurring entry: %w", err)
 	}
 	others := make([]*cairn.Entry, 0, len(visibleIDs))
 	for _, full := range all {
@@ -348,11 +368,16 @@ func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (*cairn.Entry, 
 	}
 	for _, o := range others {
 		if topicMatch[o.ID] && contentMatch[o.ID] {
-			return o, nil
+			return o, true, nil
 		}
 	}
-	//nolint:nilnil // (nil,nil) = "no match"; sole caller checks matched != nil before use
-	return nil, nil
+	for _, o := range others {
+		if topicMatch[o.ID] {
+			return o, false, nil
+		}
+	}
+	//nolint:nilnil // (nil,false,nil) = "no match"; sole caller checks matched != nil before use
+	return nil, false, nil
 }
 
 // recordRecurrence persists a capture-time recurrence hit (crn-28ge.1.4,
