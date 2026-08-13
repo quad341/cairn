@@ -132,6 +132,9 @@ type ContextFields struct {
 	StoreSource    string // "flag" | "env" | "default"
 	IdentityTags   []string
 	IdentitySource string // "flag" | "env" | "default"
+	// Args is the invoking process's argv (os.Args), so a later rage bundle
+	// can answer "what command line produced this run" from the log alone.
+	Args []string
 }
 
 // Context logs a "context" record.
@@ -143,6 +146,7 @@ func (l *Logger) Context(f ContextFields) {
 		slog.String("store_source", f.StoreSource),
 		slog.Any("identity_tags", f.IdentityTags),
 		slog.String("identity_source", f.IdentitySource),
+		slog.Any("args", f.Args),
 	)
 }
 

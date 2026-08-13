@@ -189,6 +189,20 @@ func TestRootLogsContextRecordUnconditionally(t *testing.T) {
 	assert.Equal(t, "flag", rec["store_source"])
 	assert.Nil(t, rec["identity_tags"])
 	assert.Equal(t, "default", rec["identity_source"])
+
+	// Args must reflect the real process argv (os.Args), not the shorter
+	// list rootCmd.SetArgs configured above for cobra's own parsing --
+	// proving PersistentPreRunE reads os.Args directly rather than deriving
+	// it from the command's parsed flags/args.
+	rawArgs, ok := rec["args"].([]any)
+	require.True(t, ok, "context record must carry an args array")
+	gotArgs := make([]string, len(rawArgs))
+	for i, a := range rawArgs {
+		s, ok := a.(string)
+		require.True(t, ok, "args[%d] must be a string", i)
+		gotArgs[i] = s
+	}
+	assert.Equal(t, os.Args, gotArgs)
 }
 
 func TestTraceFlagMirrorsContextRecordToStderr(t *testing.T) {

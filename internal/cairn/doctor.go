@@ -45,9 +45,21 @@ const (
 // returns no Report at all when it hits that case -- it returns an error
 // instead.
 type Report struct {
-	Store    string    `json:"store"`
-	Findings []Finding `json:"findings"`
-	ExitCode int       `json:"exit_code"`
+	Store    string     `json:"store"`
+	Findings []Finding  `json:"findings"`
+	ExitCode int        `json:"exit_code"`
+	Stats    StoreStats `json:"stats"`
+}
+
+// StoreStats is Diagnose's summary of the store shape, derived from the same
+// tolerant entry walk Diagnose already performs -- no second store walk.
+// EntriesByTier groups the valid (parsed) entries by their on-disk tier
+// (entryTier's classification, e.g. "global", "rig", "role", "agent").
+// IndexDrift mirrors the same IndexStale(ctx, store) result that produces
+// the index_drift Finding, reused here rather than queried twice.
+type StoreStats struct {
+	EntriesByTier map[string]int `json:"entries_by_tier"`
+	IndexDrift    bool           `json:"index_drift"`
 }
 
 // Diagnose runs every check doctor knows about over one tolerant walk of
@@ -62,7 +74,20 @@ type Report struct {
 // Report, however many findings it carries, means the run itself completed
 // (exit 0 or 1).
 func Diagnose(ctx context.Context, store string) (*Report, error) {
-	entries, failures, err := IterEntriesTolerant(store)
+	return diagnose(ctx, store, IterEntriesTolerant, IndexStale)
+}
+
+// diagnose is Diagnose's injectable core: iterEntriesTolerant and
+// indexStaleFn default to IterEntriesTolerant and IndexStale in Diagnose,
+// and are swapped for call-counting wrappers in tests asserting each runs
+// exactly once (mirroring ensureFresh/ensureFreshWith in index.go).
+func diagnose(
+	ctx context.Context,
+	store string,
+	iterEntriesTolerant func(string) ([]*Entry, []ParseFailure, error),
+	indexStaleFn func(context.Context, string) (bool, error),
+) (*Report, error) {
+	entries, failures, err := iterEntriesTolerant(store)
 	if err != nil {
 		return nil, err
 	}
@@ -102,13 +127,31 @@ func Diagnose(ctx context.Context, store string) (*Report, error) {
 	}
 
 	findings = append(findings, agentFreshness(ctx, store, entries)...)
-	findings = append(findings, indexDrift(ctx, store, entries)...)
+	driftFindings, stale := indexDrift(ctx, store, entries, indexStaleFn)
+	findings = append(findings, driftFindings...)
 
-	report := &Report{Store: store, Findings: findings}
+	report := &Report{
+		Store:    store,
+		Findings: findings,
+		Stats: StoreStats{
+			EntriesByTier: tierCounts(store, entries),
+			IndexDrift:    stale,
+		},
+	}
 	if len(findings) > 0 {
 		report.ExitCode = 1
 	}
 	return report, nil
+}
+
+// tierCounts groups entries by their on-disk tier (entryTier's
+// classification) for Report.Stats.EntriesByTier.
+func tierCounts(store string, entries []*Entry) map[string]int {
+	counts := make(map[string]int)
+	for _, e := range entries {
+		counts[entryTier(store, e)]++
+	}
+	return counts
 }
 
 // fromParseFailure adapts one ParseFailure into a malformed_entry Finding.
@@ -191,7 +234,7 @@ func agentFreshness(ctx context.Context, store string, entries []*Entry) []Findi
 }
 
 // indexDrift reports whether the on-disk index is behind the store's
-// current HEAD (IndexStale), and separately confirms the tolerantly-valid
+// current HEAD (indexStaleFn), and separately confirms the tolerantly-valid
 // entry set reindexes cleanly (ReindexEntries) -- the second signal doctor
 // gets that a plain staleness check can't provide: whether a rebuild would
 // actually succeed, not just whether one is due. Calling ReindexEntries
@@ -200,10 +243,19 @@ func agentFreshness(ctx context.Context, store string, entries []*Entry) []Findi
 // materialized view, not store content, so refreshing it is the same
 // incidental side effect every other read command's ensureFresh already has;
 // doctor takes no write path against the entries themselves (NFR-3).
-func indexDrift(ctx context.Context, store string, entries []*Entry) []Finding {
+// indexStaleFn is injected (defaulting to IndexStale via diagnose) and its
+// result is returned alongside the findings, so a caller populating both the
+// index_drift Finding and Report.Stats.IndexDrift can do so from this one
+// call instead of checking staleness twice.
+func indexDrift(
+	ctx context.Context,
+	store string,
+	entries []*Entry,
+	indexStaleFn func(context.Context, string) (bool, error),
+) ([]Finding, bool) {
 	var out []Finding
 
-	stale, err := IndexStale(ctx, store)
+	stale, err := indexStaleFn(ctx, store)
 	switch {
 	case err != nil:
 		out = append(out, Finding{
@@ -230,7 +282,7 @@ func indexDrift(ctx context.Context, store string, entries []*Entry) []Finding {
 		})
 	}
 
-	return out
+	return out, stale
 }
 
 // DuplicateIDs reports every entry ID held by more than one file (FR-4).
