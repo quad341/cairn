@@ -1,6 +1,7 @@
 package cairn
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -196,7 +197,9 @@ func TestIndexDriftCleanWhenIndexAlreadyFresh(t *testing.T) {
 	_, err = ReindexEntries(ctx, dir, entries)
 	require.NoError(t, err)
 
-	assert.Empty(t, indexDrift(ctx, dir, entries))
+	findings, stale := indexDrift(ctx, dir, entries, IndexStale)
+	assert.Empty(t, findings)
+	assert.False(t, stale)
 }
 
 func TestIndexDriftReportsStaleIndex(t *testing.T) {
@@ -216,10 +219,11 @@ func TestIndexDriftReportsStaleIndex(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, failures)
 
-	findings := indexDrift(ctx, dir, entries)
+	findings, stale := indexDrift(ctx, dir, entries, IndexStale)
 	require.Len(t, findings, 1, "the index is genuinely behind HEAD, but reindexing the valid entry set must still succeed cleanly")
 	assert.Equal(t, CategoryIndexDrift, findings[0].Category)
 	assert.Contains(t, findings[0].Message, "stale")
+	assert.True(t, stale)
 }
 
 // ---- ExplainEntry (FR-7, store-wide mode) ----
@@ -390,4 +394,84 @@ func TestDiagnosePropagatesWalkError(t *testing.T) {
 	report, err := Diagnose(t.Context(), dir)
 	require.Error(t, err)
 	assert.Nil(t, report)
+}
+
+// ---- Report.Stats (StoreStats) ----
+
+// TestDiagnoseStatsCountsEntriesByTierAndReportsCleanIndex covers Stats'
+// EntriesByTier grouping across more than one tier plus the IndexDrift=false
+// side of its staleness bool, in one fixture: entries by tier count is a
+// property of every entry the walk saw, so it needs no more setup than any
+// other multi-tier fixture already in this file.
+func TestDiagnoseStatsCountsEntriesByTierAndReportsCleanIndex(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	writeFile(t, dir, "global/g.md", "+++\nid = \"g\"\ntitle = \"g\"\nscope = []\n+++\nx\n")
+	writeFile(t, dir, "rig/alpha/r1.md", "+++\nid = \"r1\"\ntitle = \"r1\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
+	writeFile(t, dir, "rig/alpha/r2.md", "+++\nid = \"r2\"\ntitle = \"r2\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
+	writeFile(t, dir, "role/investigator/o.md", "+++\nid = \"o\"\ntitle = \"o\"\nscope = [\"role:investigator\"]\n+++\nx\n")
+
+	entries, failures, err := IterEntriesTolerant(dir)
+	require.NoError(t, err)
+	require.Empty(t, failures)
+	_, err = ReindexEntries(ctx, dir, entries)
+	require.NoError(t, err)
+
+	report, err := Diagnose(ctx, dir)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"global": 1, "rig": 2, "role": 1}, report.Stats.EntriesByTier)
+	assert.False(t, report.Stats.IndexDrift, "the index was just rebuilt from these same entries")
+}
+
+// TestDiagnoseStatsReportsStaleIndex is TestIndexDriftReportsStaleIndex's
+// setup one layer up, confirming the same staleness reading indexDrift's own
+// Finding is built from also lands in Report.Stats.IndexDrift.
+func TestDiagnoseStatsReportsStaleIndex(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	writeFile(t, dir, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
+	gitInit(t, dir)
+	gitCommitAll(t, dir, "init")
+
+	_, err := Reindex(ctx, dir)
+	require.NoError(t, err)
+
+	writeFile(t, dir, "global/b.md", "+++\nid = \"b\"\ntitle = \"B\"\n+++\nbody\n")
+	gitCommitAll(t, dir, "add b")
+
+	report, err := Diagnose(ctx, dir)
+	require.NoError(t, err)
+	assert.True(t, report.Stats.IndexDrift, "HEAD moved past the indexed watermark after the last Reindex")
+	assert.Equal(t, map[string]int{"global": 2}, report.Stats.EntriesByTier)
+}
+
+// TestDiagnoseCallsIterEntriesTolerantAndIndexStaleExactlyOnce asserts a call
+// count, not a state -- diagnose's "one walk, one staleness check" contract
+// (Stats.EntriesByTier reuses the Findings walk; Stats.IndexDrift reuses the
+// indexDrift Finding's own staleness read) can only be verified this way,
+// mirroring ensureFresh/ensureFreshWith's own ensureFresh_test.go pattern in
+// index.go.
+func TestDiagnoseCallsIterEntriesTolerantAndIndexStaleExactlyOnce(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	writeFile(t, dir, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
+
+	_, err := Reindex(ctx, dir)
+	require.NoError(t, err)
+
+	var iterCalls, staleCalls int
+	iter := func(store string) ([]*Entry, []ParseFailure, error) {
+		iterCalls++
+		return IterEntriesTolerant(store)
+	}
+	staleFn := func(ctx context.Context, store string) (bool, error) {
+		staleCalls++
+		return IndexStale(ctx, store)
+	}
+
+	report, err := diagnose(ctx, dir, iter, staleFn)
+	require.NoError(t, err)
+	require.NotNil(t, report)
+	assert.Equal(t, 1, iterCalls, "diagnose must walk the store exactly once")
+	assert.Equal(t, 1, staleCalls, "diagnose must check index staleness exactly once, not once for the Finding and again for Stats")
 }
