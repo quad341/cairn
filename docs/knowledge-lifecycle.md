@@ -223,3 +223,32 @@ repo path, or `$CAIRN_STORE`), `--json` (machine-readable output), `--trace`
 refuses to run while `$CAIRN_IDENTITY` is set — use `env -u CAIRN_IDENTITY cairn
 doctor`. To ask how a *single* identity resolves a topic, use
 `cairn doctor explain --identity ... <topic-key>` instead.
+
+## Batch capture (`remember --batch-file`)
+
+`remember --batch-file <path>` writes many entries from one call instead of
+one `remember` invocation per entry, grouping shared-tier review
+notifications instead of mailing a reviewer per entry.
+
+- **Manifest format** — a JSONL file: one JSON object per line, each
+  mirroring single-entry `remember`'s flags as fields instead — `body`,
+  `topic`, `scope` (array), `title`, `summary`, `anchor_repo`, `anchor_path`
+  (array), `force` (bool). Only `body` is required; the rest default the same
+  way their single-entry flag counterparts do.
+- **Size cap** — capped at 5000 lines. The file is pre-counted before any
+  line is processed or written, so an oversized manifest is rejected fast
+  with no partial write.
+- **Incompatible with single-entry flags** — `--topic`, `--scope`, `--title`,
+  `--summary`, `--anchor-repo`, `--anchor-path`, and `--force` cannot be
+  passed as CLI flags alongside `--batch-file`; set them per-line in the
+  manifest instead. Passing one is a hard error before any line runs.
+- **Per-line independence** — one bad line (invalid JSON, a validation
+  failure, an unforced recurrence hit) is recorded as that line's own error
+  and never aborts its siblings. Successful shared-tier entries are grouped
+  by resolved reviewer, sending one notification per group rather than one
+  per entry.
+- **`--json` result shape** — a top-level object with `batch_id`, `total`,
+  `succeeded`, `failed`, `unanchored`, and `entries` (one per manifest line).
+  Each entry carries `line` and, on failure, `error`, plus — on success — the
+  same `id`/`scope`/`commit`/`review_branch`/`reviewer` fields single-entry
+  `remember --json` reports.
