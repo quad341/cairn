@@ -122,7 +122,7 @@ func TestRageRejectsIdentityFlag(t *testing.T) {
 // evidence lives in the bundle file on disk, never on stdout (NFR-2).
 func TestRageBundleIsSingleFileWithConstantStdout(t *testing.T) {
 	dir := t.TempDir()
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		seedEntry(t, dir, fmt.Sprintf("global/e%04d.md", i),
 			fmt.Sprintf("+++\nid = \"e%04d\"\ntitle = \"entry %d\"\nscope = []\n+++\nbody text for entry %d\n", i, i, i))
 	}
@@ -131,8 +131,8 @@ func TestRageBundleIsSingleFileWithConstantStdout(t *testing.T) {
 	logPath, err := obslog.LogPath()
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o750))
-	var logLines []string
-	for i := 0; i < 2000; i++ {
+	logLines := make([]string, 0, 2000)
+	for i := range 2000 {
 		logLines = append(logLines, fmt.Sprintf(`{"kind":"context","n":%d,"filler":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`, i))
 	}
 	require.NoError(t, os.WriteFile(logPath, []byte(strings.Join(logLines, "\n")+"\n"), 0o600))
@@ -242,8 +242,8 @@ func TestRageBundleLogTailBoundedByBudget(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Dir(logPath), 0o750))
 
-	var lines []string
-	for i := 0; i < 500; i++ {
+	lines := make([]string, 0, 501)
+	for i := range 500 {
 		lines = append(lines, fmt.Sprintf(`{"kind":"context","n":%d}`, i))
 	}
 	lines = append(lines, `{"kind":"context","n":"newest-marker"}`)
