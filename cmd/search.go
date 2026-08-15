@@ -10,13 +10,33 @@ import (
 const searchInstruction = "Inspect these ranked lexical candidates. If one addresses your situation, " +
 	"read it with cairn get <id> before acting. If none does, stop."
 
+// searchNoneInstruction replaces the above when the abstain signal fires. It
+// is a different instruction rather than a flag the model must interpret,
+// because the two cases call for opposite behaviour and the whole point is
+// that "cairn does not know this" must be as easy to act on as a hit.
+const searchNoneInstruction = "No candidate covers enough of this query for the store to " +
+	"plausibly hold the answer. Do not force a match from the list below. Solve it yourself, " +
+	"then consider recording what you learn with cairn remember."
+
 type searchOutput struct {
-	Instruction  string       `json:"instruction"`
-	Query        string       `json:"query"`
-	QueryTerms   []string     `json:"query_terms"`
-	TotalMatched int          `json:"total_matched"`
-	TotalVisible int          `json:"total_visible"`
-	Hits         []searchItem `json:"hits"`
+	Instruction  string   `json:"instruction"`
+	Query        string   `json:"query"`
+	QueryTerms   []string `json:"query_terms"`
+	TotalMatched int      `json:"total_matched"`
+	TotalVisible int      `json:"total_visible"`
+	// Confidence lets a caller act on the abstain signal structurally rather
+	// than by parsing the instruction string.
+	Confidence searchConfidence `json:"confidence"`
+	Hits       []searchItem     `json:"hits"`
+}
+
+// searchConfidence is the model-facing projection of cairn.SearchConfidence.
+// Coverage travels with the verdict so a caller can see how marginal a call
+// was, rather than only which side of the threshold it landed on.
+type searchConfidence struct {
+	Verdict        string   `json:"verdict"`
+	Coverage       float64  `json:"coverage"`
+	UnmatchedTerms []string `json:"unmatched_terms"`
 }
 
 type searchItem struct {
@@ -44,10 +64,20 @@ func projectSearch(result cairn.SearchResult) searchOutput {
 			Freshness: hit.Freshness.Status, Conflict: hit.Conflict,
 		})
 	}
+	instruction := searchInstruction
+	if result.Confidence.Verdict == cairn.VerdictNone {
+		instruction = searchNoneInstruction
+	}
 	return searchOutput{
-		Instruction: searchInstruction, Query: result.Query,
+		Instruction: instruction, Query: result.Query,
 		QueryTerms: nonNil(result.QueryTerms), TotalMatched: result.TotalMatched,
-		TotalVisible: result.TotalVisible, Hits: hits,
+		TotalVisible: result.TotalVisible,
+		Confidence: searchConfidence{
+			Verdict:        result.Confidence.Verdict,
+			Coverage:       result.Confidence.Coverage,
+			UnmatchedTerms: nonNil(result.Confidence.UnmatchedTerms),
+		},
+		Hits: hits,
 	}
 }
 
