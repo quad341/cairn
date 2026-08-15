@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS idx_entries_topic ON entries(topic_key);
 CREATE TABLE IF NOT EXISTS index_meta (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  indexed_at_commit TEXT
+  indexed_at_commit TEXT,
+  schema_version INTEGER
 );
 `
 
@@ -82,6 +83,32 @@ var entriesMigrationCols = []struct{ name, def string }{
 	{"overridden_duplicate_of", "TEXT"},
 	{"title_source", "TEXT"},
 	{"summary_source", "TEXT"},
+}
+
+// indexSchemaVersion is the shape of the index this binary expects. BUMP IT
+// in the same commit as any change to entriesSchema, tagsSchema,
+// entriesMigrationCols or the FTS table -- a column added without a bump is
+// invisible to every already-built index.
+//
+// It exists because the git watermark alone cannot detect a schema change.
+// indexStale compared indexed_at_commit against HEAD, which answers "did the
+// bodies change", not "does this index have the columns this binary selects".
+// On upgrade, an index built by the previous release is watermark-current, so
+// nothing triggered a rebuild, the ALTER TABLE migrations in reindexOnce
+// never ran, and the first read failed hard:
+//
+//	Error: SQL logic error: no such column: title_source (1)
+//
+// That is every existing deployment's first command after upgrading, and no
+// test caught it because tests build their index from scratch with the
+// current binary -- the one case that cannot reproduce it. The regression
+// test below builds an index at the old shape on purpose.
+const indexSchemaVersion = 2
+
+// indexMetaMigrationCols forward-migrate an index_meta built by an older
+// binary, mirroring entriesMigrationCols.
+var indexMetaMigrationCols = []struct{ name, def string }{
+	{"schema_version", "INTEGER"},
 }
 
 // IndexPath is the rebuildable SQLite index (gitignored; not source of truth).
@@ -171,6 +198,12 @@ func reindexOnce(ctx context.Context, db *sql.DB, store string, entries []*Entry
 	}
 	for _, col := range entriesMigrationCols {
 		if err := addColumnIfMissing(ctx, tx, "entries", col.name, col.def); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	for _, col := range indexMetaMigrationCols {
+		if err := addColumnIfMissing(ctx, tx, "index_meta", col.name, col.def); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -318,9 +351,11 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 	// staleness (crn-t250).
 	commit, _, _ := git(ctx, store, "rev-parse", "HEAD")
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO index_meta (id, indexed_at_commit) VALUES (1, ?)
-		 ON CONFLICT(id) DO UPDATE SET indexed_at_commit = excluded.indexed_at_commit`,
-		commit,
+		`INSERT INTO index_meta (id, indexed_at_commit, schema_version) VALUES (1, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   indexed_at_commit = excluded.indexed_at_commit,
+		   schema_version = excluded.schema_version`,
+		commit, indexSchemaVersion,
 	)
 	return err
 }
@@ -381,6 +416,11 @@ const (
 	// staleBehindHEAD: an index exists but a body edit landed outside
 	// cairn's own write path. Bounded by selfHealReindexTimeout.
 	staleBehindHEAD
+	// staleSchemaVersion: an index exists and matches HEAD, but was built by
+	// a binary with a different index shape. Rebuilt in full rather than
+	// under the bounded budget staleBehindHEAD uses -- a body edit is a small
+	// delta, a schema change is not.
+	staleSchemaVersion
 )
 
 // ensureFreshWith takes the reindex step as a parameter so tests can count
@@ -441,6 +481,24 @@ func indexStale(ctx context.Context, store string) (bool, staleReason, error) {
 		return false, staleNone, err
 	}
 	defer func() { _ = db.Close() }()
+
+	// Checked before the watermark: a schema mismatch must force a rebuild
+	// even when the bodies have not moved, which is exactly the upgrade case.
+	// A missing schema_version COLUMN (not just a null value) means the index
+	// predates versioning entirely, which is equally stale -- so any error
+	// here is treated as a mismatch rather than propagated.
+	var version sql.NullInt64
+	if err := db.QueryRowContext(ctx,
+		`SELECT schema_version FROM index_meta WHERE id = 1`).Scan(&version); err != nil ||
+		!version.Valid || version.Int64 != indexSchemaVersion {
+		// Fall through to the watermark probe only if the row is absent
+		// entirely; otherwise report the schema mismatch.
+		var exists int
+		if probeErr := db.QueryRowContext(ctx,
+			`SELECT count(*) FROM index_meta WHERE id = 1`).Scan(&exists); probeErr == nil && exists > 0 {
+			return true, staleSchemaVersion, nil
+		}
+	}
 
 	var indexed string
 	err = db.QueryRowContext(ctx, `SELECT indexed_at_commit FROM index_meta WHERE id = 1`).Scan(&indexed)
