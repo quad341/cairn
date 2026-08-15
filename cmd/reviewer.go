@@ -145,6 +145,74 @@ func mailSend(ctx context.Context, to, subject, body string) error {
 	return nil
 }
 
+// batchReviewCandidate is one shared-tier --batch-file entry that has
+// already committed to its own review branch (commitForBatchReview) and is
+// waiting for its group's notification (requestBatchReview).
+type batchReviewCandidate struct {
+	entry    *cairn.Entry
+	branch   string
+	reviewer string
+}
+
+// commitForBatchReview is requestReview's batch-mode half: commit e to its
+// own review branch and resolve who should review it, but do not mail --
+// batch mode groups many entries by resolved reviewer and sends one mail per
+// group afterward (requestBatchReview) instead of mailing per entry like
+// requestReview does.
+func commitForBatchReview(cmd *cobra.Command, e *cairn.Entry, scope []string) (branch, reviewer string, err error) {
+	tier, value := cairn.ResolvedTier(scope)
+
+	branch, err = e.CommitToReviewBranch(cmd.Context(), storePath())
+	if err != nil {
+		return "", "", fmt.Errorf("commit shared-tier entry to review branch: %w", err)
+	}
+
+	reviewer, err = resolveReviewer(cmd, tier, value)
+	if err != nil {
+		return branch, "", fmt.Errorf("entry %s committed to review branch %s, but resolving a reviewer to mail failed: %w",
+			e.ID, branch, err)
+	}
+	return branch, reviewer, nil
+}
+
+// requestBatchReview groups candidates by resolved reviewer and sends one
+// sendBatchReviewMail per distinct group (NFR-2: reuses each candidate's
+// already-resolved reviewer from commitForBatchReview/resolveReviewer,
+// rather than resolving again), instead of one mail per entry like
+// requestReview/sendReviewMail. A reviewer with zero candidates (an
+// all-private-tier batch) never reaches here at all -- the caller only
+// invokes this when len(candidates) > 0.
+func requestBatchReview(ctx context.Context, candidates []batchReviewCandidate) error {
+	var order []string
+	groups := map[string][]batchReviewCandidate{}
+	for _, c := range candidates {
+		if _, ok := groups[c.reviewer]; !ok {
+			order = append(order, c.reviewer)
+		}
+		groups[c.reviewer] = append(groups[c.reviewer], c)
+	}
+	for _, reviewer := range order {
+		if err := sendBatchReviewMail(ctx, reviewer, groups[reviewer]); err != nil {
+			return fmt.Errorf("mail to reviewer %q failed: %w", reviewer, err)
+		}
+	}
+	return nil
+}
+
+// sendBatchReviewMail mirrors sendReviewMail's wording, enumerating every
+// entry's id and review branch in the group (FR-4) instead of naming just
+// one.
+func sendBatchReviewMail(ctx context.Context, reviewer string, group []batchReviewCandidate) error {
+	subject := fmt.Sprintf("cairn remember batch review: %d entries", len(group))
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d new shared-tier cairn entries are ready for review.\n\n", len(group))
+	for _, c := range group {
+		fmt.Fprintf(&b, "- %s (topic %q, scope %s): %s\n", c.entry.ID, c.entry.TopicKey, strings.Join(c.entry.Scope, " "), c.branch)
+	}
+	b.WriteString("\nMerge each branch into the store's default branch individually when satisfied; branches do not auto-merge.")
+	return mailSend(ctx, reviewer, subject, b.String())
+}
+
 // requestCullReview proposes e's eviction on a review branch and mails the
 // tier-appropriate reviewer -- mirrors requestReview, applied to a delete
 // instead of an add. Callers must only invoke this for a scope that has

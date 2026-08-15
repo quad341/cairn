@@ -37,6 +37,9 @@ func init() {
 		"immediately compute and persist the anchor's fingerprint (soft-fails to stderr if it doesn't resolve)")
 	rememberCmd.Flags().Bool("force", false,
 		"create a new entry even if a recurrence match is found, recording which entry it overrides")
+	rememberCmd.Flags().String("batch-file", "",
+		"path to a JSONL manifest of entries to remember in one call (see docs/knowledge-lifecycle.md); "+
+			"--topic/--scope/--title/--summary/--anchor-repo/--anchor-path/--force become per-line manifest fields instead and must not be passed as flags alongside this")
 }
 
 var rememberCmd = &cobra.Command{
@@ -44,6 +47,10 @@ var rememberCmd = &cobra.Command{
 	Short: "Write a new knowledge entry to the store (curation-tier routing)",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if batchFile, _ := cmd.Flags().GetString("batch-file"); batchFile != "" {
+			return runRememberBatch(cmd, batchFile)
+		}
+
 		body, err := rememberBody(cmd, args)
 		if err != nil {
 			return err

@@ -551,7 +551,10 @@ func TestRememberBatchRecurrenceHitRecordedAsPerEntryFailure(t *testing.T) {
 		batchManifestLine(t, map[string]any{"body": "a recurring fact about the build system", "scope": []string{"agent:test"}, "topic": "recur-test"}),
 		batchManifestLine(t, map[string]any{"body": "a recurring fact about the build system", "scope": []string{"agent:test"}, "topic": "recur-test"}),
 	)
-	store, out, err := runBatchRememberJSON(t, manifest)
+	// recurrenceMatch only considers entries cairn.Visible to the caller's own
+	// identity, so the caller must identify as the manifest's own agent:test
+	// scope for line 2 to ever see line 1 as a recurrence candidate.
+	store, out, err := runBatchRememberJSON(t, manifest, "--identity", "agent:test")
 	require.Error(t, err, "a batch containing a recurrence hit must exit non-zero")
 
 	var result BatchResult
@@ -582,7 +585,10 @@ func TestRememberBatchForceFieldBypassesRecurrence(t *testing.T) {
 		batchManifestLine(t, map[string]any{"body": "a recurring fact about the build system", "scope": []string{"agent:test"}, "topic": "force-recur-test"}),
 		batchManifestLine(t, map[string]any{"body": "a recurring fact about the build system", "scope": []string{"agent:test"}, "topic": "force-recur-test", "force": true}),
 	)
-	store, out, err := runBatchRememberJSON(t, manifest)
+	// See TestRememberBatchRecurrenceHitRecordedAsPerEntryFailure: identity
+	// must match the manifest's own scope for recurrenceMatch to see line 1 as
+	// a candidate when checking line 2, force field or not.
+	store, out, err := runBatchRememberJSON(t, manifest, "--identity", "agent:test")
 	require.NoError(t, err, "--force must let a genuine recurrence through, so the whole batch succeeds")
 
 	var result BatchResult

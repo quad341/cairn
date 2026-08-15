@@ -196,6 +196,7 @@ Two recurring loops dogfood cairn itself (see [`../formulas/README.md`](../formu
 | Verb | Purpose |
 |---|---|
 | `remember [body]` | write a new entry (curation-tier routing via `--scope`); body from argument, stdin, or `--file` |
+| `remember --batch-file <path>` | write many entries from a JSONL manifest in one call; per-line `scope` drives curation-tier routing, one grouped notification per reviewer |
 | `prime` | emit the scoped map + usage (for a SessionStart hook) |
 | `map` | the bounded topic map for an identity |
 | `list <topic>` | exact topic lookup — the visible winner(s) for a topic key |
