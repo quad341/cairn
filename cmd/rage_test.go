@@ -151,6 +151,38 @@ func TestRageBundleIsSingleFileWithConstantStdout(t *testing.T) {
 	assert.Greater(t, info.Size(), int64(20000), "the bundle file itself must carry the bulk of the evidence")
 }
 
+// TestRageJSONEmitsBundlePathAndIssueURL covers the --json wiring crn-x5zx.3
+// directs (cmd/format.go's persistent flag): mirroring printVersion's own
+// convention (cmd/version.go), --json replaces the two plain-text lines with
+// an equivalent JSON object carrying the same two pieces of information --
+// nothing else -- so exit_contract item 1's constant-size invariant holds in
+// both modes, not just the default text one TestRageBundleIsSingleFileWith
+// ConstantStdout already locks in.
+func TestRageJSONEmitsBundlePathAndIssueURL(t *testing.T) {
+	dir := t.TempDir()
+	_, buf := newRageTestCmd(t, "")
+	require.NoError(t, resetJSONFlag())
+	t.Cleanup(func() { _ = resetJSONFlag() })
+
+	rootCmd.SetArgs([]string{"rage", "--store", dir, "--json"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	require.NoError(t, rootCmd.Execute())
+
+	var result RageResult
+	require.NoErrorf(t, json.Unmarshal(buf.Bytes(), &result),
+		"stdout must be exactly one JSON value, nothing else: %q", buf.String())
+
+	data, err := os.ReadFile(result.BundlePath)
+	require.NoErrorf(t, err, "bundle file named in --json output must exist: %s", result.BundlePath)
+	var bundle RageBundle
+	require.NoError(t, json.Unmarshal(data, &bundle))
+	assert.Equal(t, dir, bundle.StorePath, "the bundle named by --json output must be this run's own bundle")
+
+	parsed, err := url.Parse(result.IssueURL)
+	require.NoErrorf(t, err, "issue URL must be a well-formed URL: %s", result.IssueURL)
+	assert.Equal(t, "cairn rage report", parsed.Query().Get("title"))
+}
+
 // TestRageBundleVersionMatchesCairnVersion covers exit_contract item 2:
 // version/commit/date must come from the exact same package-level vars
 // printVersion's --json output serializes (cmd/version.go), not a

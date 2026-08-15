@@ -101,6 +101,16 @@ type RageFailingCommand struct {
 	Unverified bool   `json:"unverified"`
 }
 
+// RageResult is cairn rage --json's output shape: the same two pieces of
+// information as the default two-line stdout (bundle path, then issue URL),
+// nothing else -- so NFR-2's "constant-size regardless of store/log size"
+// invariant holds in both modes, matching the convention printVersion
+// establishes in cmd/version.go.
+type RageResult struct {
+	BundlePath string `json:"bundle_path"`
+	IssueURL   string `json:"issue_url"`
+}
+
 // runRage is rageCmd's body, factored out as a plain function that never
 // calls os.Exit itself (mirroring runDoctor), so tests can drive it
 // directly. Unlike doctor's three-way exit code split, rage's job is
@@ -182,9 +192,17 @@ func runRage(cmd *cobra.Command, _ []string) (int, error) {
 		return 1, fmt.Errorf("write rage bundle: %w", err)
 	}
 
+	issueURL := rageIssueURL(storeP, bundlePath)
+	if wantsJSON(cmd) {
+		if err := emitJSON(cmd.OutOrStdout(), RageResult{BundlePath: bundlePath, IssueURL: issueURL}); err != nil {
+			return 1, fmt.Errorf("emit json: %w", err)
+		}
+		return 0, nil
+	}
+
 	out := cmd.OutOrStdout()
 	_, _ = fmt.Fprintln(out, bundlePath)
-	_, _ = fmt.Fprintln(out, rageIssueURL(storeP, bundlePath))
+	_, _ = fmt.Fprintln(out, issueURL)
 	return 0, nil
 }
 
