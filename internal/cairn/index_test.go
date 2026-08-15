@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -828,4 +829,84 @@ func TestConcurrentReindexOnColdStoreDoesNotHardFail(t *testing.T) {
 		t.Fatalf(`%d/%d concurrent Reindex calls against a COLD store failed (want 0) -- first error: %v (entriesSchema must run inside ReindexEntries' _txlock=immediate tx; as an autocommit statement its lock upgrade returns SQLITE_BUSY without consulting busy_timeout)`,
 			len(errs), reindexers*iterations, errs[0])
 	}
+}
+
+// TestReindexRetriesPastBusyTimeout pins crn-wrg0: Reindex must survive a
+// writer lock held longer than busy_timeout(5000) instead of hard-failing.
+func TestReindexRetriesPastBusyTimeout(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	for _, id := range []string{"a", "b", "c"} {
+		body := "+++\nid = \"" + id + "\"\ntitle = \"" + id + "\"\n+++\nbody\n"
+		require.NoError(t, os.WriteFile(filepath.Join(store, "global", id+".md"), []byte(body), 0o600))
+	}
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	db, err := sql.Open("sqlite", IndexPath(store)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO entries (id,title,body_path) VALUES ('lock','lock','lock')`)
+	require.NoError(t, err)
+
+	// Release the lock after 6s -- longer than busy_timeout, shorter than the
+	// retry budget. Reindex must wait it out rather than fail at 5s.
+	go func() {
+		time.Sleep(6 * time.Second)
+		_ = tx.Rollback()
+	}()
+
+	_, err = Reindex(ctx, store)
+	require.NoError(t, err, "Reindex must retry past busy_timeout, not hard-fail")
+}
+
+// TestIsBusyClassifiesRealSQLiteBusyError pins isBusy's positive case against
+// a genuine driver error rather than a hand-built stand-in: connection A
+// holds an immediate write lock; connection B has busy_timeout(0) (no retry
+// wait, so the failure is immediate) and a deferred txlock, so its own write
+// statement -- not BeginTx -- is what contends for the lock and returns
+// SQLITE_BUSY.
+func TestIsBusyClassifiesRealSQLiteBusyError(t *testing.T) {
+	ctx := t.Context()
+	dbPath := filepath.Join(t.TempDir(), "busy.sqlite")
+
+	dbA, err := sql.Open("sqlite", dbPath+"?_txlock=immediate")
+	require.NoError(t, err)
+	defer func() { _ = dbA.Close() }()
+	_, err = dbA.ExecContext(ctx, `CREATE TABLE t (id INTEGER PRIMARY KEY)`)
+	require.NoError(t, err)
+	txA, err := dbA.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = txA.Rollback() }()
+	_, err = txA.ExecContext(ctx, `INSERT INTO t (id) VALUES (1)`)
+	require.NoError(t, err)
+
+	dbB, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(0)")
+	require.NoError(t, err)
+	defer func() { _ = dbB.Close() }()
+	txB, err := dbB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = txB.Rollback() }()
+	_, err = txB.ExecContext(ctx, `INSERT INTO t (id) VALUES (2)`)
+	require.Error(t, err, "connection B must contend with A's held write lock")
+
+	assert.True(t, isBusy(err), "a real SQLITE_BUSY error must classify as busy: %v", err)
+}
+
+// TestIsBusyRejectsNonBusyErrors pins isBusy's negative case: neither a
+// non-SQLite sentinel error nor a real driver error of a different class
+// (SQL syntax) must be misclassified as lock contention.
+func TestIsBusyRejectsNonBusyErrors(t *testing.T) {
+	assert.False(t, isBusy(sql.ErrNoRows), "sql.ErrNoRows must not classify as busy")
+
+	ctx := t.Context()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "syntax.sqlite"))
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	_, err = db.ExecContext(ctx, `NOT VALID SQL`)
+	require.Error(t, err)
+	assert.False(t, isBusy(err), "a SQL syntax error must not classify as busy: %v", err)
 }

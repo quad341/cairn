@@ -4,15 +4,20 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/quad341/cairn/internal/obslog"
-	// modernc.org/sqlite registers a pure-Go SQLite driver ("sqlite") for database/sql.
-	_ "modernc.org/sqlite"
+	// sqlitedrv registers a pure-Go SQLite driver ("sqlite") for database/sql;
+	// its Error type and sqlitelib's result codes are also used directly by
+	// isBusy below.
+	sqlitedrv "modernc.org/sqlite"
+	sqlitelib "modernc.org/sqlite/lib"
 )
 
 // entriesSchema covers a fresh index. entries and index_meta persist across
@@ -125,9 +130,21 @@ func ReindexEntries(ctx context.Context, store string, entries []*Entry) (int, e
 	}
 	defer func() { _ = db.Close() }()
 
+	if err := retryOnBusy(ctx, func() error {
+		return reindexOnce(ctx, db, store, entries)
+	}); err != nil {
+		return 0, err
+	}
+	return len(entries), nil
+}
+
+// reindexOnce runs one attempt of Reindex's write transaction. It is retried
+// by retryOnBusy above rather than looped internally, so it stays a plain
+// single-attempt function.
+func reindexOnce(ctx context.Context, db *sql.DB, store string, entries []*Entry) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	// entriesSchema and the column migrations run INSIDE this tx, not as
 	// autocommit statements before it (crn-t42e). openDB's DSN sets
@@ -146,12 +163,12 @@ func ReindexEntries(ctx context.Context, store string, entries []*Entry) (int, e
 	// concurrent Reindex calls, ~13% of stress runs.
 	if _, err := tx.ExecContext(ctx, entriesSchema); err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return err
 	}
 	for _, col := range entriesMigrationCols {
 		if err := addColumnIfMissing(ctx, tx, "entries", col.name, col.def); err != nil {
 			_ = tx.Rollback()
-			return 0, err
+			return err
 		}
 	}
 	// entry_tags carries no index-only state worth preserving across a
@@ -163,20 +180,56 @@ func ReindexEntries(ctx context.Context, store string, entries []*Entry) (int, e
 	// "table entry_tags already exists" (crn-j3k4).
 	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS entry_tags;`); err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, tagsSchema); err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return err
 	}
 	if err := reindexTx(ctx, tx, store, entries); err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return err
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
+	return tx.Commit()
+}
+
+// isBusy reports whether err is SQLite's lock-contention error. The primary
+// result code is the low 8 bits, so this also catches the extended forms
+// (SQLITE_BUSY_SNAPSHOT 517, SQLITE_BUSY_RECOVERY 261).
+func isBusy(err error) bool {
+	var serr *sqlitedrv.Error
+	return errors.As(err, &serr) && serr.Code()&0xFF == sqlitelib.SQLITE_BUSY
+}
+
+// retryOnBusy runs fn, retrying only while it fails with isBusy. Each
+// attempt already spends up to openDB's busy_timeout(5000) waiting inside
+// SQLite itself, so this loop exists purely for contention that outlasts a
+// single busy_timeout window -- a writer lock held across several such
+// windows under fleet-scale contention (crn-wrg0). Backoff is exponential
+// with jitter so a queue of waiters spreads its retries instead of all
+// waking in lockstep and re-losing the race together.
+func retryOnBusy(ctx context.Context, fn func() error) error {
+	const (
+		maxAttempts = 6
+		baseDelay   = 100 * time.Millisecond
+	)
+	var err error
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			delay := baseDelay << (attempt - 1)
+			jitter := time.Duration(rand.Float64()*float64(delay)) - delay/2 //nolint:gosec // jitter is timing-only, not security-sensitive
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay + jitter):
+			}
+		}
+		err = fn()
+		if err == nil || !isBusy(err) {
+			return err
+		}
 	}
-	return len(entries), nil
+	return err
 }
 
 // reindexTx does the per-entry upsert, drops entries whose source file is
