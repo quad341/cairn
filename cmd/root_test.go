@@ -226,3 +226,159 @@ func TestTraceFlagMirrorsContextRecordToStderr(t *testing.T) {
 func TestRootHelpDocumentsLogPath(t *testing.T) {
 	assert.Contains(t, rootCmd.Long, filepath.Join("cairn", "debug.jsonl"))
 }
+
+func TestRedactArgvRedactsRememberPositional(t *testing.T) {
+	cmd := &cobra.Command{Use: "remember [body]"}
+	require.NoError(t, cmd.Flags().Parse([]string{"super secret body text"}))
+
+	argv := []string{"cairn", "remember", "super secret body text"}
+	got := redactArgv(argv, cmd)
+	assert.Equal(t, []string{"cairn", "remember", "«redacted»"}, got)
+}
+
+func TestRedactArgvLeavesNonFreeformPositionalAlone(t *testing.T) {
+	cmd := &cobra.Command{Use: "status"}
+	require.NoError(t, cmd.Flags().Parse([]string{"some-positional"}))
+
+	argv := []string{"cairn", "status", "some-positional"}
+	got := redactArgv(argv, cmd)
+	assert.Equal(t, argv, got)
+}
+
+func TestRedactArgvRedactsSuspiciousFlagValue(t *testing.T) {
+	tests := []struct {
+		name          string
+		flag          string
+		shorthand     string
+		boolFlag      string
+		boolShorthand string
+		args          []string
+		argv          []string
+		want          []string
+	}{
+		{
+			name: "equals-joined token flag",
+			flag: "token",
+			args: []string{"--token=hunter2"},
+			argv: []string{"cairn", "somecmd", "--token=hunter2"},
+			want: []string{"cairn", "somecmd", "--token=«redacted»"},
+		},
+		{
+			name: "space-separated secret flag",
+			flag: "secret",
+			args: []string{"--secret", "hunter2"},
+			argv: []string{"cairn", "somecmd", "--secret", "hunter2"},
+			want: []string{"cairn", "somecmd", "--secret", "«redacted»"},
+		},
+		{
+			name: "case-insensitive credential match",
+			flag: "API-Credential",
+			args: []string{"--API-Credential=hunter2"},
+			argv: []string{"cairn", "somecmd", "--API-Credential=hunter2"},
+			want: []string{"cairn", "somecmd", "--API-Credential=«redacted»"},
+		},
+		{
+			// POSIX/GNU shorthand-combined form: letter and value concatenated
+			// with no separator (e.g. curl -ofile.txt). Contains no "=" and the
+			// token itself isn't a bare redact-set value, so it must be caught
+			// by a dedicated shorthand branch rather than the equals-joined or
+			// space-separated ones.
+			name:      "shorthand-combined token flag",
+			flag:      "token",
+			shorthand: "t",
+			args:      []string{"-thunter2"},
+			argv:      []string{"cairn", "somecmd", "-thunter2"},
+			want:      []string{"cairn", "somecmd", "-t«redacted»"},
+		},
+		{
+			// A boolean shorthand bundled ahead of a value-taking suspicious
+			// shorthand in the same token (e.g. -v then -t, POSIX/GNU-style:
+			// -vtSECRET means -v -tSECRET). The naive fixed-offset a[2:] slice
+			// assumes the suspicious shorthand is always the character right
+			// after '-', so it looks up a[2:] ("tSECRETVALUE") instead of the
+			// true value ("SECRETVALUE") -- that's not in the redact set, so
+			// the whole token falls through unredacted. Only a walk that skips
+			// no-value (NoOptDefVal-bearing) shorthands before checking for a
+			// value-taking one catches this.
+			name:          "bundled boolean plus suspicious shorthand",
+			flag:          "token",
+			shorthand:     "t",
+			boolFlag:      "verbose",
+			boolShorthand: "v",
+			args:          []string{"-vtSECRETVALUE"},
+			argv:          []string{"cairn", "somecmd", "-vtSECRETVALUE"},
+			want:          []string{"cairn", "somecmd", "-vt«redacted»"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "somecmd"}
+			if tt.boolFlag != "" {
+				cmd.Flags().BoolP(tt.boolFlag, tt.boolShorthand, false, "")
+			}
+			if tt.shorthand != "" {
+				cmd.Flags().StringP(tt.flag, tt.shorthand, "", "")
+			} else {
+				cmd.Flags().String(tt.flag, "", "")
+			}
+			require.NoError(t, cmd.Flags().Parse(tt.args))
+
+			got := redactArgv(tt.argv, cmd)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestRedactArgvNoopWhenNeitherRuleMatches(t *testing.T) {
+	cmd := &cobra.Command{Use: "status"}
+	cmd.Flags().String("store", "", "")
+	require.NoError(t, cmd.Flags().Parse([]string{"--store", "/some/dir"}))
+
+	argv := []string{"cairn", "status", "--store", "/some/dir"}
+	got := redactArgv(argv, cmd)
+	assert.Equal(t, argv, got)
+}
+
+// TestRootRedactsRememberBodyFromLoggedArgs proves the PersistentPreRunE call
+// site actually invokes redactArgv on the real process argv -- the unit
+// tests above only prove redactArgv's own logic in isolation. os.Args is
+// mutated directly (and restored via cleanup) because that is what the call
+// site reads, mirroring TestRootLogsContextRecordUnconditionally's own proof
+// that PersistentPreRunE reads os.Args rather than SetArgs's shorter list.
+func TestRootRedactsRememberBodyFromLoggedArgs(t *testing.T) {
+	resetRootFlagsForTest(t)
+	xdg := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", xdg)
+	t.Setenv("CAIRN_IDENTITY", "")
+
+	dir := t.TempDir()
+	origArgs := os.Args
+	t.Cleanup(func() { os.Args = origArgs })
+	secretBody := "super secret remembered body text"
+	os.Args = []string{"cairn", "remember", secretBody, "--store", dir, "--scope", ""}
+
+	rootCmd.SetArgs([]string{"remember", secretBody, "--store", dir, "--scope", ""})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	_ = rootCmd.Execute() // remember may fail downstream; only the logged context record is under test here
+
+	data, err := os.ReadFile(filepath.Join(xdg, "cairn", "debug.jsonl"))
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	require.NotEmpty(t, lines)
+
+	var rec map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &rec))
+
+	rawArgs, ok := rec["args"].([]any)
+	require.True(t, ok, "context record must carry an args array")
+	gotArgs := make([]string, len(rawArgs))
+	for i, a := range rawArgs {
+		s, ok := a.(string)
+		require.True(t, ok, "args[%d] must be a string", i)
+		gotArgs[i] = s
+	}
+
+	assert.NotContains(t, gotArgs, secretBody)
+	assert.Contains(t, gotArgs, "«redacted»")
+}
