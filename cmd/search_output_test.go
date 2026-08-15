@@ -44,6 +44,19 @@ func TestSearchPrettyAndHiddenJSONNoOp(t *testing.T) {
 	assert.Contains(t, pretty, "\n  \"instruction\"")
 }
 
+func TestSearchNoCandidatesUsesExplicitEmptyHits(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md", "+++\nid = \"a\"\ntitle = \"Haystack\"\nscope = []\n+++\nhaystack\n")
+
+	out, err := execRootJSON(t, "search", "needle", "--store", dir)
+	require.NoError(t, err)
+	var got searchOutput
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	assert.Equal(t, []searchItem{}, got.Hits)
+	assert.Equal(t, 0, got.TotalMatched)
+	assert.Equal(t, 1, got.TotalVisible)
+}
+
 func TestSearchCarriesConflictOnEveryContestedHit(t *testing.T) {
 	dir := t.TempDir()
 	seedEntry(t, dir, "global/a.md", "+++\nid = \"a\"\ntitle = \"Shared needle A\"\ntopic_key = \"tied\"\nscope = []\ncreated_at = \"2026-08-15\"\n+++\nneedle alpha\n")

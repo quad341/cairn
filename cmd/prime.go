@@ -11,7 +11,8 @@ import (
 // calibrated final answer.
 const defaultPrimeBudgetBytes = 8192
 
-const primeInstruction = "Use cairn search <your situation> when cached knowledge may help; then cairn get <id> before acting. Stale knowledge is a lead, not truth."
+const primeInstruction = "Use cairn search <your situation> when cached knowledge may help; " +
+	"then cairn get <id> before acting. Stale knowledge is a lead, not truth."
 
 type primeOutput struct {
 	Instruction  string             `json:"instruction"`

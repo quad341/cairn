@@ -35,6 +35,22 @@ func TestPrimeDefaultIsSlimMinifiedModelJSON(t *testing.T) {
 	assert.Equal(t, []cairn.TopicCount{{TopicKey: "topic-a", Count: 1}}, got.TopicCounts)
 }
 
+func TestPrimeCarriesConflictOnEveryContestedTrigger(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\ntopic_key = \"tied\"\nscope = []\ncreated_at = \"2026-08-15\"\n+++\na\n")
+	seedEntry(t, dir, "global/b.md", "+++\nid = \"b\"\ntitle = \"B\"\ntopic_key = \"tied\"\nscope = []\ncreated_at = \"2026-08-15\"\n+++\nb\n")
+
+	out, err := execRootJSON(t, "prime", "--store", dir)
+	require.NoError(t, err)
+	var got primeOutput
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	require.Len(t, got.Triggers, 2)
+	for _, trigger := range got.Triggers {
+		require.NotNil(t, trigger.Conflict)
+		assert.Equal(t, []string{"a", "b"}, trigger.Conflict.EntryIDs)
+	}
+}
+
 func TestPrimePrettyIndentsAndHiddenJSONIsExactNoOp(t *testing.T) {
 	dir := t.TempDir()
 	seedEntry(t, dir, "global/a.md", "+++\nid = \"a\"\ntitle = \"A title\"\nscope = []\n+++\nbody\n")

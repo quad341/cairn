@@ -7,7 +7,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const searchInstruction = "Inspect these ranked lexical candidates. If one addresses your situation, read it with cairn get <id> before acting. If none does, stop."
+const searchInstruction = "Inspect these ranked lexical candidates. If one addresses your situation, " +
+	"read it with cairn get <id> before acting. If none does, stop."
 
 type searchOutput struct {
 	Instruction  string       `json:"instruction"`
