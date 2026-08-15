@@ -24,6 +24,7 @@ func TestPrimeDefaultIsSlimMinifiedModelJSON(t *testing.T) {
 	assert.NotContains(t, out, "verbose summary")
 	assert.NotContains(t, out, "hit_count")
 	assert.NotContains(t, out, "detail")
+	assert.Contains(t, out, "cairn get <id>", "model JSON must not spend tokens HTML-escaping instruction syntax")
 
 	var got primeOutput
 	require.NoError(t, json.Unmarshal([]byte(out), &got))

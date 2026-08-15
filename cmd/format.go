@@ -99,7 +99,9 @@ func emitJSON(w io.Writer, v any) error {
 // value followed by a newline. Unlike emitJSON, it deliberately adds no
 // presentation whitespace; this output is injected into model context.
 func emitCompactJSON(w io.Writer, v any) error {
-	return json.NewEncoder(w).Encode(v)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc.Encode(v)
 }
 
 // emitModelJSON writes a model-facing result compactly by default and indents
@@ -107,7 +109,10 @@ func emitCompactJSON(w io.Writer, v any) error {
 func emitModelJSON(cmd *cobra.Command, v any) error {
 	pretty, _ := cmd.Flags().GetBool("pretty")
 	if pretty {
-		return emitJSON(cmd.OutOrStdout(), v)
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetEscapeHTML(false)
+		enc.SetIndent("", "  ")
+		return enc.Encode(v)
 	}
 	return emitCompactJSON(cmd.OutOrStdout(), v)
 }
