@@ -961,3 +961,135 @@ func TestIsBusyRejectsNonBusyErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.False(t, isBusy(err), "a SQL syntax error must not classify as busy: %v", err)
 }
+
+// TestEnsureFreshBoundsSelfHealReindexWhenStaleBehindHEAD pins crn-f0rb7: when
+// the index already has a watermark that's merely behind HEAD (a body edit
+// landed outside cairn's own write path, not a first-ever build), a writer
+// holding the entries lock must not force the self-heal reindex through
+// retryOnBusy's full ~33s worst case (6 attempts x up to 5s busy_timeout
+// each, plus backoff). ensureFreshWith must bound this case to a short
+// internal budget and resolve -- success or context.DeadlineExceeded --
+// within ~6-11s.
+func TestEnsureFreshBoundsSelfHealReindexWhenStaleBehindHEAD(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	// Move HEAD past the watermark without reindexing -- this is the
+	// stale-behind-HEAD case, distinct from a cold/no-watermark store.
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "b.md"),
+		[]byte("+++\nid = \"b\"\ntitle = \"B\"\n+++\nbody\n"), 0o600))
+	gitCommitAll(t, store, "add b")
+
+	db, err := sql.Open("sqlite", IndexPath(store)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO entries (id,title,body_path) VALUES ('lock','lock','lock')`)
+	require.NoError(t, err)
+
+	// Held well past the acceptance criterion's ~11s upper bound, so a
+	// bounded ensureFreshWith must resolve on its own internal deadline
+	// rather than on the unlock -- if it waited for release instead, the
+	// elapsed assertion below would see ~15s+ and fail.
+	const lockHold = 15 * time.Second
+	go func() {
+		time.Sleep(lockHold)
+		_ = tx.Rollback()
+	}()
+
+	start := time.Now()
+	err = ensureFreshWith(ctx, store, Reindex)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		assert.ErrorIs(t, err, context.DeadlineExceeded,
+			"a bounded self-heal reindex must fail (if at all) with DeadlineExceeded, not a bare busy/lock error: %v", err)
+	}
+	assert.Lessf(t, elapsed, 11*time.Second,
+		"stale-behind-HEAD self-heal must be bounded to ~6-11s, not retryOnBusy's ~33s worst case (got %s)", elapsed)
+	assert.GreaterOrEqualf(t, elapsed, 4*time.Second,
+		"the bounded budget must still give the reindex a real window rather than failing near-instantly (got %s)", elapsed)
+}
+
+// TestEnsureFreshDoesNotBoundColdStoreSelfHealReindex pins the other half of
+// crn-f0rb7: a store with no watermark row yet (a first-ever index build, not
+// a body edit that's merely raced HEAD) must NOT be subject to the new short
+// self-heal budget -- there's no existing index to fall back to, so capping
+// this case would leave callers with an unusably empty index instead of the
+// eventually-consistent one they'd get from waiting. It must still run to
+// completion under the old unbounded retryOnBusy budget.
+func TestEnsureFreshDoesNotBoundColdStoreSelfHealReindex(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	// Seed a legacy-shaped entries table to lock against, deliberately
+	// without ever calling Reindex -- no index_meta row means indexStale
+	// reports "no watermark" (cold store), not "behind HEAD". Missing
+	// columns (anchor_repo, kind, ...) are backfilled by Reindex's own
+	// entriesMigrationCols path, same as TestReindexMigratesLegacyIndexSchema.
+	require.NoError(t, os.MkdirAll(filepath.Dir(IndexPath(store)), 0o750))
+	seedDB, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	_, err = seedDB.ExecContext(ctx, `
+CREATE TABLE entries (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  summary TEXT,
+  type TEXT,
+  topic_key TEXT,
+  body_path TEXT NOT NULL,
+  anchor_type TEXT,
+  anchor_fingerprint TEXT,
+  verified_at TEXT,
+  created_by TEXT,
+  hit_count INTEGER DEFAULT 0
+);
+CREATE TABLE entry_tags (entry_id TEXT, tag TEXT);
+`)
+	require.NoError(t, err)
+	require.NoError(t, seedDB.Close())
+
+	db, err := sql.Open("sqlite", IndexPath(store)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO entries (id,title,body_path) VALUES ('lock','lock','lock')`)
+	require.NoError(t, err)
+
+	// Longer than the acceptance criterion's ~11s upper bound for the bounded
+	// case, well inside retryOnBusy's own ~33s worst case, so a correctly
+	// unbounded cold-store path waits this out and succeeds rather than
+	// returning early on the new short budget.
+	const lockHold = 12 * time.Second
+	go func() {
+		time.Sleep(lockHold)
+		_ = tx.Rollback()
+	}()
+
+	start := time.Now()
+	err = ensureFreshWith(ctx, store, Reindex)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err, "a cold store's self-heal reindex must run to completion, not be capped by the new short budget")
+	assert.GreaterOrEqualf(t, elapsed, 11*time.Second,
+		"a cold store must wait out the writer lock rather than returning early on the new ~6-11s budget (got %s)", elapsed)
+
+	var count int
+	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM entries WHERE id = 'a'").Scan(&count))
+	assert.Equal(t, 1, count, "the self-heal reindex must have actually completed, not merely returned nil early")
+}
