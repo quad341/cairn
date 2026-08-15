@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/quad341/cairn/internal/cairn"
+	"github.com/quad341/cairn/internal/obslog"
 	"github.com/spf13/cobra"
 )
 
@@ -124,6 +125,7 @@ force a match.`,
 		if err != nil {
 			return emitModelError(cmd, err)
 		}
+		logSearchOutcome(cmd, identity, res)
 		return emitModelJSON(cmd, projectSearch(res))
 	},
 }
@@ -134,4 +136,30 @@ force a match.`,
 // output holds to.
 func collapseWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// logSearchOutcome records the invocation for later audit. Logged before the
+// result is rendered, so the record exists identically regardless of output
+// mode -- an audit of what agents searched for must not depend on which flags
+// they happened to pass.
+func logSearchOutcome(cmd *cobra.Command, identity []string, res cairn.SearchResult) {
+	ids := make([]string, len(res.Hits))
+	scores := make([]float64, len(res.Hits))
+	for i, h := range res.Hits {
+		ids[i] = h.ID
+		scores[i] = h.Score
+	}
+	obslog.FromContext(cmd.Context()).SearchOutcome(obslog.SearchOutcomeFields{
+		IdentityTags:   identity,
+		RunID:          resolveRunID(cmd),
+		Query:          res.Query,
+		Terms:          res.QueryTerms,
+		UnmatchedTerms: res.Confidence.UnmatchedTerms,
+		Verdict:        res.Confidence.Verdict,
+		Coverage:       res.Confidence.Coverage,
+		TotalMatched:   res.TotalMatched,
+		TotalVisible:   res.TotalVisible,
+		HitIDs:         ids,
+		HitScores:      scores,
+	})
 }
