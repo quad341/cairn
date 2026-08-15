@@ -863,6 +863,57 @@ func TestReindexRetriesPastBusyTimeout(t *testing.T) {
 	require.NoError(t, err, "Reindex must retry past busy_timeout, not hard-fail")
 }
 
+// TestFindRetriesPastBusyTimeout pins crn-ui5i5, the residual half of
+// crn-wrg0. #94 gave Reindex's transaction a retry above busy_timeout, but
+// Find's hit_count/last_recalled_at UPDATE (entry.go) is the package's only
+// other write and was left on the bare 5s window. Reindex holds the writer
+// lock for longer than that on a real-sized store -- measured p99=15.7s,
+// max=17.1s, with 40 of 192 reindexes exceeding 5s on a 900-entry store under
+// 24 concurrent reindexers -- so the losing `cairn get` caller hard-failed
+// with "database is locked" while Reindex beside it survived.
+//
+// The asymmetry was confirmed by an A/B control run: two finder cohorts
+// against one store under identical contention, one calling Find's pre-fix
+// (unretried) statement shape and one calling the real Find. Unretried failed
+// 19/1280, all at the hit_count UPDATE with SQLITE_BUSY at ~4.9s; retried
+// failed 0/1280, alongside Reindex's own 0/192.
+//
+// Same shape as TestReindexRetriesPastBusyTimeout above: hold the writer lock
+// for 6s, longer than busy_timeout(5000) but well inside the retry budget.
+// Before the fix this failed at exactly 5.02s; after it, Find waits the lock
+// out. The concurrent form of this is
+// TestConcurrentFindAndReindexDoNotHardFail, whose failure is probabilistic
+// (3/140 full-suite runs post-#94), so this deterministic test is what
+// actually guards the regression.
+func TestFindRetriesPastBusyTimeout(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	body := "+++\nid = \"a\"\ntitle = \"a\"\n+++\nbody\n"
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"), []byte(body), 0o600))
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	db, err := sql.Open("sqlite", IndexPath(store)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO entries (id,title,body_path) VALUES ('lock','lock','lock')`)
+	require.NoError(t, err)
+
+	go func() {
+		time.Sleep(6 * time.Second)
+		_ = tx.Rollback()
+	}()
+
+	e, err := Find(ctx, store, "a")
+	require.NoError(t, err, "Find's hit_count UPDATE must retry past busy_timeout, not hard-fail")
+	// The retried statement must still have applied exactly once: a retry that
+	// re-ran a partially-committed UPDATE would show 2 here, not 1.
+	assert.Equal(t, 1, e.HitCount, "the retried UPDATE must increment hit_count exactly once")
+}
+
 // TestIsBusyClassifiesRealSQLiteBusyError pins isBusy's positive case against
 // a genuine driver error rather than a hand-built stand-in: connection A
 // holds an immediate write lock; connection B has busy_timeout(0) (no retry

@@ -593,11 +593,20 @@ func Find(ctx context.Context, store, id string) (*Entry, error) {
 	// crn-28ge.1.1): the freshly-parsed body's values are stale-by-construction,
 	// so both are always overwritten with the authoritative post-write values
 	// (same transaction, same RETURNING) rather than trusted from the file.
-	now := time.Now().Format(time.RFC3339)
-	err = db.QueryRowContext(ctx,
-		`UPDATE entries SET hit_count = hit_count + 1, last_recalled_at = ? WHERE id = ? RETURNING hit_count, last_recalled_at`,
-		now, id,
-	).Scan(&e.HitCount, &e.LastRecalledAt)
+	// This is Find's only write, and the only one in the package outside
+	// Reindex's transaction. Like that transaction (crn-wrg0/#94), a single
+	// busy_timeout(5000) window is not enough under fleet contention: it
+	// contends with every concurrent Reindex's write lock, and Reindex's own
+	// lock-hold time runs past 5s on a real-sized store. Without a retry above
+	// the timeout the losing caller hard-fails `cairn get` with "database is
+	// locked" (crn-ui5i5).
+	err = retryOnBusy(ctx, func() error {
+		now := time.Now().Format(time.RFC3339)
+		return db.QueryRowContext(ctx,
+			`UPDATE entries SET hit_count = hit_count + 1, last_recalled_at = ? WHERE id = ? RETURNING hit_count, last_recalled_at`,
+			now, id,
+		).Scan(&e.HitCount, &e.LastRecalledAt)
+	})
 	if err != nil {
 		return nil, err
 	}
