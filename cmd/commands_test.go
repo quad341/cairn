@@ -430,10 +430,16 @@ func TestGetLogsRetrievalOutcomeMissOnNotFound(t *testing.T) {
 }
 
 // TestGetLogsRetrievalOutcomeStaleWhenAnchorDrifted covers the third outcome
-// branch: found but stale must be distinguished from a plain hit. A
-// "commit"-type anchor makes this deterministic with no git repo involved --
-// ComputeFingerprint returns Spec directly for that anchor type, so a
-// Fingerprint that disagrees with Spec is stale by construction.
+// branch: found but stale must be distinguished from a plain hit. Before
+// crn-fqe, a "commit"-type anchor was deterministic with no git repo
+// involved -- ComputeFingerprint echoed Spec back unconditionally, so a
+// Fingerprint that disagreed with Spec was stale by construction. crn-fqe
+// made the commit case verify Spec against a real commit object (mirroring
+// the files case's existing crn-6az.8.2 fix), so a bogus repo/spec now
+// fingerprints to "" (Unknown, not verifiable) instead of echoing back --
+// this test's anchor must point at a real repo with Spec resolving to its
+// actual HEAD for the drift (stored Fingerprint disagreeing with that real,
+// resolvable commit) to still be observable as stale.
 func TestGetLogsRetrievalOutcomeStaleWhenAnchorDrifted(t *testing.T) {
 	require.NoError(t, resetIdentityFlag())
 	t.Cleanup(func() { _ = resetIdentityFlag() })
@@ -444,9 +450,13 @@ func TestGetLogsRetrievalOutcomeStaleWhenAnchorDrifted(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", xdg)
 	t.Setenv("CAIRN_RUN_ID", "")
 
+	repo := t.TempDir()
+	gitInit(t, repo)
+	sha := strings.TrimSpace(gitOutput(t, repo, "rev-parse", "HEAD"))
+
 	dir := t.TempDir()
 	seedEntry(t, dir, "global/a.md",
-		"+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n\n[anchor]\ntype = \"commit\"\nspec = \"abc123\"\nfingerprint = \"different456\"\n+++\nbody\n")
+		"+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n\n[anchor]\ntype = \"commit\"\nrepo = \""+repo+"\"\nspec = \""+sha+"\"\nfingerprint = \"different456\"\n+++\nbody\n")
 
 	_, err := execRoot("get", "g/a", "--store", dir)
 	require.NoError(t, err)

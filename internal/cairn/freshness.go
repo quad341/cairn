@@ -99,14 +99,31 @@ func expand(ctx context.Context, repo string, paths []string) ([]string, error) 
 }
 
 // ComputeFingerprint returns a deterministic fingerprint of the anchored
-// source. A confirmed negative -- none/query/external in v1, or a files
-// anchor with a path that doesn't resolve to a real tracked object at
-// repo's HEAD -- returns ("", nil), unchanged from before crn-fdjc.1. A
-// genuine git invocation failure returns ("", err); callers must not fold
-// this into the same empty string as a confirmed negative.
+// source. A confirmed negative -- none/query/external in v1, a files anchor
+// with a path that doesn't resolve to a real tracked object at repo's HEAD,
+// or a commit anchor with no repo/spec configured or a spec that doesn't
+// resolve to a real commit object in that repo -- returns ("", nil),
+// unchanged from before crn-fdjc.1. A genuine git invocation failure returns
+// ("", err); callers must not fold this into the same empty string as a
+// confirmed negative.
 func ComputeFingerprint(ctx context.Context, a Anchor) (string, error) {
 	switch a.Type {
 	case "commit":
+		// A spec that doesn't resolve to a real commit object must not be
+		// echoed back as a stable fingerprint -- crn-fqe: the same
+		// fabrication class crn-6az.8.2 eliminated for files, extended to
+		// commit anchors (no repo/spec configured mirrors the files case's
+		// own repo/paths guard below).
+		if a.Repo == "" || a.Spec == "" {
+			return "", nil
+		}
+		_, ok, err := git(ctx, a.Repo, "cat-file", "-e", a.Spec+"^{commit}")
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", nil
+		}
 		return a.Spec, nil
 	case "files":
 		if a.Repo == "" || len(a.Paths) == 0 {
