@@ -354,6 +354,63 @@ func (l *Logger) RetrievalOutcome(f RetrievalOutcomeFields) {
 	)
 }
 
+// SearchOutcomeFields is the "search_outcome" record: one per `cairn search`
+// invocation, capturing what was asked and what came back.
+//
+// It completes a funnel the other two records could only half-describe.
+// prime_emit says what was surfaced at session start; retrieval_outcome says
+// what was eventually opened by id. Between them sat the step that decides
+// whether cairn gets used at all -- an agent searching and being unconvinced
+// was indistinguishable from an agent never searching, and those call for
+// opposite fixes (better ranking vs. better prompting).
+//
+// Joining search_outcome against retrieval_outcome by (identity, run_id,
+// wall-clock proximity) yields the number that actually matters: of the
+// searches that returned candidates, how many led to anything being read.
+//
+// Query and HitIDs are recorded verbatim and deliberately. This log is local
+// state under $XDG_STATE_HOME and is never transmitted anywhere; recording
+// the agent's own words is the whole point, since a later audit needs to see
+// what was asked, not a redacted shape of it. Anything shipping this log off
+// the machine must treat it as private -- it contains both the queries and
+// the entry ids they surfaced.
+type SearchOutcomeFields struct {
+	IdentityTags []string
+	RunID        string
+	Query        string
+	// Terms are the query terms actually searched, after stopword removal.
+	Terms []string
+	// UnmatchedTerms matched nothing anywhere in the store -- evidence about
+	// the store's coverage gaps rather than about any one result, and the
+	// most direct signal of what is worth writing down next.
+	UnmatchedTerms []string
+	Verdict        string
+	Coverage       float64
+	TotalMatched   int
+	TotalVisible   int
+	// HitIDs and HitScores are parallel, in rank order, so a later audit can
+	// reconstruct the ranking exactly as the agent saw it.
+	HitIDs    []string
+	HitScores []float64
+}
+
+// SearchOutcome logs a "search_outcome" record.
+func (l *Logger) SearchOutcome(f SearchOutcomeFields) {
+	l.sl.Info("", slog.String("kind", "search_outcome"),
+		slog.Any("identity_tags", f.IdentityTags),
+		slog.String("run_id", f.RunID),
+		slog.String("query", f.Query),
+		slog.Any("terms", f.Terms),
+		slog.Any("unmatched_terms", f.UnmatchedTerms),
+		slog.String("verdict", f.Verdict),
+		slog.Float64("coverage", f.Coverage),
+		slog.Int("total_matched", f.TotalMatched),
+		slog.Int("total_visible", f.TotalVisible),
+		slog.Any("hit_ids", f.HitIDs),
+		slog.Any("hit_scores", f.HitScores),
+	)
+}
+
 // PrimeEmitFields is the "prime_emit" record: one per `cairn prime`
 // invocation, capturing what was surfaced so a later report can join it
 // against RetrievalOutcomeFields -- "what was surfaced at prime time" vs.
