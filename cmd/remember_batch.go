@@ -242,7 +242,7 @@ func parseBatchManifestLine(raw string) (batchManifestEntry, error) {
 	}
 
 	if m.Topic != "" {
-		if err := cairn.ValidatePathSegment(m.Topic); err != nil {
+		if err := cairn.ValidateTopicKey(m.Topic); err != nil {
 			return m, fmt.Errorf("invalid topic %q: %w", m.Topic, err)
 		}
 	}

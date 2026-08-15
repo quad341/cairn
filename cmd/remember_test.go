@@ -523,6 +523,43 @@ func TestRememberAcceptsEmptyTopic(t *testing.T) {
 	}
 }
 
+// TestRememberAcceptsSlashTopic covers crn-kp9rr.1: --topic may now contain
+// slashes (ValidateTopicKey validates each '/'-delimited segment
+// independently, DESIGN.md §6 Option A) -- the CLI must accept it, store it
+// verbatim as topic_key, and never let the raw slash leak into the entry's
+// filesystem ID (flattenTopicKey).
+func TestRememberAcceptsSlashTopic(t *testing.T) {
+	store, err := runRemember(t, "--topic", "team/alpha", "--scope", "agent:test", "a body")
+	require.NoError(t, err)
+	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+	assert.Equal(t, "team/alpha", e.TopicKey, "topic_key must round-trip with its slash intact")
+	assert.NotContains(t, e.ID, "/", "the derived filesystem ID must not contain a raw slash")
+}
+
+// TestRememberAndReviewMergeRoundTripSlashTopicKey covers crn-kp9rr.1 through
+// the full contributor-write, curator-merge path (mirroring
+// TestRememberGlobalEntryIsVisibleToItsOwnAuthor's chain): a slash-delimited
+// --topic-key supplied by the reviewer at merge time
+// (internal/cairn/review.go's own ValidatePathSegment -> ValidateTopicKey
+// swap) must be accepted and persisted verbatim, the same as at initial
+// --topic write time.
+func TestRememberAndReviewMergeRoundTripSlashTopicKey(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("CAIRN_IDENTITY", "agent:author")
+
+	require.NoError(t, runRememberAgainstStore(t, store, "--topic", "draft-topic", "--scope", "rig:web", "a body"))
+
+	e := requireSingleEntry(t, filepath.Join(store, "rig", "web"))
+	branch := "remember/" + e.ID
+
+	require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store, "--topic-key", "team/alpha"))
+
+	got, err := cairn.Find(t.Context(), store, e.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "team/alpha", got.TopicKey, "a slash-delimited --topic-key at merge time must be accepted and persisted verbatim")
+}
+
 func TestRememberRequiresExactlyOneBodyArg(t *testing.T) {
 	store, err := runRemember(t, "--topic", "valid-topic")
 	require.Error(t, err, "a missing body argument must be rejected")

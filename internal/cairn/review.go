@@ -268,7 +268,7 @@ type ReviewMergeResult struct {
 // reindex failure is reported as a distinct partial-success error rather
 // than rolled back.
 func MergeReviewBranch(ctx context.Context, store, branch string, opts ReviewMergeOptions) (*ReviewMergeResult, error) {
-	if err := ValidatePathSegment(opts.TopicKey); err != nil {
+	if err := ValidateTopicKey(opts.TopicKey); err != nil {
 		return nil, fmt.Errorf("invalid --topic-key: %w", err)
 	}
 	for _, tag := range opts.Scope {

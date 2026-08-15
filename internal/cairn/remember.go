@@ -70,7 +70,7 @@ func NewEntry(p NewEntryParams) (*Entry, error) {
 	}
 
 	return &Entry{
-		ID:        p.TopicKey + "-" + suffix,
+		ID:        flattenTopicKey(p.TopicKey) + "-" + suffix,
 		Title:     title,
 		Summary:   summary,
 		TopicKey:  p.TopicKey,
@@ -80,6 +80,16 @@ func NewEntry(p NewEntryParams) (*Entry, error) {
 		CreatedAt: time.Now().Format(time.RFC3339),
 		Body:      p.Body,
 	}, nil
+}
+
+// flattenTopicKey derives a filesystem-safe path component from a topic_key
+// that may contain ValidateTopicKey-permitted slashes: Entry.ID is a single
+// path segment (used directly as "<ID>.md" under the scope-tier directory,
+// see Create), never a nested path, so every '/' is replaced with '-' rather
+// than preserved as a directory separator. Only ID construction uses this --
+// Entry.TopicKey itself always keeps the raw, slash-intact value.
+func flattenTopicKey(topicKey string) string {
+	return strings.ReplaceAll(topicKey, "/", "-")
 }
 
 func titleAndSummary(body string) (title, summary string) {
@@ -135,7 +145,7 @@ func (e *Entry) Create(store string) error {
 		if err != nil {
 			return err
 		}
-		e.ID = e.TopicKey + "-" + suffix
+		e.ID = flattenTopicKey(e.TopicKey) + "-" + suffix
 	}
 }
 

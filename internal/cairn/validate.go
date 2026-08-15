@@ -82,6 +82,24 @@ var (
 	summaryCap = 280
 )
 
+// ValidateTopicKey reports whether s is safe to use as a topic_key: a
+// contributor-facing grouping identity (DESIGN.md §6) that, unlike a single
+// scope tag's value, may contain '/'-delimited segments -- e.g. "team/alpha"
+// groups under a namespace the way scope tags nest under a tier. Each
+// segment independently must still pass ValidatePathSegment, so the
+// traversal/injection guards are unchanged; only the top-level "no slash" is
+// relaxed. topic_key is never itself used as a filesystem path (that
+// responsibility is flattenTopicKey's, applied only when deriving Entry.ID),
+// so allowing the slash here does not weaken any path-safety invariant.
+func ValidateTopicKey(s string) error {
+	for _, seg := range strings.Split(s, "/") {
+		if err := ValidatePathSegment(seg); err != nil {
+			return fmt.Errorf("segment %q: %w", seg, err)
+		}
+	}
+	return nil
+}
+
 // ValidateTitleLength reports whether title is within titleCap runes.
 func ValidateTitleLength(title string) error {
 	if n := utf8.RuneCountInString(title); n > titleCap {
