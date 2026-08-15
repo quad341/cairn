@@ -161,18 +161,107 @@ func ReindexEntries(ctx context.Context, store string, entries []*Entry) (int, e
 	}
 	defer func() { _ = db.Close() }()
 
-	if err := retryOnBusy(ctx, func() error {
-		return reindexOnce(ctx, db, store, entries)
-	}); err != nil {
+	if err := reindexOnce(ctx, db, store, entries); err != nil {
 		return 0, err
 	}
 	return len(entries), nil
 }
 
-// reindexOnce runs one attempt of Reindex's write transaction. It is retried
-// by retryOnBusy above rather than looped internally, so it stays a plain
-// single-attempt function.
+// reindexChunkSize bounds how many entries' upserts share one write
+// transaction during reindexOnce (crn-f0rb7.2). Before this, a single
+// mega-transaction held SQLite's write lock for the entire store -- measured
+// p99=15.7s/max=17.1s on a 900-entry store under 24 concurrent reindexers
+// (see TestFindRetriesPastBusyTimeout's comment) -- so any losing caller
+// could queue behind one Reindex call for that long. Splitting into
+// independently-committed, independently-retried chunks bounds any single
+// transaction's lock hold to roughly this many entries' worth of writes, and
+// means a busy failure mid-store only retries the chunk it hit rather than
+// redoing every already-committed chunk. It is a var, not a const, so tests
+// can shrink it to exercise multi-chunk behavior without needing hundreds of
+// fixture files; 150 is a starting point, not a calibrated final answer.
+var reindexChunkSize = 150
+
+// reindexStepObserved, when non-nil, is called after each transactional step
+// inside reindexOnce (the schema/migration step, each upsert chunk, and the
+// finalize step) with how long that step's retryOnBusy call took. It exists
+// purely so a test can measure per-transaction lock-hold time directly from
+// the code under test, rather than inferring it by racing a polling probe
+// against the real transactions -- on a fast, uncontended call the two are
+// close, but a probe's sampling interval can miss brief gaps between
+// back-to-back chunk commits and undercount them (crn-f0rb7.2). nil in
+// production, at zero cost on the hot path.
+var reindexStepObserved func(step string, d time.Duration)
+
+// timedRetryOnBusy wraps retryOnBusy with reindexStepObserved's timing hook.
+// The duration covers the whole retryOnBusy call including any retries, so
+// under real contention it is not a pure lock-hold measurement -- only
+// meaningful for reasoning about lock-hold time on an uncontended call, which
+// is what the one test using the hook relies on.
+func timedRetryOnBusy(ctx context.Context, step string, fn func() error) error {
+	start := time.Now()
+	err := retryOnBusy(ctx, fn)
+	if reindexStepObserved != nil {
+		reindexStepObserved(step, time.Since(start))
+	}
+	return err
+}
+
+// reindexOnce rebuilds the index for one Reindex call. Unlike the old
+// single-mega-transaction shape, each step below is its own
+// retryOnBusy-wrapped transaction: a busy failure partway through only
+// retries the step it hit, not the whole store from scratch.
 func reindexOnce(ctx context.Context, db *sql.DB, store string, entries []*Entry) error {
+	// Schema/migration/entry_tags DROP+CREATE stay a single short leading
+	// transaction, unchanged from before this bead -- it's already fast (a
+	// handful of DDL statements, not one per entry) and not the bottleneck
+	// the chunking below addresses. See its own comment for why these
+	// specific statements must run inside a tx rather than as autocommit
+	// statements (crn-t42e, crn-j3k4).
+	if err := timedRetryOnBusy(ctx, "schema", func() error {
+		return reindexSchemaTx(ctx, db)
+	}); err != nil {
+		return err
+	}
+
+	// Read before any chunk below writes, so the diff against entries (the
+	// caller's fresh list) below is "what the table had going into this
+	// reindex" -- exactly what the old current_ids TEMP TABLE approach also
+	// compared against, just computed as an in-memory Go set instead of a
+	// SQL side-table (crn-f0rb7.2).
+	existingIDs, err := existingEntryIDs(ctx, db)
+	if err != nil {
+		return err
+	}
+
+	for _, batch := range chunkEntries(entries, reindexChunkSize) {
+		b := batch
+		if err := timedRetryOnBusy(ctx, "chunk", func() error {
+			return reindexUpsertChunkTx(ctx, db, b)
+		}); err != nil {
+			return err
+		}
+	}
+
+	currentIDs := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		currentIDs[e.ID] = true
+	}
+	var missing []string
+	for id := range existingIDs {
+		if !currentIDs[id] {
+			missing = append(missing, id)
+		}
+	}
+
+	return timedRetryOnBusy(ctx, "finalize", func() error {
+		return reindexFinalizeTx(ctx, db, store, missing)
+	})
+}
+
+// reindexSchemaTx creates/migrates entries and drops+recreates entry_tags --
+// see reindexOnce's comment for why this stays one small unchanged
+// transaction rather than being folded into the chunked upserts below.
+func reindexSchemaTx(ctx context.Context, db *sql.DB) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -223,7 +312,148 @@ func reindexOnce(ctx context.Context, db *sql.DB, store string, entries []*Entry
 		_ = tx.Rollback()
 		return err
 	}
-	if err := reindexTx(ctx, tx, store, entries); err != nil {
+	return tx.Commit()
+}
+
+// existingEntryIDs reads the id column of entries as it stands before this
+// reindex's chunked upserts run -- reindexOnce's baseline for computing which
+// ids fell out of the fresh entries list (deleted/renamed source files).
+// Called after reindexSchemaTx, so entries is guaranteed to exist (possibly
+// empty) even on a cold store.
+func existingEntryIDs(ctx context.Context, db *sql.DB) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id FROM entries`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	ids := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}
+
+// chunkEntries splits entries into slices of at most size, preserving order.
+// A size <= 0 is only reachable if reindexChunkSize is misconfigured (never
+// true for the production default or any test override in this package), so
+// it isn't special-cased; that call would simply loop forever, same as any
+// other zero-length step bug would.
+func chunkEntries(entries []*Entry, size int) [][]*Entry {
+	var chunks [][]*Entry
+	for i := 0; i < len(entries); i += size {
+		end := min(i+size, len(entries))
+		chunks = append(chunks, entries[i:end])
+	}
+	return chunks
+}
+
+// reindexUpsertChunkTx upserts one chunk's entries -- and their scope tags --
+// in its own transaction, so a busy failure here (retried by reindexOnce's
+// caller) only redoes this chunk, not every chunk already committed before
+// it (crn-f0rb7.2).
+func reindexUpsertChunkTx(ctx context.Context, db *sql.DB, batch []*Entry) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	for _, e := range batch {
+		anchorPaths, err := json.Marshal(e.Anchor.Paths)
+		if err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		autoActionable := 0
+		if e.AutoActionable {
+			autoActionable = 1
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO entries (
+				id, title, summary, type, topic_key, body_path,
+				anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
+				verified_at, created_by, created_at, hit_count,
+				kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at,
+				overridden_duplicate_of
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(id) DO UPDATE SET
+				title=excluded.title, summary=excluded.summary, type=excluded.type,
+				topic_key=excluded.topic_key, body_path=excluded.body_path,
+				anchor_type=excluded.anchor_type, anchor_repo=excluded.anchor_repo,
+				anchor_paths=excluded.anchor_paths, anchor_spec=excluded.anchor_spec,
+				anchor_fingerprint=excluded.anchor_fingerprint,
+				verified_at=excluded.verified_at, created_by=excluded.created_by,
+				created_at=excluded.created_at,
+				overridden_duplicate_of=excluded.overridden_duplicate_of`,
+			// hit_count, kind, auto_actionable, recurrence_count, promoted_bead_id,
+			// and last_recalled_at are deliberately not in the UPDATE SET: like
+			// hit_count (crn-6az.6.1.1), they're index-only state a future call
+			// site writes directly via SQL (crn-28ge.1.1), so a reindex must not
+			// stamp a surviving row back to the body's stale seed value.
+			// overridden_duplicate_of is body-sourced (like created_at), not
+			// index-only, so unlike those it IS in the UPDATE SET -- a --force
+			// correction edited into the body must overwrite a stale indexed copy.
+			e.ID, e.Title, e.Summary, e.Type, e.TopicKey, e.BodyPath,
+			e.Anchor.Type, e.Anchor.Repo, string(anchorPaths), e.Anchor.Spec, e.Anchor.Fingerprint,
+			e.VerifiedAt, e.CreatedBy, e.CreatedAt, e.HitCount,
+			e.Kind, autoActionable, e.RecurrenceCount, e.PromotedBeadID, e.LastRecalledAt,
+			e.OverriddenDuplicateOf,
+		); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+		for _, tag := range e.Scope {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO entry_tags(entry_id,tag) VALUES (?,?)`, e.ID, tag); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// reindexFinalizeTx drops entries whose source file is gone and stamps the
+// index_meta watermark, as the last transaction of a Reindex call. missing is
+// reindexOnce's precomputed diff (existing ids not in the fresh entries
+// list) rather than a SQL NOT IN over every current id, so this DELETE scales
+// with how many entries actually disappeared, not with store size.
+//
+// The watermark update is deliberately the last statement of the last
+// transaction: ensureFresh's "stale never served as fresh" guarantee (NFR-3,
+// crn-t250) depends on the commit stamped here only ever describing a fully
+// applied reindex.
+func reindexFinalizeTx(ctx context.Context, db *sql.DB, store string, missing []string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		placeholders := strings.Repeat("?,", len(missing))
+		placeholders = placeholders[:len(placeholders)-1]
+		args := make([]any, len(missing))
+		for i, id := range missing {
+			args[i] = id
+		}
+		//nolint:gosec // placeholders is a repeated "?,", never interpolated data
+		if _, err := tx.ExecContext(ctx, `DELETE FROM entries WHERE id IN (`+placeholders+`)`, args...); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+
+	// commit is "" if store isn't a git repo (yet), has no commits, or git
+	// couldn't be invoked -- this function's own correctness doesn't depend on
+	// which; indexStale (not this stamp) is what must distinguish "confirmed
+	// non-git" from "invocation error" to avoid silently under-detecting
+	// staleness (crn-t250).
+	commit, _, _ := git(ctx, store, "rev-parse", "HEAD")
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO index_meta (id, indexed_at_commit) VALUES (1, ?)
+		 ON CONFLICT(id) DO UPDATE SET indexed_at_commit = excluded.indexed_at_commit`,
+		commit,
+	); err != nil {
 		_ = tx.Rollback()
 		return err
 	}

@@ -1425,8 +1425,9 @@ func TestVisibleNeverTouchesHitCount(t *testing.T) {
 	require.NoError(t, err)
 
 	// Simulate a prior Find/Get having bumped hit_count independently of the
-	// body (crn-6az.6.1.1, see reindexTx's comment) -- exactly the index-only
-	// state Visible must leave alone, since it only ever issues SELECTs.
+	// body (crn-6az.6.1.1, see reindexUpsertChunkTx's comment) -- exactly the
+	// index-only state Visible must leave alone, since it only ever issues
+	// SELECTs.
 	db, err := openDB(dir)
 	require.NoError(t, err)
 	_, err = db.ExecContext(t.Context(), `UPDATE entries SET hit_count = 7 WHERE id = 'g'`)
@@ -1558,8 +1559,9 @@ func TestStatusPopulatesAnchorAndScopeFields(t *testing.T) {
 	assert.Equal(t, "abc123", e.Anchor.Fingerprint)
 
 	// crn-0vqk.2: Status's SELECT was extended to also cover these three --
-	// already-indexed at zero marginal query cost (reindexTx populates them
-	// unconditionally) -- so Prime can render entries without a body read.
+	// already-indexed at zero marginal query cost (reindexUpsertChunkTx
+	// populates them unconditionally) -- so Prime can render entries without
+	// a body read.
 	assert.Equal(t, "A", e.Title)
 	assert.Equal(t, "a short summary", e.Summary)
 	assert.Equal(t, 5, e.HitCount)
