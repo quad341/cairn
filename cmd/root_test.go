@@ -247,12 +247,14 @@ func TestRedactArgvLeavesNonFreeformPositionalAlone(t *testing.T) {
 
 func TestRedactArgvRedactsSuspiciousFlagValue(t *testing.T) {
 	tests := []struct {
-		name      string
-		flag      string
-		shorthand string
-		args      []string
-		argv      []string
-		want      []string
+		name          string
+		flag          string
+		shorthand     string
+		boolFlag      string
+		boolShorthand string
+		args          []string
+		argv          []string
+		want          []string
 	}{
 		{
 			name: "equals-joined token flag",
@@ -288,10 +290,32 @@ func TestRedactArgvRedactsSuspiciousFlagValue(t *testing.T) {
 			argv:      []string{"cairn", "somecmd", "-thunter2"},
 			want:      []string{"cairn", "somecmd", "-t«redacted»"},
 		},
+		{
+			// A boolean shorthand bundled ahead of a value-taking suspicious
+			// shorthand in the same token (e.g. -v then -t, POSIX/GNU-style:
+			// -vtSECRET means -v -tSECRET). The naive fixed-offset a[2:] slice
+			// assumes the suspicious shorthand is always the character right
+			// after '-', so it looks up a[2:] ("tSECRETVALUE") instead of the
+			// true value ("SECRETVALUE") -- that's not in the redact set, so
+			// the whole token falls through unredacted. Only a walk that skips
+			// no-value (NoOptDefVal-bearing) shorthands before checking for a
+			// value-taking one catches this.
+			name:          "bundled boolean plus suspicious shorthand",
+			flag:          "token",
+			shorthand:     "t",
+			boolFlag:      "verbose",
+			boolShorthand: "v",
+			args:          []string{"-vtSECRETVALUE"},
+			argv:          []string{"cairn", "somecmd", "-vtSECRETVALUE"},
+			want:          []string{"cairn", "somecmd", "-vt«redacted»"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := &cobra.Command{Use: "somecmd"}
+			if tt.boolFlag != "" {
+				cmd.Flags().BoolP(tt.boolFlag, tt.boolShorthand, false, "")
+			}
 			if tt.shorthand != "" {
 				cmd.Flags().StringP(tt.flag, tt.shorthand, "", "")
 			} else {
