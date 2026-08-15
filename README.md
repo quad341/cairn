@@ -46,7 +46,7 @@ Usage & the knowledge lifecycle (+ how it differs from MEMORY.md / `bd remember`
 |---|---|---|
 | Recall | identity-scoped `prime`/`map`; exact topic lookup via `list`; unscoped `get <id>`; recall counters and timestamps; `--json` on every command | semantic search; ranking beyond scope specificity |
 | Freshness | `files` and `commit` anchors; lazy checks; `anchor` to attach one to an existing entry; `verify` to re-fingerprint; shared-tier JSON sweep | time-decay confidence; `query`/`external` verification; prioritized scheduling |
-| Capture | `remember` from argument, stdin, or `--file`; anchor flags at capture time; optional topic hint; recurrence detection on topic **and** body; private direct commit | inferring an anchor from the body instead of being told one |
+| Capture | `remember` from argument, stdin, `--file`, or `--batch-file` (JSONL manifest, many entries per call); anchor flags at capture time; optional topic hint; recurrence detection on topic **and** body; private direct commit | inferring an anchor from the body instead of being told one |
 | Curation | review branches and `review`; stale-branch reporting; dedup, promotion, and cull candidate workflows; `doctor` store health report | hosted pull requests; fully autonomous curation |
 | Index | self-healing SQLite-backed reads plus operational recall/curation fields | no manual reindex is normally required, but `reindex` remains available for repair |
 

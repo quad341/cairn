@@ -169,6 +169,7 @@ cairn prime                   # scoped topic map + agent usage prompt
 cairn map                     # scoped topic map only
 cairn get <id>                # unscoped exact-ID body + freshness lookup
 cairn remember <body>         # private commit or shared review-branch proposal
+cairn remember --batch-file <path>  # JSONL manifest: many entries in one call
 cairn freshness <id>          # freshness of one entry
 cairn status                  # freshness of every entry
 cairn verify <id>             # recompute and write a supported fingerprint
