@@ -1,12 +1,54 @@
 package cmd
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/quad341/cairn/internal/cairn"
 	"github.com/spf13/cobra"
 )
+
+const searchInstruction = "Inspect these ranked lexical candidates. If one addresses your situation, read it with cairn get <id> before acting. If none does, stop."
+
+type searchOutput struct {
+	Instruction  string       `json:"instruction"`
+	Query        string       `json:"query"`
+	QueryTerms   []string     `json:"query_terms"`
+	TotalMatched int          `json:"total_matched"`
+	TotalVisible int          `json:"total_visible"`
+	Hits         []searchItem `json:"hits"`
+}
+
+type searchItem struct {
+	ID        string               `json:"id"`
+	TopicKey  *string              `json:"topic_key"`
+	Title     string               `json:"title"`
+	Summary   string               `json:"summary"`
+	Score     float64              `json:"score"`
+	Snippet   string               `json:"snippet"`
+	Freshness string               `json:"freshness"`
+	Conflict  *cairn.TopicConflict `json:"conflict"`
+}
+
+func projectSearch(result cairn.SearchResult) searchOutput {
+	hits := make([]searchItem, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		var topicKey *string
+		if hit.TopicKey != "" {
+			key := hit.TopicKey
+			topicKey = &key
+		}
+		hits = append(hits, searchItem{
+			ID: hit.ID, TopicKey: topicKey, Title: hit.Title, Summary: hit.Summary,
+			Score: hit.Score, Snippet: collapseWhitespace(hit.Snippet),
+			Freshness: hit.Freshness.Status, Conflict: hit.Conflict,
+		})
+	}
+	return searchOutput{
+		Instruction: searchInstruction, Query: result.Query,
+		QueryTerms: nonNil(result.QueryTerms), TotalMatched: result.TotalMatched,
+		TotalVisible: result.TotalVisible, Hits: hits,
+	}
+}
 
 func init() {
 	searchCmd.Flags().Int("limit", 0,
@@ -45,59 +87,13 @@ force a match.`,
 
 		identity, err := resolveIdentityValidated(cmd)
 		if err != nil {
-			return emitError(cmd, err)
+			return emitModelError(cmd, err)
 		}
 		res, err := cairn.Search(cmd.Context(), storePath(), query, identity, limit)
 		if err != nil {
-			return emitError(cmd, err)
+			return emitModelError(cmd, err)
 		}
-
-		if wantsJSON(cmd) {
-			res.Hits = nonNil(res.Hits)
-			return emitJSON(cmd.OutOrStdout(), res)
-		}
-
-		out := cmd.OutOrStdout()
-		if len(res.Hits) == 0 {
-			// Not an error. "Nothing matched" is a real, useful answer, and
-			// an agent that gets a non-zero exit here may conclude cairn is
-			// broken and stop consulting it -- which is far more expensive
-			// than an empty result.
-			_, _ = fmt.Fprintf(out, "# cairn search %q -- no candidates (%d entries in scope)\n",
-				res.Query, res.TotalVisible)
-			return nil
-		}
-
-		_, _ = fmt.Fprintf(out,
-			"# cairn search %q -- %d of %d lexical candidates (%d entries in scope)\n",
-			res.Query, len(res.Hits), res.TotalMatched, res.TotalVisible)
-		for _, h := range res.Hits {
-			topic := h.TopicKey
-			if topic == "" {
-				topic = cairn.UntopicedLabel
-			}
-			_, _ = fmt.Fprintf(out, "%s  %s  score:%.1f  %s\n", h.ID, topic, h.Score, h.Freshness.Status)
-			if h.Summary != "" {
-				_, _ = fmt.Fprintf(out, "  %s\n", h.Summary)
-			} else if h.Title != "" {
-				_, _ = fmt.Fprintf(out, "  %s\n", h.Title)
-			}
-			if h.Snippet != "" {
-				_, _ = fmt.Fprintf(out, "  match: %s\n", collapseWhitespace(h.Snippet))
-			}
-		}
-		if res.TotalMatched > len(res.Hits) {
-			_, _ = fmt.Fprintf(out, "%d more candidate%s not shown; re-run with --limit\n",
-				res.TotalMatched-len(res.Hits), plural(res.TotalMatched-len(res.Hits)))
-		}
-		// Conditional on relevance, deliberately. These are lexical
-		// candidates: a query with no answer in the store still produces a
-		// ranked list, and an unconditional "pull one" instruction turns that
-		// into a confident wrong answer.
-		_, _ = fmt.Fprintf(out,
-			"If one of these addresses your situation, read it with `cairn get <id>`; "+
-				"if none does, stop.\n")
-		return nil
+		return emitModelJSON(cmd, projectSearch(res))
 	},
 }
 
@@ -107,11 +103,4 @@ force a match.`,
 // output holds to.
 func collapseWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "es"
 }

@@ -77,9 +77,10 @@ type SearchHit struct {
 	// Snippet is the matched text in context, with the matching terms
 	// unmarked -- an agent does not need highlight markers, and they would
 	// only cost tokens.
-	Snippet   string        `json:"snippet"`
-	Scope     []string      `json:"scope"`
-	Freshness FreshnessInfo `json:"freshness"`
+	Snippet   string         `json:"snippet"`
+	Scope     []string       `json:"scope"`
+	Freshness FreshnessInfo  `json:"freshness"`
+	Conflict  *TopicConflict `json:"conflict,omitempty"`
 }
 
 // SearchResult is Search's structured output.
@@ -136,6 +137,10 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 		return SearchResult{}, err
 	}
 	byID := make(map[string]*Entry, len(visible))
+	conflictsByID := make(map[string]*TopicConflict)
+	for _, resolved := range ResolveTopics(visible).Entries {
+		conflictsByID[resolved.Entry.ID] = resolved.Conflict
+	}
 	visibleIDs := make(map[string]bool, len(visible))
 	for _, e := range visible {
 		byID[e.ID] = e
@@ -189,6 +194,7 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 			Snippet:   snippets[e.ID],
 			Scope:     e.Scope,
 			Freshness: FreshnessInfo{Status: status, Detail: detail},
+			Conflict:  conflictsByID[e.ID],
 		})
 	}
 	return result, nil
