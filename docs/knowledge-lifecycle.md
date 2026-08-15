@@ -58,7 +58,7 @@ the most relevant agents and supported source drift can be detected.
 ### 1. Submit — `cairn remember`
 
 ```
-cairn remember "<body>" --scope rig:web,role:reviewer --topic build/oom-caps
+cairn remember "<body>" --type knowledge --scope rig:web,role:reviewer --topic build/oom-caps
 ```
 
 An agent writes a knowledge entry. The body is **markdown with TOML frontmatter**
@@ -75,6 +75,10 @@ agent/<agent>/     # one agent, private
   `agent:<id>` tag from the resolved identity) — the narrowest relevance tier.
 - `--topic` is a *hint* for the canonical topic key; a curator normalizes it when
   the entry is promoted to a shared scope (consistency needs one naming authority).
+- `--type` is required. Use `knowledge` for independently true system facts and
+  `remediation` for conditional, testable recovery knowledge. Declared `policy`
+  is refused because behavioral rules belong in the agent prompt, not a cache
+  whose retrieval is conditional. Legacy entries without a type remain readable.
 - `--title` and `--summary` are the retrieval surface and should be authored by
   the calling model. A title is a situational claim/action, not a category label:
   `Merged is not deployed — check the artifact on PATH`, not `Deployment notes`.

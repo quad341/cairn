@@ -28,7 +28,7 @@ const maxManifestLineBytes = 1 << 20
 // per-entry meaning is expressed as a manifest-line JSON field in batch mode
 // instead (see batchManifestEntry) -- --reviewer/--verify/--identity/--json
 // remain whole-batch CLI flags and are deliberately not listed here.
-var batchOnlyFlags = []string{"topic", "scope", "title", "summary", "anchor-repo", "anchor-path", "force"}
+var batchOnlyFlags = []string{"topic", "scope", "title", "summary", "type", "anchor-repo", "anchor-path", "force"}
 
 // rejectSingleEntryFlags errors if any single-entry flag was explicitly
 // passed alongside --batch-file, rather than silently ignoring it or
@@ -47,6 +47,7 @@ func rejectSingleEntryFlags(cmd *cobra.Command) error {
 // (rejectSingleEntryFlags), since each line may need its own topic/scope/etc.
 type batchManifestEntry struct {
 	Body       string   `json:"body"`
+	Type       string   `json:"type"`
 	Topic      string   `json:"topic"`
 	Scope      []string `json:"scope"`
 	Title      string   `json:"title"`
@@ -294,6 +295,7 @@ func processBatchLine(cmd *cobra.Command, raw string, line int, createdBy string
 	}
 
 	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      m.Type,
 		TopicKey:  m.Topic,
 		Scope:     m.Scope,
 		Body:      m.Body,
@@ -339,6 +341,7 @@ func commitBatchEntry(cmd *cobra.Command, e *cairn.Entry, scope []string, res *B
 		return nil
 	}
 	res.ID = e.ID
+	res.Type = e.Type
 	res.Scope = nonNil(e.Scope)
 	res.Metadata = metadataQuality(e)
 
@@ -392,5 +395,6 @@ func recordBatchRecurrence(ctx context.Context, matched *cairn.Entry) error {
 
 	return fmt.Errorf(
 		"not stored: recurrence of %s (count %d); body is a near-identical match of existing content -- pass --force to store it anyway",
-		matched.ID, matched.RecurrenceCount)
+		matched.ID, matched.RecurrenceCount,
+	)
 }

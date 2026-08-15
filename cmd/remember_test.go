@@ -52,7 +52,7 @@ func runRememberWithGC(t *testing.T, stub func(*testing.T), extraArgs ...string)
 	store := t.TempDir()
 	gitInit(t, store)
 	stub(t)
-	args := append([]string{"remember", "--store", store}, extraArgs...)
+	args := append([]string{"remember", "--store", store}, withKnowledgeType(extraArgs)...)
 	rootCmd.SetArgs(args)
 	rootCmd.SetOut(&bytes.Buffer{})
 	rootCmd.SetErr(&bytes.Buffer{})
@@ -72,7 +72,7 @@ func runRememberCapturingStderr(t *testing.T, extraArgs ...string) (string, erro
 	gitInit(t, store)
 	stubGC(t)
 	var errBuf bytes.Buffer
-	rootCmd.SetArgs(append([]string{"remember", "--store", store}, extraArgs...))
+	rootCmd.SetArgs(append([]string{"remember", "--store", store}, withKnowledgeType(extraArgs)...))
 	rootCmd.SetOut(&bytes.Buffer{})
 	rootCmd.SetErr(&errBuf)
 	err := rootCmd.Execute()
@@ -114,6 +114,28 @@ func TestRememberWarnsWhenRetrievalMetadataIsDerived(t *testing.T) {
 	assert.Contains(t, stderr, "Merged is not deployed")
 }
 
+func TestRememberRefusesPolicyBeforeAnyStoreWrite(t *testing.T) {
+	store, err := runRemember(t, "--scope", "agent:test", "--type", cairn.EntryTypePolicy, "synthetic directive")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent's prompt")
+	assertNoFilesWritten(t, store)
+	assert.Empty(t, strings.TrimSpace(gitOutput(t, store, "branch", "--list", "remember/*")))
+}
+
+func TestRememberRefusesMissingTypeBeforeAnyStoreWrite(t *testing.T) {
+	resetRememberFlags(t)
+	t.Cleanup(func() { resetRememberFlags(t) })
+	store := t.TempDir()
+	gitInit(t, store)
+	rootCmd.SetArgs([]string{"remember", "--store", store, "--scope", "agent:test", "synthetic knowledge"})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	err := rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "entry type is required")
+	assertNoFilesWritten(t, store)
+}
+
 func TestRememberDoesNotWarnWhenRetrievalMetadataIsAuthored(t *testing.T) {
 	stderr, err := runRememberCapturingStderr(t, "--topic", "valid-topic",
 		"--title", "Build cache misses — inspect the resolved cache directory",
@@ -150,7 +172,7 @@ func runRememberAgainstStoreWithGC(t *testing.T, store string, stub func(*testin
 	t.Cleanup(func() { resetRememberFlags(t) })
 
 	stub(t)
-	args := append([]string{"remember", "--store", store}, extraArgs...)
+	args := append([]string{"remember", "--store", store}, withKnowledgeType(extraArgs)...)
 	rootCmd.SetArgs(args)
 	rootCmd.SetOut(&bytes.Buffer{})
 	rootCmd.SetErr(&bytes.Buffer{})
@@ -288,7 +310,7 @@ func withStdin(t *testing.T, body string, fn func()) {
 
 func resetRememberFlags(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"topic", "scope", "reviewer", "file", "title", "summary", "anchor-repo"} {
+	for _, name := range []string{"topic", "scope", "reviewer", "file", "title", "summary", "type", "anchor-repo"} {
 		f := rememberCmd.Flags().Lookup(name)
 		require.NotNil(t, f)
 		require.NoError(t, f.Value.Set(""))
@@ -314,6 +336,18 @@ func resetRememberFlags(t *testing.T) {
 	require.True(t, ok, "identity flag must implement pflag.SliceValue")
 	require.NoError(t, sv.Replace(nil))
 	idf.Changed = false
+}
+
+func withKnowledgeType(args []string) []string {
+	for i, arg := range args {
+		if arg == "--type" || strings.HasPrefix(arg, "--type=") {
+			return args
+		}
+		if i > 0 && args[i-1] == "--type" {
+			return args
+		}
+	}
+	return append([]string{"--type", cairn.EntryTypeKnowledge}, args...)
 }
 
 // assertNoFilesWritten requires that a rejected remember call wrote nothing
@@ -1011,6 +1045,7 @@ func TestRememberCLIRoundTripAllFields(t *testing.T) {
 	e := requireSingleEntry(t, filepath.Join(store, "agent", "bot"))
 	assert.True(t, strings.HasPrefix(e.ID, "build-flags-"), "id must be derived from topic_key")
 	assert.Equal(t, "build-flags", e.TopicKey)
+	assert.Equal(t, cairn.EntryTypeKnowledge, e.Type)
 	assert.Equal(t, []string{"agent:bot"}, e.Scope, "default scope must collapse to the agent: tag")
 	assert.Equal(t, "prefer feature flags over env vars", e.Body)
 	assert.Equal(t, "prefer feature flags over env vars", e.Title)
@@ -1465,7 +1500,7 @@ func execRememberJSONAgainstStore(t *testing.T, store string, extraArgs ...strin
 	})
 
 	stubGC(t)
-	args := append([]string{"remember", "--store", store, "--json"}, extraArgs...)
+	args := append([]string{"remember", "--store", store, "--json"}, withKnowledgeType(extraArgs)...)
 	rootCmd.SetArgs(args)
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
@@ -1490,6 +1525,7 @@ func TestRememberJSONPrivateTierOutputsResult(t *testing.T) {
 
 	var result RememberResult
 	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.Equal(t, cairn.EntryTypeKnowledge, result.Type)
 	assert.NotEmpty(t, result.ID)
 	assert.Equal(t, []string{"agent:test"}, result.Scope)
 	assert.NotEmpty(t, result.Commit)

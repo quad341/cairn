@@ -328,7 +328,10 @@ func curateReviewBranch(ctx context.Context, store, branch string, opts ReviewMe
 	if opts.AutoActionable {
 		effectiveKind := opts.Kind
 		if effectiveKind == "" {
-			effectiveKind = entry.Kind
+			effectiveKind = entry.Type
+			if effectiveKind == "" {
+				effectiveKind = entry.Kind
+			}
 		}
 		if effectiveKind != "remediation" {
 			return "", "", nil, fmt.Errorf(

@@ -29,6 +29,8 @@ func init() {
 		"authored situational claim/action for retrieval (strongly expected; omission is marked derived)")
 	rememberCmd.Flags().String("summary", "",
 		"authored retrieval summary explaining when/why the entry applies (strongly expected; omission is marked derived)")
+	rememberCmd.Flags().String("type", "",
+		"required content classification: knowledge|remediation|policy (policy is refused and belongs in the agent prompt)")
 	rememberCmd.Flags().String("anchor-repo", "",
 		`git repo the --anchor-path values are tracked in (with --anchor-path, builds a "files" source anchor)`)
 	rememberCmd.Flags().StringArray("anchor-path", nil,
@@ -39,7 +41,7 @@ func init() {
 		"create a new entry even if a recurrence match is found, recording which entry it overrides")
 	rememberCmd.Flags().String("batch-file", "",
 		"path to a JSONL manifest of entries to remember in one call (see docs/knowledge-lifecycle.md); "+
-			"--topic/--scope/--title/--summary/--anchor-repo/--anchor-path/--force become per-line manifest "+
+			"--topic/--scope/--title/--summary/--type/--anchor-repo/--anchor-path/--force become per-line manifest "+
 			"fields instead and must not be passed as flags alongside this")
 }
 
@@ -96,7 +98,12 @@ var rememberCmd = &cobra.Command{
 			}
 		}
 		createdBy := strings.Join(identity, " ")
+		entryType, _ := cmd.Flags().GetString("type")
+		if err := cairn.ValidateNewEntryType(entryType); err != nil {
+			return emitError(cmd, classifiedErr(CategoryInvalidInput, entryType, err))
+		}
 		e, err := cairn.NewEntry(cairn.NewEntryParams{
+			Type:      entryType,
 			TopicKey:  topic,
 			Scope:     scope,
 			Body:      body,
@@ -158,6 +165,7 @@ var rememberCmd = &cobra.Command{
 			if wantsJSON(cmd) {
 				return emitJSON(cmd.OutOrStdout(), RememberResult{
 					ID:       e.ID,
+					Type:     e.Type,
 					Scope:    nonNil(e.Scope),
 					Commit:   sha,
 					Metadata: metadataQuality(e),
@@ -181,6 +189,7 @@ var rememberCmd = &cobra.Command{
 // this success shape.
 type RememberResult struct {
 	ID           string          `json:"id"`
+	Type         string          `json:"type"`
 	Scope        []string        `json:"scope"`
 	Commit       string          `json:"commit,omitempty"`
 	ReviewBranch string          `json:"review_branch,omitempty"`
@@ -477,7 +486,8 @@ func recordRecurrence(cmd *cobra.Command, matched *cairn.Entry) error {
 
 	discardErr := fmt.Errorf(
 		"not stored: recurrence of %s (count %d); body is a near-identical match of existing content -- pass --force to store it anyway",
-		matched.ID, matched.RecurrenceCount)
+		matched.ID, matched.RecurrenceCount,
+	)
 	fmt.Fprintf(os.Stderr, "%v\n", discardErr)
 	return emitError(cmd, classifiedErr(CategoryConflict, matched.ID, discardErr))
 }

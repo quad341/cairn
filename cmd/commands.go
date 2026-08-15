@@ -131,6 +131,7 @@ type EntryResult struct {
 	Scope          []string             `json:"scope"`
 	Freshness      cairn.FreshnessInfo  `json:"freshness"`
 	Kind           string               `json:"kind"`
+	Type           string               `json:"type"`
 	AutoActionable bool                 `json:"auto_actionable"`
 	Conflicts      []cairn.DedupFinding `json:"conflicts"`
 	Body           string               `json:"body"`
@@ -205,7 +206,11 @@ var getCmd = &cobra.Command{
 
 		kind := e.Kind
 		if kind == "" {
-			kind = "note"
+			if e.Type == cairn.EntryTypeRemediation {
+				kind = cairn.EntryTypeRemediation
+			} else {
+				kind = "note"
+			}
 		}
 
 		if wantsJSON(cmd) {
@@ -216,6 +221,7 @@ var getCmd = &cobra.Command{
 				Scope:          nonNil(e.Scope),
 				Freshness:      cairn.FreshnessInfo{Status: st, Detail: detail},
 				Kind:           kind,
+				Type:           e.Type,
 				AutoActionable: e.AutoActionable,
 				Conflicts:      nonNil(conflicts),
 				Body:           e.Body,
@@ -233,7 +239,7 @@ var getCmd = &cobra.Command{
 		fmt.Printf("%s: %s\n", e.ID, e.Title)
 		fmt.Printf("topic: %s  scope: %s\n", topic, scope)
 		fmt.Printf("freshness: %s — %s\n", st, detail)
-		fmt.Printf("kind: %s  auto_actionable: %t\n", kind, e.AutoActionable)
+		fmt.Printf("type: %s  kind: %s  auto_actionable: %t\n", e.Type, kind, e.AutoActionable)
 
 		if len(conflicts) == 0 {
 			fmt.Println("conflicts: none")

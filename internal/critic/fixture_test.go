@@ -33,6 +33,7 @@ func gitConfigValue(t *testing.T, dir, key string) string {
 func TestFixtureRepoDisablesAutoMaintenance(t *testing.T) {
 	store := t.TempDir()
 	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      cairn.EntryTypeKnowledge,
 		TopicKey:  "fixture-config-probe",
 		Scope:     []string{"rig:critic-test"},
 		Body:      "body",
