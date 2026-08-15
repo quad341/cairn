@@ -270,6 +270,14 @@ var verifyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// Containment guard (crn-2c8e), matching anchor: a copied store's
+		// index can retain body_paths into its origin. Verify must write only
+		// beneath the store explicitly addressed by --store.
+		contained, err := containedBodyPath(storePath(), e.BodyPath)
+		if err != nil {
+			return err
+		}
+		e.BodyPath = contained
 		fp, err := cairn.ComputeFingerprint(cmd.Context(), e.Anchor)
 		if err != nil {
 			return fmt.Errorf("%s: git check did not complete: %w", args[0], err)
