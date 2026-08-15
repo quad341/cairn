@@ -289,6 +289,13 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 			}
 		}
 	}
+	// entries_fts is rebuilt from the same entry list, in the same
+	// transaction, so the full-text index can never disagree with the rows
+	// above about what the store contains.
+	if err := rebuildSearchIndexTx(ctx, tx, entries); err != nil {
+		return err
+	}
+
 	// entries no longer backed by a body (deleted/renamed) don't belong in a
 	// rebuilt index -- the ON CONFLICT upsert above only ever adds or
 	// refreshes rows, so without this they'd linger forever.
