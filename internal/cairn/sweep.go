@@ -82,12 +82,32 @@ func SweepEntries(ctx context.Context, store string, entries []*Entry) ([]SweepF
 // role, or agent), derived from its body path the same way AF1 derives tier
 // for review branches — from the file location, not any parsed identifier.
 func entryTier(store string, e *Entry) string {
-	rel, err := filepath.Rel(store, e.BodyPath)
+	// Absolute-ise the store before comparing. BodyPath is ALWAYS absolute --
+	// walkEntries absolute-ises the root precisely so an entry's path does not
+	// depend on the cwd it was walked from (crn-o6mn) -- so a relative store
+	// makes filepath.Rel fail outright rather than produce a wrong answer.
+	//
+	// That failure was silent and total. entryTier returning "" is not an
+	// error any caller checks; it is a tier name that simply matches nothing.
+	// Every tier-gated check downstream -- dedup, the freshness sweep, the
+	// agent-tier rule -- then quietly found nothing to do, so `cairn doctor
+	// --store .` from inside a store reported a clean bill of health on a
+	// store with hundreds of real findings. A health check that lies is worse
+	// than no health check.
+	root, err := filepath.Abs(store)
+	if err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(root, e.BodyPath)
 	if err != nil {
 		return ""
 	}
 	parts := strings.Split(filepath.ToSlash(rel), "/")
-	if len(parts) == 0 {
+	if len(parts) == 0 || parts[0] == ".." {
+		// The entry is not under this store at all. Returning parts[0] here
+		// would hand callers ".." as though it were a tier name, which is
+		// worse than admitting we do not know: a bogus tier silently joins a
+		// dedup or freshness group it has no business in.
 		return ""
 	}
 	return parts[0]
