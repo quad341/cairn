@@ -25,21 +25,27 @@ type backfillRecord struct {
 	OriginalSummary       string `json:"original_summary"`
 	OriginalTitleSource   string `json:"original_title_source"`
 	OriginalSummarySource string `json:"original_summary_source"`
+	OriginalType          string `json:"original_type"`
+	OriginalKind          string `json:"original_kind"`
 	BodySHA256            string `json:"body_sha256"`
+	NeedsMetadata         bool   `json:"needs_metadata"`
 	ProposedTitle         string `json:"proposed_title"`
 	ProposedSummary       string `json:"proposed_summary"`
+	ProposedType          string `json:"proposed_type"`
 	Path                  string `json:"-"`
 }
 
 type classificationCounts struct {
-	Total          int `json:"total"`
-	Derived        int `json:"derived"`
-	Authored       int `json:"authored"`
-	Unclassifiable int `json:"unclassifiable"`
-	Emitted        int `json:"emitted"`
+	Total             int `json:"total"`
+	Derived           int `json:"derived"`
+	Authored          int `json:"authored"`
+	Unclassifiable    int `json:"unclassifiable"`
+	Emitted           int `json:"emitted"`
+	Classified        int `json:"already_classified"`
+	LegacyRemediation int `json:"legacy_remediation"`
 }
 
-var backfillCmd = &cobra.Command{Use: "backfill", Short: "Propose and apply retrieval-metadata backfills"}
+var backfillCmd = &cobra.Command{Use: "backfill", Short: "Propose and apply entry-quality backfills"}
 
 func init() {
 	rootCmd.AddCommand(backfillCmd)
@@ -54,7 +60,7 @@ func init() {
 }
 
 var backfillExportCmd = &cobra.Command{
-	Use: "export", Short: "Emit legacy metadata work as JSONL", Args: cobra.NoArgs,
+	Use: "export", Short: "Emit unclassified entry work as JSONL", Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		records, counts, err := collectBackfill(storePath())
 		if err != nil {
@@ -150,6 +156,10 @@ func collectBackfill(store string) ([]backfillRecord, classificationCounts, erro
 	counts := classificationCounts{Total: len(entries)}
 	var records []backfillRecord
 	for _, e := range entries {
+		if e.Type != "" {
+			counts.Classified++
+			continue
+		}
 		class := classifyLegacyMetadata(e)
 		switch class {
 		case "derived":
@@ -159,14 +169,20 @@ func collectBackfill(store string) ([]backfillRecord, classificationCounts, erro
 		default:
 			counts.Unclassifiable++
 		}
-		if class != "derived" {
-			continue
+		proposedType := ""
+		if e.Kind == cairn.EntryTypeRemediation {
+			// This is an existing classification, not prose for a model to
+			// reinterpret. Preserve it mechanically during migration.
+			proposedType = cairn.EntryTypeRemediation
+			counts.LegacyRemediation++
 		}
 		records = append(records, backfillRecord{
 			ID: e.ID, TopicKey: e.TopicKey, Body: e.Body,
 			OriginalTitle: e.Title, OriginalSummary: e.Summary,
 			OriginalTitleSource: e.TitleSource, OriginalSummarySource: e.SummarySource,
-			BodySHA256: bodyHash(e.Body), Path: e.BodyPath,
+			OriginalType: e.Type, OriginalKind: e.Kind,
+			BodySHA256: bodyHash(e.Body), NeedsMetadata: class == "derived",
+			ProposedType: proposedType, Path: e.BodyPath,
 		})
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
@@ -246,17 +262,35 @@ func validateBackfillRecord(r backfillRecord) error {
 	if len(r.BodySHA256) != sha256.Size*2 {
 		return fmt.Errorf("entry %s: body_sha256 must be a 64-character digest", r.ID)
 	}
-	if strings.TrimSpace(r.ProposedTitle) == "" {
-		return fmt.Errorf("entry %s: proposed_title is required", r.ID)
+	switch r.ProposedType {
+	case cairn.EntryTypeKnowledge, cairn.EntryTypeRemediation, cairn.EntryTypePolicy:
+	default:
+		return fmt.Errorf(
+			"entry %s: proposed_type must be knowledge, remediation, or policy (got %q)",
+			r.ID, r.ProposedType,
+		)
 	}
-	if strings.TrimSpace(r.ProposedSummary) == "" {
-		return fmt.Errorf("entry %s: proposed_summary is required", r.ID)
+	if r.OriginalKind == cairn.EntryTypeRemediation && r.ProposedType != cairn.EntryTypeRemediation {
+		return fmt.Errorf(
+			"entry %s: proposed_type %q contradicts legacy kind %q; remediation must be preserved",
+			r.ID, r.ProposedType, r.OriginalKind,
+		)
 	}
-	if err := cairn.ValidateTitleLength(r.ProposedTitle); err != nil {
-		return fmt.Errorf("entry %s title: %w", r.ID, err)
+	titleSet := strings.TrimSpace(r.ProposedTitle) != ""
+	summarySet := strings.TrimSpace(r.ProposedSummary) != ""
+	if r.NeedsMetadata && (!titleSet || !summarySet) {
+		return fmt.Errorf("entry %s: proposed_title and proposed_summary are required because needs_metadata is true", r.ID)
 	}
-	if err := cairn.ValidateSummaryLength(r.ProposedSummary); err != nil {
-		return fmt.Errorf("entry %s summary: %w", r.ID, err)
+	if titleSet != summarySet {
+		return fmt.Errorf("entry %s: proposed_title and proposed_summary must be supplied together", r.ID)
+	}
+	if titleSet {
+		if err := cairn.ValidateTitleLength(r.ProposedTitle); err != nil {
+			return fmt.Errorf("entry %s title: %w", r.ID, err)
+		}
+		if err := cairn.ValidateSummaryLength(r.ProposedSummary); err != nil {
+			return fmt.Errorf("entry %s summary: %w", r.ID, err)
+		}
 	}
 	return nil
 }
@@ -269,39 +303,69 @@ func applyBackfillRecord(ctx context.Context, store string, r backfillRecord, wr
 	if err != nil {
 		return applyResult{ID: r.ID, Status: "failed", Detail: err.Error()}, err
 	}
-	if e.Title == r.ProposedTitle && e.Summary == r.ProposedSummary &&
-		e.TitleSource == cairn.MetadataSourceAuthored && e.SummarySource == cairn.MetadataSourceAuthored {
+	if e.Kind == cairn.EntryTypeRemediation && r.ProposedType != cairn.EntryTypeRemediation {
+		err = fmt.Errorf(
+			"entry %s: proposed_type %q contradicts live legacy kind %q; remediation must be preserved",
+			r.ID, r.ProposedType, e.Kind,
+		)
+		return applyResult{ID: r.ID, Status: "failed", Detail: err.Error()}, err
+	}
+	metadataProposed := strings.TrimSpace(r.ProposedTitle) != ""
+	if backfillAlreadyApplied(e, r, metadataProposed) {
 		return applyResult{ID: r.ID, Status: "already_applied"}, nil
 	}
-	var diverged []string
-	if e.Title != r.OriginalTitle {
-		diverged = append(diverged, "title")
-	}
-	if e.Summary != r.OriginalSummary {
-		diverged = append(diverged, "summary")
-	}
-	if e.TitleSource != r.OriginalTitleSource {
-		diverged = append(diverged, "title_source")
-	}
-	if e.SummarySource != r.OriginalSummarySource {
-		diverged = append(diverged, "summary_source")
-	}
-	if bodyHash(e.Body) != r.BodySHA256 {
-		diverged = append(diverged, "body")
-	}
+	diverged := backfillDivergedFields(e, r)
 	if len(diverged) > 0 {
 		err = fmt.Errorf("entry %s is stale: diverged fields: %s", r.ID, strings.Join(diverged, ", "))
 		return applyResult{ID: r.ID, Status: "stale", Detail: err.Error()}, err
 	}
 	if !write {
-		detail := fmt.Sprintf("title: %q -> %q; summary: %q -> %q",
-			e.Title, r.ProposedTitle, e.Summary, r.ProposedSummary)
+		detail := fmt.Sprintf("type: %q -> %q", e.Type, r.ProposedType)
+		if metadataProposed {
+			detail += fmt.Sprintf("; title: %q -> %q; summary: %q -> %q",
+				e.Title, r.ProposedTitle, e.Summary, r.ProposedSummary)
+		}
 		return applyResult{ID: r.ID, Status: "preview", Detail: detail}, nil
 	}
-	e.Title = r.ProposedTitle
-	e.Summary = r.ProposedSummary
-	if err = e.WriteBackRetrievalMetadata(); err != nil {
+	e.Type = r.ProposedType
+	if metadataProposed {
+		e.Title = r.ProposedTitle
+		e.Summary = r.ProposedSummary
+	}
+	if err = e.WriteBackBackfill(metadataProposed); err != nil {
 		return applyResult{ID: r.ID, Status: "failed", Detail: err.Error()}, err
 	}
 	return applyResult{ID: r.ID, Status: "applied"}, nil
+}
+
+func backfillAlreadyApplied(e *cairn.Entry, r backfillRecord, metadataProposed bool) bool {
+	if e.Type != r.ProposedType {
+		return false
+	}
+	return !metadataProposed || (e.Title == r.ProposedTitle &&
+		e.Summary == r.ProposedSummary &&
+		e.TitleSource == cairn.MetadataSourceAuthored &&
+		e.SummarySource == cairn.MetadataSourceAuthored)
+}
+
+func backfillDivergedFields(e *cairn.Entry, r backfillRecord) []string {
+	checks := []struct {
+		name     string
+		diverged bool
+	}{
+		{"title", e.Title != r.OriginalTitle},
+		{"summary", e.Summary != r.OriginalSummary},
+		{"title_source", e.TitleSource != r.OriginalTitleSource},
+		{"summary_source", e.SummarySource != r.OriginalSummarySource},
+		{"type", e.Type != r.OriginalType},
+		{"kind", e.Kind != r.OriginalKind},
+		{"body", bodyHash(e.Body) != r.BodySHA256},
+	}
+	var fields []string
+	for _, check := range checks {
+		if check.diverged {
+			fields = append(fields, check.name)
+		}
+	}
+	return fields
 }

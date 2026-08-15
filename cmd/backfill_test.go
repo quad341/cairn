@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/quad341/cairn/internal/cairn"
@@ -30,7 +31,12 @@ func TestApplyBackfillDryRunAndStaleAreNonWriting(t *testing.T) {
 	gitInit(t, store)
 	e, err := cairn.ParseEntry(path)
 	require.NoError(t, err)
-	r := backfillRecord{ID: "a", OriginalTitle: e.Title, OriginalSummary: e.Summary, BodySHA256: bodyHash(e.Body), ProposedTitle: "New situational title", ProposedSummary: "Use this when the body applies."}
+	r := backfillRecord{
+		ID: "a", OriginalTitle: e.Title, OriginalSummary: e.Summary,
+		OriginalType: e.Type, OriginalKind: e.Kind, BodySHA256: bodyHash(e.Body),
+		ProposedTitle: "New situational title", ProposedSummary: "Use this when the body applies.",
+		ProposedType: cairn.EntryTypeKnowledge,
+	}
 
 	result, err := applyBackfillRecord(context.Background(), store, r, false)
 	require.NoError(t, err)
@@ -45,6 +51,48 @@ func TestApplyBackfillDryRunAndStaleAreNonWriting(t *testing.T) {
 	assert.Equal(t, "stale", result.Status)
 	assert.Contains(t, result.Detail, "entry a")
 	assert.Contains(t, result.Detail, "title")
+}
+
+func TestBackfillPreservesLegacyRemediationClassification(t *testing.T) {
+	store := t.TempDir()
+	path := filepath.Join(store, "global", "repair.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+	raw := "+++\nid = \"repair\"\ntitle = \"Recover the synthetic service\"\nsummary = \"Use after the synthetic service reports a known failure.\"\ntitle_source = \"authored\"\nsummary_source = \"authored\"\nkind = \"remediation\"\nauto_actionable = true\nscope = []\n[anchor]\ntype = \"none\"\n+++\n\nSynthetic recovery procedure.\n"
+	require.NoError(t, os.WriteFile(path, []byte(raw), 0o600))
+	classified := "+++\nid = \"known\"\ntitle = \"Known synthetic behavior\"\ntype = \"knowledge\"\nscope = []\n[anchor]\ntype = \"none\"\n+++\n\nSynthetic fact.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "known.md"), []byte(classified), 0o600))
+	gitInit(t, store)
+
+	records, counts, err := collectBackfill(store)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, 1, counts.Classified, "reruns skip entries already carrying a type")
+	assert.Equal(t, 1, counts.LegacyRemediation)
+	record := records[0]
+	assert.Equal(t, cairn.EntryTypeRemediation, record.ProposedType,
+		"legacy remediation is mapped mechanically, without classifier input")
+	assert.False(t, record.NeedsMetadata)
+
+	result, err := applyBackfillRecord(context.Background(), store, record, true)
+	require.NoError(t, err)
+	assert.Equal(t, "applied", result.Status)
+
+	got, err := cairn.ParseEntry(path)
+	require.NoError(t, err)
+	assert.Equal(t, cairn.EntryTypeRemediation, got.Type)
+	assert.Equal(t, cairn.EntryTypeRemediation, got.Kind)
+	assert.True(t, got.AutoActionable, "classification backfill must preserve auto-actionable eligibility")
+}
+
+func TestBackfillRejectsContradictoryLegacyRemediationType(t *testing.T) {
+	record := backfillRecord{
+		ID: "repair", OriginalKind: cairn.EntryTypeRemediation,
+		BodySHA256: strings.Repeat("0", 64), ProposedType: cairn.EntryTypeKnowledge,
+	}
+	err := validateBackfillRecord(record)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "entry repair")
+	assert.Contains(t, err.Error(), "contradicts legacy kind")
 }
 
 func TestWriteBackRetrievalMetadataPreservesBody(t *testing.T) {

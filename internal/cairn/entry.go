@@ -178,6 +178,32 @@ func (e *Entry) WriteBackRetrievalMetadata() error {
 	})
 }
 
+// WriteBackBackfill atomically patches a legacy entry's classification and,
+// when requested, its retrieval metadata. It exists for the migration path:
+// new-entry validation intentionally rejects policy, while a migration may
+// classify an existing policy entry so a librarian can query and remove it.
+func (e *Entry) WriteBackBackfill(updateRetrievalMetadata bool) error {
+	switch e.Type {
+	case EntryTypeKnowledge, EntryTypeRemediation, EntryTypePolicy:
+	default:
+		return fmt.Errorf("invalid backfill type %q", e.Type)
+	}
+	if e.Kind == EntryTypeRemediation && e.Type != EntryTypeRemediation {
+		return fmt.Errorf("type %q contradicts legacy kind %q", e.Type, e.Kind)
+	}
+	return e.writeBackPatched(func(front string) (string, error) {
+		lines := strings.Split(front, "\n")
+		lines = patchTopLevelScalar(lines, "type", strconv.Quote(e.Type))
+		if updateRetrievalMetadata {
+			lines = patchTopLevelScalar(lines, "title", strconv.Quote(e.Title))
+			lines = patchTopLevelScalar(lines, "title_source", strconv.Quote(MetadataSourceAuthored))
+			lines = patchTopLevelScalar(lines, "summary", strconv.Quote(e.Summary))
+			lines = patchTopLevelScalar(lines, "summary_source", strconv.Quote(MetadataSourceAuthored))
+		}
+		return strings.Join(lines, "\n"), nil
+	})
+}
+
 func patchTopLevelScalar(lines []string, key, value string) []string {
 	line := key + " = " + value
 	for i, existing := range lines {

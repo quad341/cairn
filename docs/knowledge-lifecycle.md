@@ -88,19 +88,25 @@ agent/<agent>/     # one agent, private
 - Bodies are the **source of truth** — human-readable, git-versioned, diffable,
   reviewable like code. The SQLite index is a rebuildable view, never the truth.
 
-Legacy retrieval metadata can be repaired without giving cairn LLM access:
+Legacy entries can be classified and their retrieval metadata repaired without
+giving cairn LLM access:
 
 ```sh
-cairn backfill export --sample 20 >work.jsonl  # deterministic spot-check work list
-# an external agent fills proposed_title and proposed_summary in work.jsonl
+cairn backfill export >work.jsonl              # all entries with no type
+# an external agent fills proposed_type on every record and, when
+# needs_metadata is true, proposed_title and proposed_summary
 cairn backfill validate --file work.jsonl
-cairn backfill apply --file work.jsonl         # review-only preview; no writes
+cairn backfill apply --file work.jsonl         # machine-readable preview; no writes
 cairn backfill apply --file work.jsonl --write # explicit application step
 ```
 
-Export skips entries already marked authored. Every proposal carries its original
-metadata and body digest; apply rejects stale entries by ID and divergent field,
-and reports each applied, already-applied, or failed proposal individually.
+Export skips entries already classified. Legacy `kind = "remediation"` is mapped
+mechanically to `proposed_type = "remediation"`; a model never re-decides that
+existing classification. Every proposal carries its original classification,
+metadata, and body digest. Apply rejects stale entries by ID and divergent field,
+rejects a type that contradicts legacy remediation, and reports each applied,
+already-applied, or failed proposal individually. `--sample` remains available
+for optional inspection, but unattended full-corpus operation is the default.
 
 ### 2. Surface — `cairn prime` / `cairn map`
 
