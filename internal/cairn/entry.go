@@ -1125,9 +1125,9 @@ func scopeSuperset(super, sub []string) bool {
 // every entry Visible/Prime ever see from this path has an empty override,
 // silently no-opping the --force correction shadowReason is supposed to
 // honor. Adding a column here is a deliberate, reviewed cost trade-off (these
-// were already indexed and populated by reindexTx at zero marginal query
-// cost) -- not a precedent for extending this list on request; any future
-// addition needs the same analysis.
+// were already indexed and populated by reindexUpsertChunkTx at zero
+// marginal query cost) -- not a precedent for extending this list on
+// request; any future addition needs the same analysis.
 func Status(ctx context.Context, store string) ([]*Entry, error) {
 	if err := ensureFresh(ctx, store); err != nil {
 		return nil, err
