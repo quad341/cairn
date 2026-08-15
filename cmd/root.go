@@ -3,8 +3,11 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/quad341/cairn/internal/obslog"
 )
@@ -13,6 +16,56 @@ var (
 	storeFlag string
 	traceFlag bool
 )
+
+// commandsWithFreeformPositional lists commands whose positional argument is
+// free-text content rather than an identifier -- logging it verbatim in the
+// context record would put entry bodies into the debug log (and any rage
+// bundle built from it). "remember [body]" is cairn's only such command
+// today (cmd/remember.go).
+var commandsWithFreeformPositional = map[string]bool{
+	"remember": true,
+}
+
+// suspiciousFlagNamePattern matches flag names that conventionally carry
+// secrets, so their values are redacted regardless of which command they're
+// passed to -- unlike commandsWithFreeformPositional, this is a blanket
+// safety net rather than a per-command allowlist, because a secret-shaped
+// flag can be added to any command later without this check being updated.
+var suspiciousFlagNamePattern = regexp.MustCompile(`(?i)token|secret|passwd|password|credential|key`)
+
+// redactArgv returns argv with any values that shouldn't be logged verbatim
+// replaced by a placeholder: cmd's free-text positional (see
+// commandsWithFreeformPositional) and any flag value whose flag name matches
+// suspiciousFlagNamePattern. Only values are redacted -- flag names and
+// non-matching argv tokens pass through unchanged. Returns argv unmodified
+// (same slice) when neither rule finds anything to redact.
+func redactArgv(argv []string, cmd *cobra.Command) []string {
+	redact := map[string]bool{}
+	if commandsWithFreeformPositional[cmd.Name()] {
+		for _, v := range cmd.Flags().Args() {
+			redact[v] = true
+		}
+	}
+	cmd.Flags().Visit(func(f *pflag.Flag) {
+		if suspiciousFlagNamePattern.MatchString(f.Name) {
+			redact[f.Value.String()] = true
+		}
+	})
+	if len(redact) == 0 {
+		return argv
+	}
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		if name, val, ok := strings.Cut(a, "="); ok && strings.HasPrefix(a, "-") && redact[val] {
+			out[i] = name + "=«redacted»"
+		} else if redact[a] {
+			out[i] = "«redacted»"
+		} else {
+			out[i] = a
+		}
+	}
+	return out
+}
 
 // commandsExemptFromStoreGate lists the commands that never touch the
 // knowledge store and so must keep working with no --store/$CAIRN_STORE
@@ -84,7 +137,7 @@ var rootCmd = &cobra.Command{
 			StoreSource:    storeSource,
 			IdentityTags:   identityTags,
 			IdentitySource: identitySource,
-			Args:           os.Args,
+			Args:           redactArgv(os.Args, cmd),
 		})
 
 		if storeP == "" && !commandsExemptFromStoreGate[cmd.Name()] {
