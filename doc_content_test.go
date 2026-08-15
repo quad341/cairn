@@ -38,3 +38,28 @@ func TestDesignDocStatesTypeFieldConvention(t *testing.T) {
 		t.Errorf("docs/DESIGN.md does not document the `type`-field minimum-viable-schema convention (OKF-derived)")
 	}
 }
+
+// TestDesignDocStatesSharedRememberLeavesWorkingTreeUntracked pins the
+// crn-q5kk.2 documentation fix: a shared-tier `remember` deliberately leaves
+// the store's working-tree copy untracked (`??`) alongside a real commit on
+// its own `remember/<id>` branch, so `git status` alone looks like data loss
+// to an operator who doesn't also check `git branch -a`/`git log --all`.
+// Without this, the gap that produced the original (good-faith but
+// incomplete) durability bug report in crn-q5kk stays undocumented.
+func TestDesignDocStatesSharedRememberLeavesWorkingTreeUntracked(t *testing.T) {
+	body, err := os.ReadFile("docs/DESIGN.md")
+	if err != nil {
+		t.Fatalf("reading docs/DESIGN.md: %v", err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"leaves the working-tree copy untracked",
+		"`git status` alone will not show the commit",
+		"git branch -a",
+		"remember/*",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("docs/DESIGN.md does not document the untracked-working-tree-copy behavior (missing %q)", want)
+		}
+	}
+}

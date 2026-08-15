@@ -151,6 +151,17 @@ review branch; no hosted forge is required. Cost matches efficiency impact: a
 bad narrowly scoped note wastes one agent's effort, while a bad global note can
 mislead the whole fleet.
 
+**A shared-tier `remember` leaves the working-tree copy untracked — on
+purpose.** The entry file is written straight into the store's live working
+tree first (so local reads work immediately), then committed separately onto
+its own `remember/<id>` branch via a throwaway git worktree. That commit is
+the real durability mechanism; the original file is deliberately never
+`git add`ed or removed on the checked-out branch. So `git status` on the
+store continues to show the new entry as `??` even after it's durably
+committed — that's expected, not data loss. `git status` alone will not show the commit;
+confirm it with `git branch -a`, `git log --all`, or
+`git branch --list 'remember/*'`.
+
 ## 8. CLI (v0)
 
 ```
