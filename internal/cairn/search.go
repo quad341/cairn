@@ -103,6 +103,8 @@ type SearchResult struct {
 	// Prime reports it: it distinguishes an empty result caused by a narrow
 	// query from one caused by an identity that sees almost nothing.
 	TotalVisible int `json:"total_visible"`
+	// Confidence is the abstain signal over the returned page.
+	Confidence SearchConfidence `json:"confidence"`
 }
 
 // Search ranks the caller's visible entries against a free-text query using
@@ -153,10 +155,12 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 	}
 	defer func() { _ = db.Close() }()
 
-	ranked, err := ftsRanked(ctx, db, terms, visibleIDs)
+	termIDF := map[string]float64{}
+	ranked, err := ftsRanked(ctx, db, terms, visibleIDs, &termIDF)
 	if err != nil {
 		return SearchResult{}, err
 	}
+	confidence := confidenceFor(ranked, terms, termIDF)
 	// Captured before paging: TotalMatched reports how many visible entries
 	// matched, not how many fit on this page.
 	totalMatched := len(ranked)
@@ -179,6 +183,7 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 		QueryTerms:   terms,
 		TotalMatched: totalMatched,
 		TotalVisible: len(visible),
+		Confidence:   confidence,
 		Hits:         []SearchHit{},
 	}
 	for _, r := range ranked {
@@ -204,6 +209,10 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 type rankedRow struct {
 	id    string
 	score float64
+	// matchedIDF is the summed IDF of the distinct query terms this entry
+	// actually contains. Carried alongside the score because the score alone
+	// cannot be compared across queries -- see SearchConfidence.
+	matchedIDF float64
 }
 
 // termHit records where in an entry a query term landed. Field membership
@@ -226,7 +235,7 @@ type termHit struct {
 // silently reorder the visible ones. Filtering after ranking prevents hidden
 // entries from taking result slots but not from changing the order of the
 // slots that remain.
-func ftsRanked(ctx context.Context, db *sql.DB, terms []string, visible map[string]bool) ([]rankedRow, error) {
+func ftsRanked(ctx context.Context, db *sql.DB, terms []string, visible map[string]bool, termIDF *map[string]float64) ([]rankedRow, error) {
 	total := len(visible)
 	if total == 0 {
 		return nil, nil
@@ -235,10 +244,11 @@ func ftsRanked(ctx context.Context, db *sql.DB, terms []string, visible map[stri
 	if err != nil {
 		return nil, err
 	}
+	*termIDF = idf
 
 	out := make([]rankedRow, 0, len(matched))
 	for id, hits := range matched {
-		var score float64
+		var score, matchedIDF float64
 		for t, h := range hits {
 			// A term is worth its rarity, multiplied up when it lands in a
 			// field that identifies the entry rather than merely mentioning
@@ -255,8 +265,9 @@ func ftsRanked(ctx context.Context, db *sql.DB, terms []string, visible map[stri
 				weight += titleTermBoost
 			}
 			score += idf[t] * weight
+			matchedIDF += idf[t]
 		}
-		out = append(out, rankedRow{id: id, score: score})
+		out = append(out, rankedRow{id: id, score: score, matchedIDF: matchedIDF})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
@@ -302,6 +313,109 @@ func collectTermHits(ctx context.Context, db *sql.DB, terms []string, visible ma
 		}
 	}
 	return matched, idf, nil
+}
+
+// SearchConfidence is normalized evidence about whether the store plausibly
+// knows the answer at all.
+//
+// It exists because a raw score cannot answer that question. Scores are sums
+// of IDF and are therefore query-dependent: a long query over rare terms
+// produces large scores whether or not any entry is a real answer, and a
+// short query over common terms produces small ones even when the top hit is
+// exactly right. Measured on the reference store, the top hit for a query
+// with NO correct answer scored at or above the median score of genuinely
+// correct entries in 2 of 5 cases.
+//
+// Coverage is a ratio and therefore comparable across queries: of the query's
+// total meaningful (IDF) weight, how much does the top hit actually contain.
+//
+// MEASURED SEPARATION, on 46 held-out pairs never used to tune ranking
+// (23 where a correct entry was retrieved, 23 where none existed or none
+// surfaced): coverage AUC 0.694. Real signal, but weak -- it supports saying
+// "probably nothing here", and does not support ranking confidence tiers.
+//
+// A margin field (how far top-1 leads top-2) was implemented and measured at
+// AUC 0.501 -- indistinguishable from noise -- and removed. Do not reintroduce
+// it without measuring it first; it is an intuitive idea that simply does not
+// work on this corpus.
+type SearchConfidence struct {
+	Coverage float64 `json:"coverage"`
+	// UnmatchedTerms are query terms that match nothing anywhere in the
+	// store. Reported separately from Coverage because they are evidence
+	// about the STORE's gaps rather than about this entry -- a caller
+	// deciding whether to write a new entry wants to see them.
+	UnmatchedTerms []string `json:"unmatched_terms"`
+	// Verdict is the abstain signal. Deliberately a first-class field rather
+	// than something a caller infers from prose, because the honest answer
+	// "cairn does not know this" is otherwise unreachable: search always
+	// returns a ranked list, and an agent with no way to express "nothing
+	// here" will pick the top row.
+	//
+	// Only two values, and that is a measurement result rather than a
+	// simplification: the data supports flagging hopeless queries and does
+	// not support asserting that any hit is a good one. An earlier revision
+	// had a "strong" tier; it fired once in 23 genuine retrievals, because
+	// it gated on the noise feature described above.
+	Verdict string `json:"verdict"`
+}
+
+// Verdict values for SearchConfidence.
+const (
+	// VerdictNone: the top hit covers so little of the query that the store
+	// probably has no answer.
+	VerdictNone = "none"
+	// VerdictCandidates: ranked lexical candidates, with no claim that any
+	// of them is correct.
+	VerdictCandidates = "candidates"
+)
+
+// noneCoverage is the abstain threshold, fitted on the 46 held-out pairs
+// described above. Chosen as the operating point that abstains on a useful
+// share of hopeless queries while never suppressing a retrieval that
+// succeeded:
+//
+//	threshold   correct abstain   wrong abstain
+//	     0.15                0%              0%
+//	     0.18               22%              0%     <- shipped
+//	     0.20               30%             13%
+//	     0.25               43%             17%
+//	     0.30               70%             43%
+//
+// The asymmetry is deliberate. A miss costs a re-derivation; a suppressed
+// correct answer costs a re-derivation AND teaches the agent that cairn has
+// nothing, which is the more expensive error. Raise this only against a
+// fresh held-out set -- this one has now been used for fitting and can no
+// longer measure it honestly.
+var noneCoverage = 0.18
+
+// confidenceFor derives the abstain signal from the ranked page.
+func confidenceFor(ranked []rankedRow, terms []string, idf map[string]float64) SearchConfidence {
+	c := SearchConfidence{Verdict: VerdictNone, UnmatchedTerms: []string{}}
+	for _, t := range terms {
+		if _, ok := idf[t]; !ok {
+			c.UnmatchedTerms = append(c.UnmatchedTerms, t)
+		}
+	}
+	if len(ranked) == 0 {
+		return c
+	}
+	var totalIDF float64
+	for _, w := range idf {
+		totalIDF += w
+	}
+	if totalIDF > 0 {
+		// Denominator is the weight of terms the STORE knows, not of every
+		// term the caller typed. A term matching nothing anywhere cannot be
+		// held against the top hit -- no entry could have covered it -- and
+		// it is reported separately in UnmatchedTerms instead. This is also
+		// the denominator the shipped threshold was fitted against; changing
+		// it silently invalidates that fit.
+		c.Coverage = ranked[0].matchedIDF / totalIDF
+	}
+	if c.Coverage >= noneCoverage {
+		c.Verdict = VerdictCandidates
+	}
+	return c
 }
 
 // retainVisible drops ids the caller cannot see.
