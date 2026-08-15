@@ -39,7 +39,8 @@ func init() {
 		"create a new entry even if a recurrence match is found, recording which entry it overrides")
 	rememberCmd.Flags().String("batch-file", "",
 		"path to a JSONL manifest of entries to remember in one call (see docs/knowledge-lifecycle.md); "+
-			"--topic/--scope/--title/--summary/--anchor-repo/--anchor-path/--force become per-line manifest fields instead and must not be passed as flags alongside this")
+			"--topic/--scope/--title/--summary/--anchor-repo/--anchor-path/--force become per-line manifest "+
+			"fields instead and must not be passed as flags alongside this")
 }
 
 var rememberCmd = &cobra.Command{

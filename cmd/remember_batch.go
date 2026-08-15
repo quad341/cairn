@@ -81,24 +81,27 @@ type BatchResult struct {
 // stopping as soon as the count exceeds maxBatchLines rather than reading to
 // EOF -- the cap must reject an oversized manifest fast, without ever
 // buffering the whole file.
-func countManifestLines(path string) (int, error) {
+func countManifestLines(path string) (n int, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, err
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxManifestLineBytes)
-	n := 0
 	for scanner.Scan() {
 		n++
 		if n > maxBatchLines {
 			return n, nil
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return 0, err
+	if serr := scanner.Err(); serr != nil {
+		return 0, serr
 	}
 	return n, nil
 }
@@ -146,46 +149,10 @@ func runRememberBatch(cmd *cobra.Command, batchFile string) error {
 		return emitError(cmd, fmt.Errorf("generate batch id: %w", err))
 	}
 
-	f, err := os.Open(batchFile)
+	result, candidates, err := scanBatchFile(cmd, batchFile, createdBy, batchID)
 	if err != nil {
-		return emitError(cmd, fmt.Errorf("open --batch-file %s: %w", batchFile, err))
+		return emitError(cmd, err)
 	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxManifestLineBytes)
-
-	result := BatchResult{BatchID: batchID}
-	var candidates []batchReviewCandidate
-
-	line := 0
-	for scanner.Scan() {
-		line++
-		res, candidate, unanchored := processBatchLine(cmd, scanner.Text(), line, createdBy)
-		result.Entries = append(result.Entries, res)
-		switch {
-		case res.Error != "":
-			result.Failed++
-			if !wantsJSON(cmd) {
-				fmt.Printf("line %d: %s\n", line, res.Error)
-			}
-		default:
-			result.Succeeded++
-			if !wantsJSON(cmd) {
-				fmt.Printf("%s\n", res.ID)
-			}
-		}
-		if unanchored {
-			result.Unanchored++
-		}
-		if candidate != nil {
-			candidates = append(candidates, *candidate)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return emitError(cmd, fmt.Errorf("scan --batch-file %s: %w", batchFile, err))
-	}
-	result.Total = len(result.Entries)
 
 	var notifyErr error
 	if len(candidates) > 0 {
@@ -211,6 +178,92 @@ func runRememberBatch(cmd *cobra.Command, batchFile string) error {
 	return nil
 }
 
+// scanBatchFile opens batchFile and processes each line through
+// processBatchLine, accumulating a BatchResult and the shared-tier
+// candidates that still need requestBatchReview's grouped notification.
+// Split out of runRememberBatch to keep the file handle's defer/Close
+// self-contained and out of that function's cognitive-complexity count.
+func scanBatchFile(cmd *cobra.Command, batchFile, createdBy, batchID string) (
+	result BatchResult, candidates []batchReviewCandidate, err error,
+) {
+	f, err := os.Open(batchFile)
+	if err != nil {
+		return BatchResult{}, nil, fmt.Errorf("open --batch-file %s: %w", batchFile, err)
+	}
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxManifestLineBytes)
+
+	result = BatchResult{BatchID: batchID}
+	line := 0
+	for scanner.Scan() {
+		line++
+		res, candidate, unanchored := processBatchLine(cmd, scanner.Text(), line, createdBy)
+		result.Entries = append(result.Entries, res)
+		switch {
+		case res.Error != "":
+			result.Failed++
+			if !wantsJSON(cmd) {
+				fmt.Printf("line %d: %s\n", line, res.Error)
+			}
+		default:
+			result.Succeeded++
+			if !wantsJSON(cmd) {
+				fmt.Printf("%s\n", res.ID)
+			}
+		}
+		if unanchored {
+			result.Unanchored++
+		}
+		if candidate != nil {
+			candidates = append(candidates, *candidate)
+		}
+	}
+	if serr := scanner.Err(); serr != nil {
+		return BatchResult{}, nil, fmt.Errorf("scan --batch-file %s: %w", batchFile, serr)
+	}
+	result.Total = len(result.Entries)
+	return result, candidates, nil
+}
+
+// parseBatchManifestLine unmarshals one manifest line and validates its
+// static fields (topic/scope/title/summary), before any entry construction
+// or side-effecting work begins. Split out of processBatchLine to keep that
+// function's cognitive complexity down.
+func parseBatchManifestLine(raw string) (batchManifestEntry, error) {
+	var m batchManifestEntry
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return m, fmt.Errorf("parse manifest line: %w", err)
+	}
+
+	if m.Topic != "" {
+		if err := cairn.ValidatePathSegment(m.Topic); err != nil {
+			return m, fmt.Errorf("invalid topic %q: %w", m.Topic, err)
+		}
+	}
+	for _, tag := range m.Scope {
+		if err := cairn.ValidateScopeTag(tag); err != nil {
+			return m, fmt.Errorf("invalid scope tag %q: %w", tag, err)
+		}
+	}
+	if m.Title != "" {
+		if err := cairn.ValidateTitleLength(m.Title); err != nil {
+			return m, fmt.Errorf("invalid title: %w", err)
+		}
+	}
+	if m.Summary != "" {
+		if err := cairn.ValidateSummaryLength(m.Summary); err != nil {
+			return m, fmt.Errorf("invalid summary: %w", err)
+		}
+	}
+	return m, nil
+}
+
 // processBatchLine parses and processes one manifest line, mirroring
 // rememberCmd.RunE's single-entry logic (validate -> construct -> verify ->
 // recurrence check -> Create -> tier-appropriate commit) but reporting every
@@ -218,38 +271,15 @@ func runRememberBatch(cmd *cobra.Command, batchFile string) error {
 // since batch mode never aborts on one bad line (FR-3/FR-6). A non-nil
 // *batchReviewCandidate is returned only for a successfully-committed
 // shared-tier entry, still needing its group's mail from requestBatchReview.
-func processBatchLine(cmd *cobra.Command, raw string, line int, createdBy string) (res BatchEntryResult, candidate *batchReviewCandidate, unanchored bool) {
+func processBatchLine(cmd *cobra.Command, raw string, line int, createdBy string) (
+	res BatchEntryResult, candidate *batchReviewCandidate, unanchored bool,
+) {
 	res.Line = line
 
-	var m batchManifestEntry
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		res.Error = fmt.Sprintf("parse manifest line: %v", err)
+	m, err := parseBatchManifestLine(raw)
+	if err != nil {
+		res.Error = err.Error()
 		return res, nil, false
-	}
-
-	if m.Topic != "" {
-		if err := cairn.ValidatePathSegment(m.Topic); err != nil {
-			res.Error = fmt.Sprintf("invalid topic %q: %v", m.Topic, err)
-			return res, nil, false
-		}
-	}
-	for _, tag := range m.Scope {
-		if err := cairn.ValidateScopeTag(tag); err != nil {
-			res.Error = fmt.Sprintf("invalid scope tag %q: %v", tag, err)
-			return res, nil, false
-		}
-	}
-	if m.Title != "" {
-		if err := cairn.ValidateTitleLength(m.Title); err != nil {
-			res.Error = fmt.Sprintf("invalid title: %v", err)
-			return res, nil, false
-		}
-	}
-	if m.Summary != "" {
-		if err := cairn.ValidateSummaryLength(m.Summary); err != nil {
-			res.Error = fmt.Sprintf("invalid summary: %v", err)
-			return res, nil, false
-		}
 	}
 
 	anchor := cairn.Anchor{}
@@ -289,9 +319,18 @@ func processBatchLine(cmd *cobra.Command, raw string, line int, createdBy string
 		e.OverriddenDuplicateOf = matched.ID
 	}
 
+	candidate = commitBatchEntry(cmd, e, m.Scope, &res)
+	return res, candidate, unanchored
+}
+
+// commitBatchEntry persists a validated, constructed entry: writes it via
+// Create, then commits it directly (private scope) or onto a review branch
+// (shared scope), filling in res's ID/Scope/Commit/ReviewBranch/Reviewer
+// fields. Split out of processBatchLine to keep cyclomatic complexity down.
+func commitBatchEntry(cmd *cobra.Command, e *cairn.Entry, scope []string, res *BatchEntryResult) *batchReviewCandidate {
 	if err := e.Create(storePath()); err != nil {
 		res.Error = fmt.Sprintf("write entry: %v", err)
-		return res, nil, unanchored
+		return nil
 	}
 	res.ID = e.ID
 	res.Scope = nonNil(e.Scope)
@@ -300,20 +339,20 @@ func processBatchLine(cmd *cobra.Command, raw string, line int, createdBy string
 		sha, err := e.CommitDirect(cmd.Context(), storePath())
 		if err != nil {
 			res.Error = fmt.Sprintf("commit entry: %v", err)
-			return res, nil, unanchored
+			return nil
 		}
 		res.Commit = sha
-		return res, nil, unanchored
+		return nil
 	}
 
-	branch, reviewer, err := commitForBatchReview(cmd, e, m.Scope)
+	branch, reviewer, err := commitForBatchReview(cmd, e, scope)
 	if err != nil {
 		res.Error = fmt.Sprintf("commit entry for review: %v", err)
-		return res, nil, unanchored
+		return nil
 	}
 	res.ReviewBranch = branch
 	res.Reviewer = reviewer
-	return res, &batchReviewCandidate{entry: e, branch: branch, reviewer: reviewer}, unanchored
+	return &batchReviewCandidate{entry: e, branch: branch, reviewer: reviewer}
 }
 
 // recordBatchRecurrence mirrors recordRecurrence's persistence (bump
