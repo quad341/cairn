@@ -165,6 +165,38 @@ func (e *Entry) WriteBackAnchor() error {
 	})
 }
 
+// WriteBackRetrievalMetadata surgically replaces title/summary and records
+// both as authored. The body and unrelated frontmatter remain byte-identical.
+func (e *Entry) WriteBackRetrievalMetadata() error {
+	return e.writeBackPatched(func(front string) (string, error) {
+		lines := strings.Split(front, "\n")
+		lines = patchTopLevelScalar(lines, "title", strconv.Quote(e.Title))
+		lines = patchTopLevelScalar(lines, "title_source", strconv.Quote(MetadataSourceAuthored))
+		lines = patchTopLevelScalar(lines, "summary", strconv.Quote(e.Summary))
+		lines = patchTopLevelScalar(lines, "summary_source", strconv.Quote(MetadataSourceAuthored))
+		return strings.Join(lines, "\n"), nil
+	})
+}
+
+func patchTopLevelScalar(lines []string, key, value string) []string {
+	line := key + " = " + value
+	for i, existing := range lines {
+		if strings.HasPrefix(strings.TrimSpace(existing), "[") {
+			break
+		}
+		if k, _, ok := strings.Cut(existing, "="); ok && strings.TrimSpace(k) == key {
+			lines[i] = line
+			return lines
+		}
+	}
+	for i, existing := range lines {
+		if k, _, ok := strings.Cut(existing, "="); ok && strings.TrimSpace(k) == "id" {
+			return append(lines[:i+1], append([]string{line}, lines[i+1:]...)...)
+		}
+	}
+	return append([]string{line}, lines...)
+}
+
 // WriteBackRecurrenceCount surgically patches recurrence_count into the
 // on-disk frontmatter -- the same "patch, don't re-encode" contract
 // WriteBack uses for verified_at/fingerprint above. cmd/remember.go's

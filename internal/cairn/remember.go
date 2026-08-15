@@ -113,6 +113,14 @@ func titleAndSummary(body string) (title, summary string) {
 	return trimmed, trimmed
 }
 
+// DerivedTitleSummary returns the metadata cairn would synthesize for body.
+// It is exported for migration tooling that must identify legacy synthesized
+// metadata using the exact write-path algorithm rather than a lookalike.
+func DerivedTitleSummary(body string) (title, summary string) {
+	title, summary = titleAndSummary(body)
+	return truncateRunes(title, titleCap), truncateRunes(summary, summaryCap)
+}
+
 func randomSuffix() (string, error) {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
