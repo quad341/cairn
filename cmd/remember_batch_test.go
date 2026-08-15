@@ -304,6 +304,24 @@ func TestRememberBatchLargeSingleTierBatchSendsOneNotification(t *testing.T) {
 		"a large single-tier batch must send exactly one notification, not one per entry")
 }
 
+// TestRememberBatchAcceptsSlashTopic covers crn-kp9rr.1's batch-file call
+// site (cmd/remember_batch.go's parseBatchManifestLine, the newer sibling of
+// cmd/remember.go's single-entry --topic flag, added in the later --batch-file
+// feature and not enumerated by the original design doc's call-site survey):
+// a slash-delimited topic must be accepted the same way as the single-entry
+// path, and the resulting entry ID must flatten the slash to a dash.
+func TestRememberBatchAcceptsSlashTopic(t *testing.T) {
+	manifest := writeBatchManifest(t,
+		batchManifestLine(t, map[string]any{"body": "batched slash-topic entry", "scope": []string{"agent:test"}, "topic": "team/alpha"}),
+	)
+	store, err := runBatchRemember(t, manifest)
+	require.NoError(t, err)
+
+	entries := requireEntries(t, filepath.Join(store, "agent", "test"), 1)
+	assert.Equal(t, "team/alpha", entries[0].TopicKey, "topic_key must round-trip with its slash intact")
+	assert.NotContains(t, entries[0].ID, "/", "the derived filesystem ID must not contain a raw slash")
+}
+
 // TestRememberBatchEntryFailureDoesNotBlockSiblingCommits is FR-3: one bad
 // line must not stop its siblings from committing, and the plain-text
 // summary must still report both outcomes.

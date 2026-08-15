@@ -265,6 +265,70 @@ func TestEntryCreateRetriesOnIDCollision(t *testing.T) {
 	assert.Equal(t, e.ID, got.ID)
 }
 
+// TestFlattenTopicKeyReplacesSlashesWithDashes covers crn-kp9rr.1: topic_key
+// may now contain slashes (ValidateTopicKey validates each '/'-delimited
+// segment independently), but Entry.ID is a filesystem path component, so
+// flattenTopicKey must replace every slash with a dash before it's ever
+// combined with the random suffix.
+func TestFlattenTopicKeyReplacesSlashesWithDashes(t *testing.T) {
+	assert.Equal(t, "team-alpha", flattenTopicKey("team/alpha"))
+	assert.Equal(t, "a-b-c", flattenTopicKey("a/b/c"))
+	assert.Equal(t, "no-slashes-here", flattenTopicKey("no-slashes-here"))
+}
+
+// TestNewEntryFlattensSlashTopicKeyForID covers crn-kp9rr.1: a slash-bearing
+// topic_key must round-trip verbatim into Entry.TopicKey (the contributor-
+// facing grouping identity, DESIGN.md §6) while Entry.ID -- a filesystem path
+// component -- gets the flattened form instead, mirroring
+// TestNewEntryIDIncludesTopicKeyButIsUnique's non-slash case.
+func TestNewEntryFlattensSlashTopicKeyForID(t *testing.T) {
+	e, err := NewEntry(NewEntryParams{TopicKey: "team/alpha", Scope: []string{"agent:bot"}, Body: "a body", CreatedBy: "agent:bot"})
+	require.NoError(t, err)
+
+	assert.Equal(t, "team/alpha", e.TopicKey, "topic_key must round-trip with its slash intact")
+	assert.True(t, strings.HasPrefix(e.ID, "team-alpha-"), "id must use the flattened topic_key, got %q", e.ID)
+	assert.NotContains(t, e.ID, "/", "id must never contain a raw slash")
+}
+
+// TestEntryCreateSucceedsWithSlashTopicKey covers crn-kp9rr.1: Create must
+// write a slash-bearing-topic_key entry successfully -- BodyPath is derived
+// from the flattened ID, not the raw (slash-bearing) TopicKey, so Create
+// never attempts to create a nested directory named after the topic_key.
+func TestEntryCreateSucceedsWithSlashTopicKey(t *testing.T) {
+	e, err := NewEntry(NewEntryParams{TopicKey: "team/alpha", Scope: []string{"rig:web"}, Body: "body", CreatedBy: "agent:bot"})
+	require.NoError(t, err)
+
+	store := t.TempDir()
+	require.NoError(t, e.Create(store))
+	assert.Equal(t, filepath.Join(store, "rig", "web", e.ID+".md"), e.BodyPath)
+
+	got, err := ParseEntry(e.BodyPath)
+	require.NoError(t, err)
+	assert.Equal(t, "team/alpha", got.TopicKey, "the slash must survive the write/read round trip in frontmatter")
+}
+
+// TestEntryCreateRetriesOnIDCollisionFlattensSlashTopicKey is
+// TestEntryCreateRetriesOnIDCollision's slash-topic_key sibling: the
+// collision-retry branch (remember.go's e.ID = e.TopicKey + "-" + suffix)
+// must also flatten, not just NewEntry's first attempt.
+func TestEntryCreateRetriesOnIDCollisionFlattensSlashTopicKey(t *testing.T) {
+	e, err := NewEntry(NewEntryParams{TopicKey: "team/alpha", Scope: []string{"agent:bot"}, Body: "body", CreatedBy: "agent:bot"})
+	require.NoError(t, err)
+	firstID := e.ID
+
+	store := t.TempDir()
+	dir := scopeDir(store, e.Scope)
+	require.NoError(t, os.MkdirAll(dir, 0o750))
+	collisionPath := filepath.Join(dir, firstID+".md")
+	require.NoError(t, os.WriteFile(collisionPath, []byte("sentinel: pre-existing entry, must not be overwritten"), 0o600))
+
+	require.NoError(t, e.Create(store))
+
+	assert.NotEqual(t, firstID, e.ID)
+	assert.True(t, strings.HasPrefix(e.ID, "team-alpha-"), "retried id must still use the flattened topic_key, got %q", e.ID)
+	assert.NotContains(t, e.ID, "/", "retried id must never contain a raw slash")
+}
+
 func TestEntryCreateOmitsZeroHitCount(t *testing.T) {
 	e, err := NewEntry(NewEntryParams{TopicKey: "t", Body: "body"})
 	require.NoError(t, err)

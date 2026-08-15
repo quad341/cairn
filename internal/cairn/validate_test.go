@@ -142,3 +142,44 @@ func TestValidateSummaryLengthAcceptsAtCap(t *testing.T) {
 
 	assert.NoError(t, ValidateSummaryLength("12345"), "exactly at the cap must be accepted")
 }
+
+// TestValidateTopicKeyAcceptsSlashDelimitedSegments covers crn-kp9rr.1
+// (DESIGN.md §6 Option A): topic_key is a contributor-facing grouping
+// identity that may contain '/'-delimited segments, each still checked by
+// ValidatePathSegment -- e.g. "team/alpha" groups under a namespace the way
+// a scope tag's tier:value does, without being a filesystem path itself
+// (that's flattenTopicKey's job, applied only when deriving Entry.ID).
+func TestValidateTopicKeyAcceptsSlashDelimitedSegments(t *testing.T) {
+	cases := map[string]string{
+		"two segments":     "team/alpha",
+		"three segments":   "a/b/c",
+		"no slash at all":  "plain-topic",
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.NoError(t, ValidateTopicKey(s), "%q must be accepted", s)
+		})
+	}
+}
+
+// TestValidateTopicKeyRejectsInvalidSegment covers the other half of Option
+// A: splitting on '/' must not weaken validation -- every individual segment
+// still has to pass ValidatePathSegment, so a traversal attempt or any other
+// previously-rejected value must still fail regardless of which segment it
+// appears in.
+func TestValidateTopicKeyRejectsInvalidSegment(t *testing.T) {
+	cases := map[string]string{
+		"path traversal segment":         "../evil",
+		"traversal in second segment":    "team/../evil",
+		"empty segment (leading slash)":  "/team",
+		"empty segment (trailing slash)": "team/",
+		"empty segment (doubled slash)":  "team//alpha",
+		"leading dot segment":            "team/.hidden",
+		"whole string empty":             "",
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, ValidateTopicKey(s), "%q must be rejected", s)
+		})
+	}
+}

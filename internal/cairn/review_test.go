@@ -285,6 +285,26 @@ func TestMergeReviewBranchSucceeds(t *testing.T) {
 	assert.Equal(t, "curated-topic", got.TopicKey, "topic_key must be curated to the reviewer's --topic-key, not the contributor's draft value")
 }
 
+// TestMergeReviewBranchAcceptsSlashTopicKey covers crn-kp9rr.1: a reviewer's
+// curated --topic-key may now contain slashes (ValidateTopicKey validates
+// each '/'-delimited segment independently, DESIGN.md §6 Option A) --
+// MergeReviewBranch must accept it and persist it verbatim into the merged
+// entry's frontmatter, mirroring TestMergeReviewBranchSucceeds.
+func TestMergeReviewBranchAcceptsSlashTopicKey(t *testing.T) {
+	store := reviewStore(t)
+	branch, e := fixtureBranch(t, store, "draft-topic", []string{"rig:web"}, "a note about the rig")
+
+	_, err := MergeReviewBranch(t.Context(), store, branch, ReviewMergeOptions{
+		TopicKey: "team/alpha",
+		Bead:     "crn-123",
+	})
+	require.NoError(t, err)
+
+	got, err := Find(t.Context(), store, e.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "team/alpha", got.TopicKey, "a slash-delimited topic_key must be accepted and persisted verbatim")
+}
+
 func TestMergeReviewBranchMessageFallsBackToTopicKeyWithoutBead(t *testing.T) {
 	store := reviewStore(t)
 	branch, _ := fixtureBranch(t, store, "draft-topic", nil, "a note")
