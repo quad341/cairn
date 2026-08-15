@@ -214,10 +214,10 @@ func retryOnBusy(ctx context.Context, fn func() error) error {
 		baseDelay   = 100 * time.Millisecond
 	)
 	var err error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := range maxAttempts {
 		if attempt > 0 {
-			delay := baseDelay * time.Duration(uint(1)<<uint(attempt-1))
-			jitter := time.Duration(rand.Float64()*float64(delay)) - delay/2
+			delay := baseDelay << (attempt - 1)
+			jitter := time.Duration(rand.Float64()*float64(delay)) - delay/2 //nolint:gosec // jitter is timing-only, not security-sensitive
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
