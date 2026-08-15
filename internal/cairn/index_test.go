@@ -632,7 +632,7 @@ func TestIndexStalePropagatesGitInvocationError(t *testing.T) {
 
 	t.Setenv("PATH", t.TempDir()) // git binary now unreachable
 
-	_, err = indexStale(ctx, store)
+	_, _, err = indexStale(ctx, store)
 	require.Error(t, err, `a git invocation failure must propagate as an error, not be silently reported as "not stale" (crn-t250)`)
 }
 
