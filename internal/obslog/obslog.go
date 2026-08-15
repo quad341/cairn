@@ -196,13 +196,20 @@ func (l *Logger) FreshnessCheck(f FreshnessCheckFields) {
 }
 
 // IndexDriftFields is the "index_drift" record, logged once per
-// ensureFreshWith call.
+// ensureFreshWith call. BoundedBudget and BudgetExceeded distinguish a
+// self-heal reindex that ran under the short stale-behind-HEAD deadline from
+// one that ran under the old unbounded (cold-store) budget, and whether the
+// bounded case actually hit its deadline -- the evidence base for deciding
+// later whether a cross-process single-flight collapse is still worth
+// building (crn-f0rb7).
 type IndexDriftFields struct {
-	Stale        bool
-	Reindexed    bool
-	ReindexCount int
-	ReindexError string
-	DurationMS   int64
+	Stale          bool
+	Reindexed      bool
+	ReindexCount   int
+	ReindexError   string
+	DurationMS     int64
+	BoundedBudget  bool
+	BudgetExceeded bool
 }
 
 // IndexDrift logs an "index_drift" record.
@@ -213,6 +220,8 @@ func (l *Logger) IndexDrift(f IndexDriftFields) {
 		slog.Int("reindex_count", f.ReindexCount),
 		slog.String("reindex_error", f.ReindexError),
 		slog.Int64("duration_ms", f.DurationMS),
+		slog.Bool("bounded_budget", f.BoundedBudget),
+		slog.Bool("budget_exceeded", f.BudgetExceeded),
 	)
 }
 

@@ -347,12 +347,36 @@ func ensureFresh(ctx context.Context, store string) error {
 	return ensureFreshWith(ctx, store, Reindex)
 }
 
+// selfHealReindexTimeout bounds ensureFreshWith's synchronous self-heal
+// reindex when the index merely lags HEAD (staleBehindHEAD): without it, a
+// writer holding the entries lock forces the caller through retryOnBusy's
+// full ~33s worst case (6 attempts x up to 5s busy_timeout each, plus
+// backoff) (crn-f0rb7). It does not apply to a cold store
+// (staleNoWatermark) -- see the branch in ensureFreshWith below.
+const selfHealReindexTimeout = 6 * time.Second
+
+// staleReason distinguishes indexStale's two "stale" cases so
+// ensureFreshWith can decide whether selfHealReindexTimeout applies.
+type staleReason int
+
+const (
+	staleNone staleReason = iota
+	// staleNoWatermark: no index built yet, or a partial one left behind by
+	// an interrupted Reindex. There's no existing index to fall back to, so
+	// this case must run to completion under the old unbounded retryOnBusy
+	// budget rather than being capped.
+	staleNoWatermark
+	// staleBehindHEAD: an index exists but a body edit landed outside
+	// cairn's own write path. Bounded by selfHealReindexTimeout.
+	staleBehindHEAD
+)
+
 // ensureFreshWith takes the reindex step as a parameter so tests can count
 // invocations of it directly, since ensureFresh's "no needless reindex"
 // contract can only be verified by call count, not by inspecting state.
 func ensureFreshWith(ctx context.Context, store string, reindex func(context.Context, string) (int, error)) error {
 	start := time.Now()
-	stale, err := indexStale(ctx, store)
+	stale, reason, err := indexStale(ctx, store)
 	if err != nil {
 		return err
 	}
@@ -364,12 +388,22 @@ func ensureFreshWith(ctx context.Context, store string, reindex func(context.Con
 		return nil
 	}
 
-	count, reindexErr := reindex(ctx, store)
+	bounded := reason == staleBehindHEAD
+	reindexCtx := ctx
+	if bounded {
+		var cancel context.CancelFunc
+		reindexCtx, cancel = context.WithTimeout(ctx, selfHealReindexTimeout)
+		defer cancel()
+	}
+
+	count, reindexErr := reindex(reindexCtx, store)
 	fields := obslog.IndexDriftFields{
-		Stale:        true,
-		Reindexed:    reindexErr == nil,
-		ReindexCount: count,
-		DurationMS:   time.Since(start).Milliseconds(),
+		Stale:          true,
+		Reindexed:      reindexErr == nil,
+		ReindexCount:   count,
+		DurationMS:     time.Since(start).Milliseconds(),
+		BoundedBudget:  bounded,
+		BudgetExceeded: bounded && errors.Is(reindexErr, context.DeadlineExceeded),
 	}
 	if reindexErr != nil {
 		fields.ReindexError = redactSecrets(reindexErr.Error())
@@ -381,14 +415,18 @@ func ensureFreshWith(ctx context.Context, store string, reindex func(context.Con
 // IndexStale reports whether the index's watermark commit is behind the
 // store's current git HEAD (or missing/unbuilt) -- an exported wrapper
 // around indexStale so doctor.go's index-drift check can call it (OQ5).
+// Its signature stays (bool, error): the staleReason distinction inside
+// indexStale exists only to let ensureFreshWith bound its self-heal
+// reindex, not to change doctor.go's output contract (NFR-3).
 func IndexStale(ctx context.Context, store string) (bool, error) {
-	return indexStale(ctx, store)
+	stale, _, err := indexStale(ctx, store)
+	return stale, err
 }
 
-func indexStale(ctx context.Context, store string) (bool, error) {
+func indexStale(ctx context.Context, store string) (bool, staleReason, error) {
 	db, err := openDB(store)
 	if err != nil {
-		return false, err
+		return false, staleNone, err
 	}
 	defer func() { _ = db.Close() }()
 
@@ -399,15 +437,18 @@ func indexStale(ctx context.Context, store string) (bool, error) {
 		// exist yet) or a partially-built index left behind by an interrupted
 		// Reindex. Nothing to trust either way, so per NFR-3 ("stale never
 		// served as fresh") the safe default is stale.
-		return true, nil
+		return true, staleNoWatermark, nil
 	}
 
 	head, ok, err := git(ctx, store, "rev-parse", "HEAD")
 	if err != nil {
-		return false, err
+		return false, staleNone, err
 	}
 	if !ok {
-		return false, nil
+		return false, staleNone, nil
 	}
-	return indexed != head, nil
+	if indexed != head {
+		return true, staleBehindHEAD, nil
+	}
+	return false, staleNone, nil
 }
