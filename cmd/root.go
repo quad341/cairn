@@ -56,11 +56,19 @@ func redactArgv(argv []string, cmd *cobra.Command) []string {
 	}
 	out := make([]string, len(argv))
 	for i, a := range argv {
-		if name, val, ok := strings.Cut(a, "="); ok && strings.HasPrefix(a, "-") && redact[val] {
+		name, val, hasEq := strings.Cut(a, "=")
+		switch {
+		case hasEq && strings.HasPrefix(a, "-") && redact[val]:
 			out[i] = name + "=«redacted»"
-		} else if redact[a] {
+		case !strings.HasPrefix(a, "--") && strings.HasPrefix(a, "-") && len(a) > 2 && redact[a[2:]]:
+			// POSIX/GNU shorthand-combined form: letter and value concatenated
+			// with no separator (e.g. -tSECRET). Neither case above catches
+			// this -- it has no "=" and the whole token isn't itself a
+			// redact-set value, only its suffix (after the shorthand letter) is.
+			out[i] = a[:2] + "«redacted»"
+		case redact[a]:
 			out[i] = "«redacted»"
-		} else {
+		default:
 			out[i] = a
 		}
 	}
