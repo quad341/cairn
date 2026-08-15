@@ -41,12 +41,13 @@ type FreshnessInfo struct {
 
 // PrimeItem is one entry itemized in a PrimeResult.
 type PrimeItem struct {
-	ID        string        `json:"id"`
-	TopicKey  string        `json:"topic_key"`
-	Title     string        `json:"title"`
-	Summary   string        `json:"summary,omitempty"`
-	HitCount  int           `json:"hit_count"`
-	Freshness FreshnessInfo `json:"freshness"`
+	ID        string         `json:"id"`
+	TopicKey  string         `json:"topic_key"`
+	Title     string         `json:"title"`
+	Summary   string         `json:"summary,omitempty"`
+	HitCount  int            `json:"hit_count"`
+	Freshness FreshnessInfo  `json:"freshness"`
+	Conflict  *TopicConflict `json:"conflict,omitempty"`
 }
 
 // TopicCount is one topic_key's entry count in a PrimeResult's index view
@@ -65,17 +66,18 @@ type TopicCount struct {
 // the byte budget let through into Items (crn-0vqk FR-2, FR-3; crn-3476
 // FR-1, FR-2).
 type PrimeResult struct {
-	Store          string       `json:"store"`
-	Identity       []string     `json:"identity"`
-	Items          []PrimeItem  `json:"items"`
-	TotalVisible   int          `json:"total_visible"`
-	TopicCounts    []TopicCount `json:"topic_counts"`
-	TruncatedCount int          `json:"truncated_count"`
-	FreshCount     int          `json:"fresh_count"`
-	StaleCount     int          `json:"stale_count"`
-	UnknownCount   int          `json:"unknown_count"`
-	ChecksCapped   bool         `json:"checks_capped"`
-	Warnings       []string     `json:"warnings"`
+	Store          string          `json:"store"`
+	Identity       []string        `json:"identity"`
+	Items          []PrimeItem     `json:"items"`
+	TotalVisible   int             `json:"total_visible"`
+	TopicCounts    []TopicCount    `json:"topic_counts"`
+	TruncatedCount int             `json:"truncated_count"`
+	FreshCount     int             `json:"fresh_count"`
+	StaleCount     int             `json:"stale_count"`
+	UnknownCount   int             `json:"unknown_count"`
+	ChecksCapped   bool            `json:"checks_capped"`
+	Warnings       []string        `json:"warnings"`
+	Conflicts      []TopicConflict `json:"conflicts,omitempty"`
 }
 
 // Prime computes an agent's always-in-context payload: a budget-bounded,
@@ -91,7 +93,15 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 	if err != nil {
 		return PrimeResult{}, err
 	}
-	visible := visibleFrom(ctx, all, identity)
+	resolution := resolveVisibleFrom(ctx, all, identity)
+	visible := make([]*Entry, len(resolution.Entries))
+	conflictsByID := make(map[string]*TopicConflict)
+	for i, resolved := range resolution.Entries {
+		visible[i] = resolved.Entry
+		if resolved.Conflict != nil {
+			conflictsByID[resolved.Entry.ID] = resolved.Conflict
+		}
+	}
 
 	ordered := make([]*Entry, len(visible))
 	copy(ordered, visible)
@@ -119,6 +129,7 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 		TotalVisible: len(ordered),
 		TopicCounts:  topicCounts(visible),
 		Warnings:     scopeMismatchWarnings(all, visible, identity),
+		Conflicts:    resolution.Conflicts,
 	}
 
 	budget := &freshnessBudget{remaining: maxFreshnessChecksPerPrime}
@@ -148,6 +159,7 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 			Summary:   truncateRunes(e.Summary, summaryCap),
 			HitCount:  e.HitCount,
 			Freshness: FreshnessInfo{Status: status, Detail: detail},
+			Conflict:  conflictsByID[e.ID],
 		}
 		// Once an entry doesn't fit in the remaining budget, stop itemizing
 		// entirely rather than skipping ahead to try later, lower-priority
@@ -310,6 +322,7 @@ func RenderPrimeText(r PrimeResult) string {
 			if it.Summary != "" {
 				fmt.Fprintf(&b, "      %s\n", it.Summary)
 			}
+			renderPrimeConflict(&b, it.Conflict)
 		}
 		if r.TruncatedCount > 0 {
 			fmt.Fprintf(&b, "  ... %d more entr%s truncated by the byte budget\n", r.TruncatedCount, plural(r.TruncatedCount))
@@ -340,6 +353,12 @@ func RenderPrimeText(r PrimeResult) string {
 		"guessing from its age. Skip the anchor only when there is no source file to point at\n" +
 		"(operator preferences, facts about people).\n")
 	return b.String()
+}
+
+func renderPrimeConflict(b *strings.Builder, conflict *TopicConflict) {
+	if conflict != nil {
+		fmt.Fprintf(b, "      conflict: %s revisions: %s\n", conflict.Reason, strings.Join(conflict.EntryIDs, ", "))
+	}
 }
 
 // scopeDimensionPrefixes are the scope-tag prefixes Visible does subset

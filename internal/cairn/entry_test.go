@@ -805,7 +805,7 @@ func TestVisibleShadowTiebreakVerifiedAt(t *testing.T) {
 	assert.False(t, ids["v1"], "the earlier-verified entry must be shadowed")
 }
 
-func TestVisibleShadowTiebreakID(t *testing.T) {
+func TestVisibleRetainsIndistinguishableRevisions(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "rig/alpha/c2.md", tiebreakHighID)
 	writeFile(t, dir, "rig/alpha/c1.md", tiebreakLowID)
@@ -817,8 +817,97 @@ func TestVisibleShadowTiebreakID(t *testing.T) {
 	for _, e := range vs {
 		ids[e.ID] = true
 	}
-	assert.True(t, ids["c1"], "the lexicographically lower id must win when fully tied")
-	assert.False(t, ids["c2"], "the higher id must be shadowed")
+	assert.True(t, ids["c1"], "one indistinguishable revision must remain visible")
+	assert.True(t, ids["c2"], "ID order must not fabricate a winner")
+}
+
+func TestResolveTopicsMeaningfulPrecedenceProducesSingleWinner(t *testing.T) {
+	tests := []struct {
+		name       string
+		candidates []*Entry
+		winner     string
+	}{
+		{
+			name: "override",
+			candidates: []*Entry{
+				{ID: "old", TopicKey: "t", Scope: []string{"rig:x"}, VerifiedAt: "2026-08-15", CreatedAt: "2026-08-15"},
+				{ID: "new", TopicKey: "t", Scope: []string{"rig:x"}, OverriddenDuplicateOf: "old"},
+			},
+			winner: "new",
+		},
+		{
+			name: "scope specificity",
+			candidates: []*Entry{
+				{ID: "rig", TopicKey: "t", Scope: []string{"rig:x"}},
+				{ID: "cross", TopicKey: "t", Scope: []string{"rig:x", "role:y"}},
+			},
+			winner: "cross",
+		},
+		{
+			name: "verified at",
+			candidates: []*Entry{
+				{ID: "early", TopicKey: "t", Scope: []string{"rig:x"}, VerifiedAt: "2026-08-14"},
+				{ID: "late", TopicKey: "t", Scope: []string{"rig:x"}, VerifiedAt: "2026-08-15"},
+			},
+			winner: "late",
+		},
+		{
+			name: "created at",
+			candidates: []*Entry{
+				{ID: "early", TopicKey: "t", Scope: []string{"rig:x"}, CreatedAt: "2026-08-15T01:00:00Z"},
+				{ID: "late", TopicKey: "t", Scope: []string{"rig:x"}, CreatedAt: "2026-08-15T02:00:00Z"},
+			},
+			winner: "late",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolution := ResolveTopics(tt.candidates)
+			require.Len(t, resolution.Entries, 1)
+			assert.Equal(t, tt.winner, resolution.Entries[0].Entry.ID)
+			assert.Nil(t, resolution.Entries[0].Conflict)
+			assert.Empty(t, resolution.Conflicts)
+		})
+	}
+}
+
+func TestResolveTopicsAnnotatesEveryIndistinguishableRevision(t *testing.T) {
+	b := &Entry{ID: "b", TopicKey: "t", Scope: []string{"rig:x"}, CreatedAt: "2026-08-15"}
+	a := &Entry{ID: "a", TopicKey: "t", Scope: []string{"rig:x"}, CreatedAt: "2026-08-15"}
+
+	resolution := ResolveTopics([]*Entry{b, a})
+
+	require.Len(t, resolution.Entries, 2)
+	require.Len(t, resolution.Conflicts, 1)
+	want := TopicConflict{TopicKey: "t", EntryIDs: []string{"a", "b"}, Reason: "indistinguishable"}
+	assert.Equal(t, want, resolution.Conflicts[0])
+	for _, resolved := range resolution.Entries {
+		require.NotNil(t, resolved.Conflict, "each contested hit must carry its conflict")
+		assert.Equal(t, want, *resolved.Conflict)
+	}
+}
+
+func TestResolveTopicsConflictContainsOnlyTopRankedTies(t *testing.T) {
+	topA := &Entry{ID: "top-a", TopicKey: "t", Scope: []string{"rig:x", "role:y"}, CreatedAt: "2026-08-15"}
+	lower := &Entry{ID: "lower", TopicKey: "t", Scope: []string{"rig:x"}, CreatedAt: "2026-08-16"}
+	topB := &Entry{ID: "top-b", TopicKey: "t", Scope: []string{"rig:x", "role:y"}, CreatedAt: "2026-08-15"}
+
+	resolution := ResolveTopics([]*Entry{topA, lower, topB})
+	require.Len(t, resolution.Entries, 2)
+	require.Len(t, resolution.Conflicts, 1)
+	assert.Equal(t, []string{"top-a", "top-b"}, resolution.Conflicts[0].EntryIDs)
+	for _, resolved := range resolution.Entries {
+		assert.NotEqual(t, "lower", resolved.Entry.ID, "lower specificity must be suppressed before conflict detection")
+	}
+}
+
+func TestResolveTopicsUntopicedEntriesNeverConflict(t *testing.T) {
+	resolution := ResolveTopics([]*Entry{{ID: "a"}, {ID: "b"}})
+	require.Len(t, resolution.Entries, 2)
+	assert.Empty(t, resolution.Conflicts)
+	assert.Nil(t, resolution.Entries[0].Conflict)
+	assert.Nil(t, resolution.Entries[1].Conflict)
 }
 
 func TestVisibleUntopicedNeverShadow(t *testing.T) {
@@ -949,12 +1038,15 @@ func TestMoreSpecificReasonCreatedAt(t *testing.T) {
 	assert.Equal(t, "created_at", rule)
 }
 
-func TestMoreSpecificReasonIDTiebreak(t *testing.T) {
+func TestMoreSpecificReasonIndistinguishable(t *testing.T) {
 	a := &Entry{ID: "a", Scope: []string{"rig:x"}}
 	b := &Entry{ID: "b", Scope: []string{"rig:x"}}
 	more, rule := moreSpecificReason(a, b)
-	assert.True(t, more, "lower ID must win the final tiebreak")
-	assert.Equal(t, "id_tiebreak", rule)
+	assert.False(t, more, "an unrelated ID suffix must not fabricate authority")
+	assert.Equal(t, "indistinguishable", rule)
+	more, rule = moreSpecificReason(b, a)
+	assert.False(t, more)
+	assert.Equal(t, "indistinguishable", rule)
 }
 
 func TestMoreSpecificDelegatesToReason(t *testing.T) {
@@ -967,7 +1059,7 @@ func TestMoreSpecificDelegatesToReason(t *testing.T) {
 // TestMoreSpecificReasonOverrideWinsRegardlessOfChain covers crn-3476 FR-6
 // (crn-h5zx): an explicit --force correction must win shadow resolution
 // unconditionally via OverriddenDuplicateOf, checked before the existing
-// scope_size/verified_at/created_at/id_tiebreak chain -- so it still wins
+// scope_size/verified_at/created_at chain -- so it still wins
 // even when it loses every existing chain key (smaller scope, earlier
 // verified_at, earlier created_at, and a lexicographically higher id).
 func TestMoreSpecificReasonOverrideWinsRegardlessOfChain(t *testing.T) {
@@ -1004,11 +1096,9 @@ func TestMoreSpecificReasonOverrideCycleGuardFallsBackToChain(t *testing.T) {
 
 // TestVisibleShadowRespectsExplicitOverride is crn-h5zx's real-world shape
 // end-to-end: a --force correction (z-correction) and the entry it corrects
-// (a) share a topic_key and scope, so ordinarily they'd only be told apart
-// by the existing chain -- rigged here so id_tiebreak would pick the WRONG
-// (older, corrected) entry absent FR-6. OverriddenDuplicateOf must win
-// regardless, and since moreSpecific is visibleFrom's one call site, this
-// proves prime/recall/get all inherit the fix uniformly.
+// (a) share a topic_key and scope, so absent FR-6 they would be surfaced as
+// indistinguishable. OverriddenDuplicateOf must select the correction
+// regardless, and the shared resolver makes every read path inherit it.
 func TestVisibleShadowRespectsExplicitOverride(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "rig/alpha/a.md",

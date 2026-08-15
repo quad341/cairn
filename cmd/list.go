@@ -13,11 +13,12 @@ import (
 // like status, has no query-context metadata worth echoing beyond what the
 // topic argument itself already carries.
 type ListResult struct {
-	ID        string              `json:"id"`
-	Title     string              `json:"title"`
-	Summary   string              `json:"summary"`
-	Scope     []string            `json:"scope"`
-	Freshness cairn.FreshnessInfo `json:"freshness"`
+	ID        string               `json:"id"`
+	Title     string               `json:"title"`
+	Summary   string               `json:"summary"`
+	Scope     []string             `json:"scope"`
+	Freshness cairn.FreshnessInfo  `json:"freshness"`
+	Conflict  *cairn.TopicConflict `json:"conflict,omitempty"`
 }
 
 var listCmd = &cobra.Command{
@@ -51,6 +52,7 @@ var listCmd = &cobra.Command{
 					Summary:   r.Summary,
 					Scope:     nonNil(r.Scope),
 					Freshness: cairn.FreshnessInfo{Status: r.FreshnessState, Detail: r.FreshnessDetail},
+					Conflict:  r.Conflict,
 				})
 			}
 			return emitJSON(cmd.OutOrStdout(), nonNil(items))
@@ -65,6 +67,9 @@ var listCmd = &cobra.Command{
 			fmt.Printf("%s: %s\n", r.ID, r.Title)
 			fmt.Printf("  summary: %s\n", r.Summary)
 			fmt.Printf("  scope: %s  freshness: %s -- %s\n", scope, r.FreshnessState, r.FreshnessDetail)
+			if r.Conflict != nil {
+				fmt.Printf("  conflict: %s revisions: %s\n", r.Conflict.Reason, strings.Join(r.Conflict.EntryIDs, ", "))
+			}
 		}
 		return nil
 	},

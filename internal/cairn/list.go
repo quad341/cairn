@@ -18,29 +18,27 @@ type ListingEntry struct {
 	Scope           []string
 	FreshnessState  string
 	FreshnessDetail string
+	Conflict        *TopicConflict
 }
 
 // ListByTopic returns the identity-scoped visible winner(s) for an exact
-// topic key (FR-1, FR-3, FR-4, FR-6). Reuses Visible() unmodified -- the
-// same identity-filter-then-shadow call map/prime already make -- so a
-// topic-key match here can never disagree with what map/prime show for the
-// same identity. Because Visible() applies shadow()'s topic_key precedence
-// before returning, a non-empty topicKey yields at most one match; only
-// topicKey == "" (the untopiced bucket) can yield many, since entries
-// without a topic_key never shadow each other. Bounded to the matched
-// result set only (NFR-1): body parsing scales with len(matches), never
-// with store size. Never stamps hit_count/last_recalled_at (resolved open
-// question 2) -- only a subsequent cairn get <id> is a confirmed recall.
+// topic key (FR-1, FR-3, FR-4, FR-6). It uses the same ResolveTopics path as
+// prime, retaining and annotating every top-ranked revision when meaningful
+// precedence cannot select one. Bounded to the matched result set only
+// (NFR-1): body parsing scales with len(matches), never with store size.
+// Never stamps hit_count/last_recalled_at (resolved open question 2) -- only
+// a subsequent cairn get <id> is a confirmed recall.
 func ListByTopic(ctx context.Context, store, topicKey string, identity []string) ([]ListingEntry, error) {
-	visible, err := Visible(ctx, store, identity)
+	all, err := Status(ctx, store)
 	if err != nil {
 		return nil, err
 	}
+	resolution := resolveVisibleFrom(ctx, all, identity)
 
-	var matches []*Entry
-	for _, e := range visible {
-		if e.TopicKey == topicKey {
-			matches = append(matches, e)
+	var matches []ResolvedEntry
+	for _, resolved := range resolution.Entries {
+		if resolved.Entry.TopicKey == topicKey {
+			matches = append(matches, resolved)
 		}
 	}
 	if len(matches) == 0 {
@@ -49,7 +47,7 @@ func ListByTopic(ctx context.Context, store, topicKey string, identity []string)
 
 	ids := make([]string, len(matches))
 	for i, m := range matches {
-		ids[i] = m.ID
+		ids[i] = m.Entry.ID
 	}
 
 	db, err := openDB(store)
@@ -65,7 +63,7 @@ func ListByTopic(ctx context.Context, store, topicKey string, identity []string)
 
 	out := make([]ListingEntry, 0, len(matches))
 	for _, m := range matches {
-		full, err := ParseEntry(resolveBodyPath(store, paths[m.ID]))
+		full, err := ParseEntry(resolveBodyPath(store, paths[m.Entry.ID]))
 		if err != nil {
 			return nil, err
 		}
@@ -74,9 +72,10 @@ func ListByTopic(ctx context.Context, store, topicKey string, identity []string)
 			ID:              full.ID,
 			Title:           full.Title,
 			Summary:         full.Summary,
-			Scope:           m.Scope,
+			Scope:           m.Entry.Scope,
 			FreshnessState:  state,
 			FreshnessDetail: detail,
+			Conflict:        m.Conflict,
 		})
 	}
 	return out, nil
