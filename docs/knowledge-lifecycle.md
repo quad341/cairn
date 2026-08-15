@@ -75,6 +75,12 @@ agent/<agent>/     # one agent, private
   `agent:<id>` tag from the resolved identity) — the narrowest relevance tier.
 - `--topic` is a *hint* for the canonical topic key; a curator normalizes it when
   the entry is promoted to a shared scope (consistency needs one naming authority).
+- `--title` and `--summary` are the retrieval surface and should be authored by
+  the calling model. A title is a situational claim/action, not a category label:
+  `Merged is not deployed — check the artifact on PATH`, not `Deployment notes`.
+  Omitted values remain supported, but are derived from the body and persisted as
+  `title_source = "derived"` / `summary_source = "derived"` so read paths can
+  treat them as lower-quality triggers. Explicit values are marked `authored`.
 - Bodies are the **source of truth** — human-readable, git-versioned, diffable,
   reviewable like code. The SQLite index is a rebuildable view, never the truth.
 

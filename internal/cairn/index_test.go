@@ -20,7 +20,7 @@ func TestReindex(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
-	body := "+++\nid = \"a\"\ntitle = \"A\"\ntopic_key = \"t/a\"\nscope = [\"rig:alpha\"]\n+++\nbody\n"
+	body := "+++\nid = \"a\"\ntitle = \"A\"\ntitle_source = \"authored\"\nsummary = \"S\"\nsummary_source = \"derived\"\ntopic_key = \"t/a\"\nscope = [\"rig:alpha\"]\n+++\nbody\n"
 	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"), []byte(body), 0o600))
 
 	n, err := Reindex(ctx, store)
@@ -31,10 +31,21 @@ func TestReindex(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	var id, topic string
-	require.NoError(t, db.QueryRowContext(ctx, "SELECT id, topic_key FROM entries").Scan(&id, &topic))
+	var id, topic, titleSource, summarySource string
+	require.NoError(t, db.QueryRowContext(ctx,
+		"SELECT id, topic_key, title_source, summary_source FROM entries",
+	).Scan(&id, &topic, &titleSource, &summarySource))
 	assert.Equal(t, "a", id)
 	assert.Equal(t, "t/a", topic)
+	assert.Equal(t, MetadataSourceAuthored, titleSource)
+	assert.Equal(t, MetadataSourceDerived, summarySource)
+
+	visible, err := Status(ctx, store)
+	require.NoError(t, err)
+	require.Len(t, visible, 1)
+	assert.Equal(t, MetadataSourceAuthored, visible[0].TitleSource,
+		"index-backed read paths must receive title provenance")
+	assert.Equal(t, MetadataSourceDerived, visible[0].SummarySource)
 
 	var tag string
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT tag FROM entry_tags WHERE entry_id = 'a'").Scan(&tag))
@@ -380,10 +391,12 @@ CREATE TABLE entry_tags (entry_id TEXT, tag TEXT);
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 
-	var repo, paths, spec, createdAt string
+	var repo, paths, spec, createdAt, titleSource, summarySource string
 	require.NoError(t, db.QueryRowContext(ctx,
-		"SELECT anchor_repo, anchor_paths, anchor_spec, created_at FROM entries WHERE id = 'a'",
-	).Scan(&repo, &paths, &spec, &createdAt))
+		"SELECT anchor_repo, anchor_paths, anchor_spec, created_at, title_source, summary_source FROM entries WHERE id = 'a'",
+	).Scan(&repo, &paths, &spec, &createdAt, &titleSource, &summarySource))
+	assert.Empty(t, titleSource, "legacy entry without provenance migrates as unknown, not fabricated authored/derived")
+	assert.Empty(t, summarySource)
 }
 
 func TestEnsureFreshDelegatesToReindex(t *testing.T) {

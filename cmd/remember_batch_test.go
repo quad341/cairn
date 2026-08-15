@@ -511,6 +511,7 @@ func TestRememberBatchJSONOutputMatchesBatchResultShape(t *testing.T) {
 	require.Len(t, result.Entries, 2)
 	assert.Equal(t, 2, result.Succeeded)
 	assert.Equal(t, 0, result.Failed)
+	assert.Equal(t, 2, result.DerivedMetadata)
 
 	priv := result.Entries[0]
 	assert.NotEmpty(t, priv.ID)
@@ -518,6 +519,8 @@ func TestRememberBatchJSONOutputMatchesBatchResultShape(t *testing.T) {
 	assert.NotEmpty(t, priv.Commit, "a private-tier batch entry must report a commit sha")
 	assert.Empty(t, priv.ReviewBranch)
 	assert.Empty(t, priv.Reviewer)
+	assert.Equal(t, cairn.MetadataSourceDerived, priv.Metadata.TitleSource)
+	require.NotEmpty(t, priv.Metadata.Warnings)
 
 	shared := result.Entries[1]
 	assert.NotEmpty(t, shared.ID)

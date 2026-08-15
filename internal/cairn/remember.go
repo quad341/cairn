@@ -15,6 +15,14 @@ import (
 	"github.com/quad341/cairn/internal/obslog"
 )
 
+const (
+	// MetadataSourceAuthored marks a retrieval field supplied explicitly by
+	// the caller rather than synthesized from the entry body.
+	MetadataSourceAuthored = "authored"
+	// MetadataSourceDerived marks a retrieval field synthesized from the body.
+	MetadataSourceDerived = "derived"
+)
+
 // NewEntryParams holds NewEntry's inputs. An options struct rather than a
 // growing positional-arg list: the original 4 positional args (topicKey,
 // scope, body, createdBy) would otherwise grow to 7 for crn-lzn4.1.1's
@@ -54,13 +62,16 @@ func NewEntry(p NewEntryParams) (*Entry, error) {
 	// entry's entire body (titleAndSummary), which has no cap of its own
 	// (crn-3476 FR-3, NFR-3).
 	title, summary := p.Title, p.Summary
+	titleSource, summarySource := MetadataSourceAuthored, MetadataSourceAuthored
 	if title == "" || summary == "" {
 		autoTitle, autoSummary := titleAndSummary(p.Body)
 		if title == "" {
 			title = truncateRunes(autoTitle, titleCap)
+			titleSource = MetadataSourceDerived
 		}
 		if summary == "" {
 			summary = truncateRunes(autoSummary, summaryCap)
+			summarySource = MetadataSourceDerived
 		}
 	}
 
@@ -70,15 +81,17 @@ func NewEntry(p NewEntryParams) (*Entry, error) {
 	}
 
 	return &Entry{
-		ID:        flattenTopicKey(p.TopicKey) + "-" + suffix,
-		Title:     title,
-		Summary:   summary,
-		TopicKey:  p.TopicKey,
-		Scope:     p.Scope,
-		Anchor:    anchor,
-		CreatedBy: p.CreatedBy,
-		CreatedAt: time.Now().Format(time.RFC3339),
-		Body:      p.Body,
+		ID:            flattenTopicKey(p.TopicKey) + "-" + suffix,
+		Title:         title,
+		TitleSource:   titleSource,
+		Summary:       summary,
+		SummarySource: summarySource,
+		TopicKey:      p.TopicKey,
+		Scope:         p.Scope,
+		Anchor:        anchor,
+		CreatedBy:     p.CreatedBy,
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		Body:          p.Body,
 	}, nil
 }
 

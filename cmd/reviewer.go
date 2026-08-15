@@ -45,6 +45,7 @@ func requestReview(cmd *cobra.Command, e *cairn.Entry, scope []string) error {
 			Scope:        nonNil(e.Scope),
 			ReviewBranch: branch,
 			Reviewer:     reviewer,
+			Metadata:     metadataQuality(e),
 		})
 	}
 	fmt.Printf("mailed reviewer: %s\n", reviewer)

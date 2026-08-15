@@ -28,7 +28,9 @@ const entriesSchema = `
 CREATE TABLE IF NOT EXISTS entries (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
+  title_source TEXT,
   summary TEXT,
+  summary_source TEXT,
   type TEXT,
   topic_key TEXT,
   body_path TEXT NOT NULL,
@@ -78,6 +80,8 @@ var entriesMigrationCols = []struct{ name, def string }{
 	{"promoted_bead_id", "TEXT"},
 	{"last_recalled_at", "TEXT"},
 	{"overridden_duplicate_of", "TEXT"},
+	{"title_source", "TEXT"},
+	{"summary_source", "TEXT"},
 }
 
 // IndexPath is the rebuildable SQLite index (gitignored; not source of truth).
@@ -249,14 +253,15 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO entries (
-				id, title, summary, type, topic_key, body_path,
+				id, title, title_source, summary, summary_source, type, topic_key, body_path,
 				anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
 				verified_at, created_by, created_at, hit_count,
 				kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at,
 				overridden_duplicate_of
-			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(id) DO UPDATE SET
-				title=excluded.title, summary=excluded.summary, type=excluded.type,
+				title=excluded.title, title_source=excluded.title_source,
+				summary=excluded.summary, summary_source=excluded.summary_source, type=excluded.type,
 				topic_key=excluded.topic_key, body_path=excluded.body_path,
 				anchor_type=excluded.anchor_type, anchor_repo=excluded.anchor_repo,
 				anchor_paths=excluded.anchor_paths, anchor_spec=excluded.anchor_spec,
@@ -272,7 +277,7 @@ func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) 
 			// overridden_duplicate_of is body-sourced (like created_at), not
 			// index-only, so unlike those it IS in the UPDATE SET -- a --force
 			// correction edited into the body must overwrite a stale indexed copy.
-			e.ID, e.Title, e.Summary, e.Type, e.TopicKey, e.BodyPath,
+			e.ID, e.Title, e.TitleSource, e.Summary, e.SummarySource, e.Type, e.TopicKey, e.BodyPath,
 			e.Anchor.Type, e.Anchor.Repo, string(anchorPaths), e.Anchor.Spec, e.Anchor.Fingerprint,
 			e.VerifiedAt, e.CreatedBy, e.CreatedAt, e.HitCount,
 			e.Kind, autoActionable, e.RecurrenceCount, e.PromotedBeadID, e.LastRecalledAt,

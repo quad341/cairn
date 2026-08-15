@@ -60,17 +60,19 @@ type Anchor struct {
 
 // Entry is one unit of knowledge.
 type Entry struct {
-	ID         string   `toml:"id"`
-	Title      string   `toml:"title"`
-	Summary    string   `toml:"summary,omitempty"`
-	Type       string   `toml:"type,omitempty"`
-	TopicKey   string   `toml:"topic_key,omitempty"`
-	Scope      []string `toml:"scope,omitempty"` // tags, e.g. ["rig:web"]
-	Anchor     Anchor   `toml:"anchor"`
-	VerifiedAt string   `toml:"verified_at,omitempty"`
-	CreatedBy  string   `toml:"created_by,omitempty"`
-	CreatedAt  string   `toml:"created_at,omitempty"`
-	HitCount   int      `toml:"hit_count,omitzero"`
+	ID            string   `toml:"id"`
+	Title         string   `toml:"title"`
+	TitleSource   string   `toml:"title_source,omitempty"`
+	Summary       string   `toml:"summary,omitempty"`
+	SummarySource string   `toml:"summary_source,omitempty"`
+	Type          string   `toml:"type,omitempty"`
+	TopicKey      string   `toml:"topic_key,omitempty"`
+	Scope         []string `toml:"scope,omitempty"` // tags, e.g. ["rig:web"]
+	Anchor        Anchor   `toml:"anchor"`
+	VerifiedAt    string   `toml:"verified_at,omitempty"`
+	CreatedBy     string   `toml:"created_by,omitempty"`
+	CreatedAt     string   `toml:"created_at,omitempty"`
+	HitCount      int      `toml:"hit_count,omitzero"`
 
 	Kind            string `toml:"kind,omitempty"`             // "" (note, default) | "remediation"
 	AutoActionable  bool   `toml:"auto_actionable,omitempty"`  // only for Kind=="remediation"; reviewer-granted, not self-declared
@@ -1083,7 +1085,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 	}
 
 	rows, err := db.QueryContext(ctx, `SELECT
-		id, title, summary, hit_count, topic_key, verified_at, created_at,
+		id, title, title_source, summary, summary_source, hit_count, topic_key, verified_at, created_at,
 		anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
 		overridden_duplicate_of
 		FROM entries ORDER BY id`)
@@ -1097,7 +1099,8 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 		e := &Entry{}
 		var anchorPaths string
 		if err := rows.Scan(
-			&e.ID, &e.Title, &e.Summary, &e.HitCount, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt,
+			&e.ID, &e.Title, &e.TitleSource, &e.Summary, &e.SummarySource,
+			&e.HitCount, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt,
 			&e.Anchor.Type, &e.Anchor.Repo, &anchorPaths, &e.Anchor.Spec, &e.Anchor.Fingerprint,
 			&e.OverriddenDuplicateOf,
 		); err != nil {

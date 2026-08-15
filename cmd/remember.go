@@ -26,9 +26,9 @@ func init() {
 	rememberCmd.Flags().String("file", "",
 		"read the entry body from this file, instead of a positional argument or piped stdin")
 	rememberCmd.Flags().String("title", "",
-		"explicit title (default: auto-derived from the body)")
+		"authored situational claim/action for retrieval (strongly expected; omission is marked derived)")
 	rememberCmd.Flags().String("summary", "",
-		"explicit summary (default: auto-derived from the body)")
+		"authored retrieval summary explaining when/why the entry applies (strongly expected; omission is marked derived)")
 	rememberCmd.Flags().String("anchor-repo", "",
 		`git repo the --anchor-path values are tracked in (with --anchor-path, builds a "files" source anchor)`)
 	rememberCmd.Flags().StringArray("anchor-path", nil,
@@ -113,6 +113,7 @@ var rememberCmd = &cobra.Command{
 			verifyAnchor(cmd, e)
 		}
 		nudgeIfUnanchored(cmd, e)
+		nudgeIfDerivedMetadata(cmd, e)
 
 		matched, isRecurrence, err := recurrenceMatch(cmd, e)
 		if err != nil {
@@ -156,9 +157,10 @@ var rememberCmd = &cobra.Command{
 			}
 			if wantsJSON(cmd) {
 				return emitJSON(cmd.OutOrStdout(), RememberResult{
-					ID:     e.ID,
-					Scope:  nonNil(e.Scope),
-					Commit: sha,
+					ID:       e.ID,
+					Scope:    nonNil(e.Scope),
+					Commit:   sha,
+					Metadata: metadataQuality(e),
 				})
 			}
 			fmt.Printf("%s\n", sha)
@@ -178,11 +180,48 @@ var rememberCmd = &cobra.Command{
 // reported through --json's error envelope instead (CategoryConflict), not
 // this success shape.
 type RememberResult struct {
-	ID           string   `json:"id"`
-	Scope        []string `json:"scope"`
-	Commit       string   `json:"commit,omitempty"`
-	ReviewBranch string   `json:"review_branch,omitempty"`
-	Reviewer     string   `json:"reviewer,omitempty"`
+	ID           string          `json:"id"`
+	Scope        []string        `json:"scope"`
+	Commit       string          `json:"commit,omitempty"`
+	ReviewBranch string          `json:"review_branch,omitempty"`
+	Reviewer     string          `json:"reviewer,omitempty"`
+	Metadata     MetadataQuality `json:"metadata"`
+}
+
+// MetadataQuality makes remember's persisted authorship provenance visible
+// to structured callers at write time. Warnings is empty only when both
+// retrieval-surface fields were authored explicitly.
+type MetadataQuality struct {
+	TitleSource   string   `json:"title_source"`
+	SummarySource string   `json:"summary_source"`
+	Warnings      []string `json:"warnings,omitempty"`
+}
+
+func metadataQuality(e *cairn.Entry) MetadataQuality {
+	q := MetadataQuality{TitleSource: e.TitleSource, SummarySource: e.SummarySource}
+	if e.TitleSource == cairn.MetadataSourceDerived {
+		q.Warnings = append(q.Warnings,
+			"title was derived from the body; pass --title as a situational claim/action, not a category label or copied first sentence")
+	}
+	if e.SummarySource == cairn.MetadataSourceDerived {
+		q.Warnings = append(q.Warnings,
+			"summary was derived from the body; pass --summary explaining when and why this knowledge applies")
+	}
+	return q
+}
+
+func nudgeIfDerivedMetadata(cmd *cobra.Command, e *cairn.Entry) {
+	if wantsJSON(cmd) {
+		return
+	}
+	q := metadataQuality(e)
+	for _, warning := range q.Warnings {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
+	}
+	if len(q.Warnings) > 0 {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+			"         example: --title 'Merged is not deployed — check the artifact on PATH'")
+	}
 }
 
 // rememberBody resolves the entry body from exactly one of three sources: a
