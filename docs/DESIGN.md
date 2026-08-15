@@ -74,6 +74,9 @@ An identity is a set of tags, e.g. `{rig:web, role:investigator, id:inv-3}`.
 The union is a single identity-parameterized query. On conflict for the same
 `topic_key`, **precedence = specificity** (more tags wins) — a `{rig, role}`
 entry shadows a `{rig}` entry shadows a global one, CSS-style.
+After specificity, newer verification and creation timestamps break ties.
+If every meaningful signal ties, cairn returns all top revisions explicitly
+marked `indistinguishable`; entry IDs order the report but never select truth.
 
 Scope is stored as a tags relation from the start, but most entries carry 0–1
 tags in practice; cross-cutting `{rig, role}` entries are supported without a

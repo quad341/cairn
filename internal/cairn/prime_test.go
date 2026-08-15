@@ -337,8 +337,8 @@ func TestPrimeCapsFreshnessChecksAndFailsTowardUnknown(t *testing.T) {
 // index view must include a per-topic_key breakdown with counts, restoring
 // DESIGN.md §5's "topic tree with counts." The breakdown is computed over
 // the same post-shadow visible set as TotalVisible (NFR-2), so its counts
-// must always sum to TotalVisible: a1/a2 share topic-a and so collapse to a
-// single shadow winner (DESIGN.md §3) like any other visible-set member: an
+// must always sum to TotalVisible: a1/a2 share topic-a but have no meaningful
+// precedence signal, so both remain visible as an explicit conflict. An
 // untopiced entry is never shadow-collapsed (shadowReason skips
 // TopicKey == ""), so it still shows up as a count under UntopicedLabel
 // rather than vanishing.
@@ -358,10 +358,17 @@ func TestPrimeIndexIncludesPerTopicKeyBreakdown(t *testing.T) {
 		counts[tc.TopicKey] = tc.Count
 		sum += tc.Count
 	}
-	assert.Equal(t, 1, counts["topic-a"], "a1/a2 share topic-a and shadow-collapse to a single winner")
+	assert.Equal(t, 2, counts["topic-a"], "indistinguishable revisions remain visible instead of fabricating a winner")
 	assert.Equal(t, 1, counts["topic-b"])
 	assert.Equal(t, 1, counts[UntopicedLabel], "an untopiced entry must still be counted, not silently dropped from the index view")
 	assert.Equal(t, result.TotalVisible, sum, "topic counts must always sum to TotalVisible (NFR-2)")
+	require.Len(t, result.Conflicts, 1)
+	assert.Equal(t, []string{"a1", "a2"}, result.Conflicts[0].EntryIDs)
+	for _, item := range result.Items {
+		if item.TopicKey == "topic-a" {
+			require.NotNil(t, item.Conflict, "a contested prime item must carry its conflict directly")
+		}
+	}
 }
 
 // TestPrimeIndexBreakdownIndependentOfByteBudget covers FR-1's "cost

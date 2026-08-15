@@ -659,11 +659,20 @@ func Visible(ctx context.Context, store string, identity []string) ([]*Entry, er
 // crn-ln1) can load the store once via Status and derive both from a single
 // pass, instead of Visible re-querying the index a second time.
 func visibleFrom(ctx context.Context, entries []*Entry, identity []string) []*Entry {
-	out := scopeMatch(entries, identity)
+	resolution := resolveVisibleFrom(ctx, entries, identity)
+	out := make([]*Entry, len(resolution.Entries))
+	for i, resolved := range resolution.Entries {
+		out[i] = resolved.Entry
+	}
+	return out
+}
 
-	shadowed, reasons := shadowReason(out)
+// resolveVisibleFrom is visibleFrom's conflict-preserving counterpart for
+// read paths whose output must expose contested entries directly.
+func resolveVisibleFrom(ctx context.Context, entries []*Entry, identity []string) TopicResolution {
+	resolution := ResolveTopics(scopeMatch(entries, identity))
 	logger := obslog.FromContext(ctx)
-	for _, r := range reasons {
+	for _, r := range resolution.decisions {
 		logger.ShadowDecision(obslog.ShadowDecisionFields{
 			Mode:     "identity",
 			TopicKey: r.TopicKey,
@@ -671,7 +680,7 @@ func visibleFrom(ctx context.Context, entries []*Entry, identity []string) []*En
 			Rule:     r.Rule,
 		})
 	}
-	return shadowed
+	return resolution
 }
 
 // scopeMatch returns entries whose every scope tag is satisfied by identity --
@@ -725,70 +734,186 @@ func scopeTags(ctx context.Context, db *sql.DB) (map[string][]string, error) {
 // what string represents "no topic".
 const UntopicedLabel = "(untopiced)"
 
-// ShadowReason explains a single shadow-resolution decision: WinnerID is the
-// entry that survived for TopicKey, and Rule names which moreSpecific
-// tiebreak decided it ("scope_size", "verified_at", "created_at", or
-// "id_tiebreak").
+// TopicConflict describes a topic whose top-ranked entries cannot be
+// distinguished by any meaningful precedence signal. EntryIDs is sorted so
+// callers get stable output without treating that order as authority.
+type TopicConflict struct {
+	TopicKey string   `json:"topic_key"`
+	EntryIDs []string `json:"entry_ids"`
+	Reason   string   `json:"reason"`
+}
+
+// ResolvedEntry is one entry retained by ResolveTopics. Conflict is non-nil
+// exactly when this entry is one of multiple indistinguishable revisions, so
+// a caller can surface contested knowledge directly on a search/list hit.
+type ResolvedEntry struct {
+	Entry    *Entry         `json:"entry"`
+	Conflict *TopicConflict `json:"conflict,omitempty"`
+}
+
+// TopicResolution is ResolveTopics' complete result. Entries contains the
+// meaningful winner for each topic, or every tied top-ranked entry when no
+// meaningful winner exists. Conflicts is the same conflict information as
+// the per-entry annotation, collected once for callers that need an index.
+type TopicResolution struct {
+	Entries   []ResolvedEntry `json:"entries"`
+	Conflicts []TopicConflict `json:"conflicts"`
+
+	decisions []ShadowReason
+}
+
+// ResolveTopics applies topic-key precedence to identity-filtered candidates.
+//
+// Precondition: callers MUST filter candidates to a single identity before
+// calling ResolveTopics. Scope-tag count is a specificity proxy only inside
+// one identity's visible set; using a store-wide set can incorrectly compare
+// entries with incomparable scopes.
+//
+// Precedence is explicit override, scope specificity, verified_at, then
+// created_at. When every meaningful signal ties, ResolveTopics retains all
+// tied entries and annotates each with a TopicConflict instead of fabricating
+// authority from an unrelated ID suffix. Untopiced entries never conflict.
+func ResolveTopics(candidates []*Entry) TopicResolution {
+	return resolveTopics(candidates)
+}
+
+// ShadowReason explains a resolved single-winner topic. WinnerID is the entry
+// that survived and Rule is the meaningful precedence signal that separated
+// it from the other candidates.
 type ShadowReason struct {
 	TopicKey string
 	WinnerID string
 	Rule     string
 }
 
-// shadow resolves topic_key conflicts by specificity: the entry with the most
-// scope tags wins (CSS-style, DESIGN.md §3). Ties break on most-recent
-// VerifiedAt, then most-recent CreatedAt, then lowest ID, so resolution is
-// always deterministic regardless of which timestamp fields are populated.
-// Entries without a topic_key never shadow one another.
+// shadow is the legacy entry-only projection used by store-wide diagnostics.
 func shadow(candidates []*Entry) []*Entry {
 	out, _ := shadowReason(candidates)
 	return out
 }
 
-// shadowReason is shadow's reason-carrying counterpart: alongside the
-// surviving entries, it reports one ShadowReason per topic_key that had two
-// or more candidates -- a topic_key held by a single candidate never
-// produces a decision, since there was nothing to resolve.
+// shadowReason preserves the old internal shape while delegating all
+// read-path precedence to ResolveTopics.
 func shadowReason(candidates []*Entry) ([]*Entry, []ShadowReason) {
-	winner := make(map[string]*Entry, len(candidates))
-	rule := make(map[string]string, len(candidates))
-	count := make(map[string]int, len(candidates))
+	resolution := resolveTopics(candidates)
+	out := make([]*Entry, len(resolution.Entries))
+	for i, resolved := range resolution.Entries {
+		out[i] = resolved.Entry
+	}
+	return out, resolution.decisions
+}
+
+func resolveTopics(candidates []*Entry) TopicResolution {
+	groups := make(map[string][]*Entry, len(candidates))
 	for _, e := range candidates {
-		if e.TopicKey == "" {
-			continue
-		}
-		count[e.TopicKey]++
-		cur, ok := winner[e.TopicKey]
-		if !ok {
-			winner[e.TopicKey] = e
-			continue
-		}
-		more, r := moreSpecificReason(e, cur)
-		if more {
-			winner[e.TopicKey] = e
-		}
-		rule[e.TopicKey] = r
+		groups[e.TopicKey] = append(groups[e.TopicKey], e)
 	}
 
-	out := make([]*Entry, 0, len(candidates))
-	for _, e := range candidates {
-		if e.TopicKey == "" || winner[e.TopicKey] == e {
-			out = append(out, e)
+	selected := make(map[string]*TopicConflict, len(candidates))
+	var result TopicResolution
+	for topicKey, group := range groups {
+		if topicKey == "" || len(group) == 1 {
+			for _, e := range group {
+				selected[e.ID] = nil
+			}
+			continue
+		}
+
+		remaining, rule := removeOverridden(group)
+		remaining, rule = retainMaxScope(remaining, rule)
+		remaining, rule = retainMaxString(remaining, rule, "verified_at", func(e *Entry) string { return e.VerifiedAt })
+		remaining, rule = retainMaxString(remaining, rule, "created_at", func(e *Entry) string { return e.CreatedAt })
+
+		if len(remaining) == 1 {
+			selected[remaining[0].ID] = nil
+			result.decisions = append(result.decisions, ShadowReason{
+				TopicKey: topicKey,
+				WinnerID: remaining[0].ID,
+				Rule:     rule,
+			})
+			continue
+		}
+
+		ids := make([]string, len(remaining))
+		for i, e := range remaining {
+			ids[i] = e.ID
+		}
+		sort.Strings(ids)
+		conflict := &TopicConflict{TopicKey: topicKey, EntryIDs: ids, Reason: "indistinguishable"}
+		result.Conflicts = append(result.Conflicts, *conflict)
+		for _, e := range remaining {
+			selected[e.ID] = conflict
 		}
 	}
 
-	var reasons []ShadowReason
-	for topicKey, n := range count {
-		if n < 2 {
-			continue
+	for _, e := range candidates {
+		conflict, ok := selected[e.ID]
+		if ok {
+			result.Entries = append(result.Entries, ResolvedEntry{Entry: e, Conflict: conflict})
 		}
-		reasons = append(reasons, ShadowReason{
-			TopicKey: topicKey,
-			WinnerID: winner[topicKey].ID,
-			Rule:     rule[topicKey],
-		})
 	}
-	return out, reasons
+	sort.Slice(result.Conflicts, func(i, j int) bool { return result.Conflicts[i].TopicKey < result.Conflicts[j].TopicKey })
+	sort.Slice(result.decisions, func(i, j int) bool { return result.decisions[i].TopicKey < result.decisions[j].TopicKey })
+	return result
+}
+
+func removeOverridden(group []*Entry) ([]*Entry, string) {
+	remaining := make([]*Entry, 0, len(group))
+	for _, candidate := range group {
+		overridden := false
+		for _, other := range group {
+			if other.OverriddenDuplicateOf == candidate.ID && candidate.OverriddenDuplicateOf != other.ID {
+				overridden = true
+				break
+			}
+		}
+		if !overridden {
+			remaining = append(remaining, candidate)
+		}
+	}
+	if len(remaining) == 0 {
+		return group, ""
+	}
+	if len(remaining) != len(group) {
+		return remaining, "override"
+	}
+	return remaining, ""
+}
+
+func retainMaxScope(entries []*Entry, rule string) ([]*Entry, string) {
+	maxScope := -1
+	for _, e := range entries {
+		maxScope = max(maxScope, len(e.Scope))
+	}
+	remaining := make([]*Entry, 0, len(entries))
+	for _, e := range entries {
+		if len(e.Scope) == maxScope {
+			remaining = append(remaining, e)
+		}
+	}
+	if len(remaining) != len(entries) {
+		rule = "scope_size"
+	}
+	return remaining, rule
+}
+
+func retainMaxString(entries []*Entry, rule, field string, value func(*Entry) string) ([]*Entry, string) {
+	maxValue := ""
+	for _, e := range entries {
+		if value(e) > maxValue {
+			maxValue = value(e)
+		}
+	}
+	remaining := make([]*Entry, 0, len(entries))
+	for _, e := range entries {
+		if value(e) == maxValue {
+			remaining = append(remaining, e)
+		}
+	}
+	if len(remaining) != len(entries) {
+		rule = field
+	}
+	return remaining, rule
 }
 
 // moreSpecific reports whether a should win over b for a shared topic_key.
@@ -798,33 +923,31 @@ func moreSpecific(a, b *Entry) bool {
 }
 
 // moreSpecificReason is moreSpecific's reason-carrying counterpart: rule
-// names which tiebreak decided the comparison ("override", "scope_size",
-// "verified_at", "created_at", or "id_tiebreak"), regardless of which of a/b
-// it favors.
+// names which meaningful signal decided the comparison ("override",
+// "scope_size", "verified_at", or "created_at"). Fully tied entries are
+// indistinguishable; neither is more specific.
 //
 // An explicit --force correction (OverriddenDuplicateOf) is checked first
-// and wins unconditionally, before the scope/verified_at/created_at/id
+// and wins unconditionally, before the scope/verified_at/created_at
 // chain below ever runs -- otherwise a corrected entry can still lose to
 // the entry it corrects (crn-h5zx). If both sides claim to override the
 // other (a malformed double-force), that is a cycle, not a decision: the
 // override signal is discarded and resolution falls through to the
 // existing chain instead of looping or picking an undefined winner.
 func moreSpecificReason(a, b *Entry) (more bool, rule string) {
-	aOverridesB := a.OverriddenDuplicateOf != "" && a.OverriddenDuplicateOf == b.ID
-	bOverridesA := b.OverriddenDuplicateOf != "" && b.OverriddenDuplicateOf == a.ID
-	if aOverridesB != bOverridesA {
-		return aOverridesB, "override"
+	// ShadowMap compares a pair already known to share a topic. Tests of this
+	// helper historically omit TopicKey, so use shallow copies with a common
+	// synthetic key and delegate the actual precedence to the shared resolver.
+	aa, bb := *a, *b
+	aa.TopicKey, bb.TopicKey = "__comparison__", "__comparison__"
+	resolution := ResolveTopics([]*Entry{&aa, &bb})
+	if len(resolution.Entries) != 1 {
+		return false, "indistinguishable"
 	}
-	if len(a.Scope) != len(b.Scope) {
-		return len(a.Scope) > len(b.Scope), "scope_size"
+	if len(resolution.decisions) == 1 {
+		rule = resolution.decisions[0].Rule
 	}
-	if a.VerifiedAt != b.VerifiedAt {
-		return a.VerifiedAt > b.VerifiedAt, "verified_at" // ISO-8601 strings sort lexically = chronologically
-	}
-	if a.CreatedAt != b.CreatedAt {
-		return a.CreatedAt > b.CreatedAt, "created_at"
-	}
-	return a.ID < b.ID, "id_tiebreak"
+	return resolution.Entries[0].Entry.ID == a.ID, rule
 }
 
 // ShadowMap reports, store-wide with no identity in scope, which entries are

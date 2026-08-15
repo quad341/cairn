@@ -61,6 +61,22 @@ func TestListByTopicShadowConflictPrecedence(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1, "shadow() must collapse the same-topic_key tie to exactly one winner")
 	assert.Equal(t, "s2", rows[0].ID, "the more specific entry must be the sole winner")
+	assert.Nil(t, rows[0].Conflict, "a meaningful precedence winner is not a conflict")
+}
+
+func TestListByTopicReturnsAndAnnotatesIndistinguishableRevisions(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "rig/alpha/a.md", "+++\nid = \"a\"\ntitle = \"A\"\ntopic_key = \"tied\"\nscope = [\"rig:alpha\"]\ncreated_at = \"2026-08-15\"\n+++\na\n")
+	writeFile(t, dir, "rig/alpha/b.md", "+++\nid = \"b\"\ntitle = \"B\"\ntopic_key = \"tied\"\nscope = [\"rig:alpha\"]\ncreated_at = \"2026-08-15\"\n+++\nb\n")
+
+	rows, err := ListByTopic(t.Context(), dir, "tied", []string{"rig:alpha"})
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		require.NotNil(t, row.Conflict, "each returned revision must be self-describing as contested")
+		assert.Equal(t, []string{"a", "b"}, row.Conflict.EntryIDs)
+		assert.Equal(t, "indistinguishable", row.Conflict.Reason)
+	}
 }
 
 func TestListByTopicNeverTouchesRecallTelemetry(t *testing.T) {

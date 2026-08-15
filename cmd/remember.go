@@ -127,9 +127,8 @@ var rememberCmd = &cobra.Command{
 		// past an explicit --force -- overrideLine says so. A topic-only
 		// match is never a duplicate to begin with, so it always links
 		// regardless of --force (crn-pip8): gating it on --force would
-		// leave the correction's shadow-resolution outcome dependent on
-		// moreSpecificReason's recency-blind id_tiebreak whenever
-		// created_at happens to tie with the entry it was meant to replace.
+		// leave the correction unresolved whenever created_at ties with the
+		// entry it was meant to replace.
 		var overrideLine string
 		switch {
 		case matched != nil && isRecurrence:
@@ -309,9 +308,8 @@ func verifyAnchor(cmd *cobra.Command, e *cairn.Entry) {
 // distinct body, i.e. a correction rather than a duplicate. Run links that
 // case via OverriddenDuplicateOf unconditionally (crn-pip8): unlike a true
 // recurrence, there is no duplicate here to force past, so gating the link
-// on --force would leave the correction's shadow-resolution outcome
-// dependent on moreSpecificReason's recency-blind id_tiebreak whenever
-// created_at happens to tie, exactly the bug crn-pip8 describes.
+// on --force would leave the correction unresolved whenever created_at
+// ties, exactly the bug crn-pip8 describes.
 // candidate.TopicKey == "" never matches anything (pairSignals' sameTopicKey
 // requires a non-empty key on both sides), so an untopiced remember is
 // unaffected, matching today's behavior.

@@ -1324,13 +1324,11 @@ func TestRememberNearMissTopicKeyDoesNotIncrementRecurrence(t *testing.T) {
 //
 // crn-pip8: storing it was never the whole story. A topic-only match (no
 // --force) used to fall through with no link between the two entries at
-// all, leaving shadow resolution to moreSpecificReason's scope_size ->
-// verified_at -> created_at -> id_tiebreak chain -- and since both calls
-// here share a scope and typically tie on CreatedAt's second-precision
-// timestamp, id_tiebreak (unrelated to write recency) could just as easily
-// pick the FIRST (superseded) body as the second. The second call must now
-// record OverriddenDuplicateOf against the first automatically, same as an
-// explicit --force override, so the correction deterministically wins.
+// all. Since both calls share a scope and commonly tie on CreatedAt's
+// second-precision timestamp, the resolver could only report them as
+// contested. The second call records OverriddenDuplicateOf against the first
+// automatically, same as an explicit --force override, so the correction
+// deterministically wins.
 func TestRememberDistinctBodySameTopicKeyIsStoredNotDiscarded(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
@@ -1361,7 +1359,7 @@ func TestRememberDistinctBodySameTopicKeyIsStoredNotDiscarded(t *testing.T) {
 	}
 	require.NotNil(t, second)
 	assert.Equal(t, first.ID, second.OverriddenDuplicateOf,
-		"crn-pip8: a topic-only match must auto-record the override, same as --force does for a content match, so shadow resolution can never fall through to the recency-blind id_tiebreak for a plain correction")
+		"crn-pip8: a topic-only match must auto-record the override, same as --force does for a content match, so a known correction is never reported as unresolved")
 
 	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
 	require.Len(t, secondLines, 3, "the second call now reports the auto-override: id, override line, commit SHA")

@@ -106,6 +106,9 @@ The map shows topic names and counts; it does not currently show entry IDs.
 demand (plus its freshness verdict), so context isn't bloated by entries the task
 doesn't need. On a conflict for the same `topic_key`, **precedence = specificity**
 — a `{rig, role}` entry shadows a `{rig}` entry shadows a global one, CSS-style.
+Newer verification and creation timestamps break remaining ties. If those also
+tie, read paths return every top revision marked as an `indistinguishable`
+conflict rather than choosing authority from an unrelated ID suffix.
 
 Because scope is relevance filtering rather than authorization, direct by-ID
 lookup deliberately bypasses identity. Exact topic lookup ships as `cairn list

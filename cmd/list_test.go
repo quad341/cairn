@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -63,6 +64,23 @@ func TestListCommandTranslatesUntopicedLabel(t *testing.T) {
 	assert.Contains(t, out, "Untopiced Target")
 }
 
+func TestListCommandJSONCarriesConflictOnEveryContestedHit(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "rig/list-cmd/a.md", "+++\nid = \"a\"\ntitle = \"A\"\ntopic_key = \"tied\"\nscope = [\"rig:list-cmd\"]\ncreated_at = \"2026-08-15\"\n+++\na\n")
+	seedEntry(t, dir, "rig/list-cmd/b.md", "+++\nid = \"b\"\ntitle = \"B\"\ntopic_key = \"tied\"\nscope = [\"rig:list-cmd\"]\ncreated_at = \"2026-08-15\"\n+++\nb\n")
+
+	out, err := execRootJSON(t, "list", "tied", "--json", "--store", dir, "--identity", "rig:list-cmd")
+	require.NoError(t, err)
+	var items []ListResult
+	require.NoError(t, json.Unmarshal([]byte(out), &items))
+	require.Len(t, items, 2)
+	for _, item := range items {
+		require.NotNil(t, item.Conflict)
+		assert.Equal(t, []string{"a", "b"}, item.Conflict.EntryIDs)
+		assert.Equal(t, "indistinguishable", item.Conflict.Reason)
+	}
+}
+
 // TestListCommandSurfacesNewerEntryAfterTopicKeyCorrection is crn-pip8's own
 // repro: `cairn list` must surface the entry that superseded a topic_key,
 // not silently keep serving the one it was meant to replace.
@@ -83,14 +101,10 @@ func TestListCommandTranslatesUntopicedLabel(t *testing.T) {
 // created_at captured a moment before the second, real `cairn remember`
 // call -- which is the only code path that can set OverriddenDuplicateOf,
 // so the corrected entry must go through it for this test to exercise the
-// fix at all. The seeded entry's id ("000-...") is also chosen to sort
-// lexically before any real "probe-collision-test-<hex>" id, so that if
-// created_at does tie, moreSpecificReason's id_tiebreak -- which is a
-// recency-blind rule -- favors the seeded (older, superseded) entry, the
-// exact pre-fix failure this bug describes. A require.Equal sanity check
-// confirms the tie actually landed before asserting on the bug itself, so a
-// rare timing miss fails loudly as a setup problem instead of silently
-// passing for the wrong reason.
+// fix at all. A require.Equal sanity check confirms the tie actually landed
+// before asserting that the explicit override resolves it; a rare timing
+// miss fails loudly as a setup problem instead of silently passing for the
+// wrong reason.
 func TestListCommandSurfacesNewerEntryAfterTopicKeyCorrection(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
@@ -122,7 +136,7 @@ func TestListCommandSurfacesNewerEntryAfterTopicKeyCorrection(t *testing.T) {
 	}
 	require.NotNil(t, second, "expected a second, distinct entry alongside %s", first.ID)
 	require.Equal(t, first.CreatedAt, second.CreatedAt,
-		"test setup requires a created_at tie to exercise id_tiebreak the way this bug does; a mismatch means a rare timing race crossed a second boundary between seeding and the real remember call -- rerun")
+		"test setup requires a created_at tie; a mismatch means a rare timing race crossed a second boundary between seeding and the real remember call -- rerun")
 
 	var listErr error
 	out := captureStdout(t, func() { listErr = runList(t, store, "probe-collision-test", "--identity", "agent:test") })

@@ -30,7 +30,8 @@ Usage & the knowledge lifecycle (+ how it differs from MEMORY.md / `bd remember`
 - **Entry** = a markdown body (source of truth) + an index row (queryable metadata).
 - **Scope** = tags on an entry; an agent sees it *iff every tag is satisfied by its
   identity*. Scope is relevance routing, not access control; direct by-ID lookup is
-  intentionally unscoped. Conflict precedence = specificity.
+  intentionally unscoped. Conflict precedence = specificity, verification time,
+  then creation time; meaningful ties are returned explicitly as contested.
 - **Freshness** = source-anchor drift is checked on reads and by a shared-tier
   sweep. Unanchored and unsupported anchors are reported as `unknown` — an entry
   with no anchor can only ever report its age, so anchor anything with a source.
