@@ -68,6 +68,15 @@ func TestEmitJSON(t *testing.T) {
 	assert.Equal(t, "{\n  \"a\": \"b\"\n}\n", buf.String())
 }
 
+func TestRootFlagsShowPrettyButHideDeprecatedJSON(t *testing.T) {
+	jsonFlag := rootCmd.PersistentFlags().Lookup("json")
+	prettyFlag := rootCmd.PersistentFlags().Lookup("pretty")
+	require.NotNil(t, jsonFlag)
+	require.NotNil(t, prettyFlag)
+	assert.True(t, jsonFlag.Hidden)
+	assert.False(t, prettyFlag.Hidden)
+}
+
 func TestEmitErrorNoopsWithoutJSON(t *testing.T) {
 	cmd := &cobra.Command{Use: "x"}
 	cmd.Flags().Bool("json", false, "")

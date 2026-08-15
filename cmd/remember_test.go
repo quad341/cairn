@@ -462,10 +462,7 @@ func TestRememberGlobalEntryIsVisibleToItsOwnAuthor(t *testing.T) {
 
 	require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store, "--topic-key", "global-roundtrip"))
 
-	var listErr error
-	out := captureStdout(t, func() {
-		listErr = runList(t, store, "global-roundtrip", "--identity", "agent:author")
-	})
+	out, listErr := execRootJSON(t, "list", "global-roundtrip", "--store", store, "--identity", "agent:author")
 	require.NoError(t, listErr)
 	assert.Contains(t, out, e.ID, "a merged global entry must be visible to any identity, including its own author's, via cairn list")
 }
@@ -1083,8 +1080,7 @@ func TestRememberSharedTierRigScopeVisibleAfterReviewMerge(t *testing.T) {
 
 	require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store, "--topic-key", "rig-roundtrip"))
 
-	var listErr error
-	out := captureStdout(t, func() { listErr = runList(t, store, "rig-roundtrip", "--identity", "rig:web") })
+	out, listErr := execRootJSON(t, "list", "rig-roundtrip", "--store", store, "--identity", "rig:web")
 	require.NoError(t, listErr)
 	assert.Contains(t, out, e.ID, "the merged entry must be visible to a rig:web identity via cairn list")
 }
@@ -1117,8 +1113,7 @@ func TestRememberSharedTierRoleScopeVisibleAfterReviewMerge(t *testing.T) {
 
 	require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store, "--topic-key", "role-roundtrip"))
 
-	var listErr error
-	out := captureStdout(t, func() { listErr = runList(t, store, "role-roundtrip", "--identity", "role:builder") })
+	out, listErr := execRootJSON(t, "list", "role-roundtrip", "--store", store, "--identity", "role:builder")
 	require.NoError(t, listErr)
 	assert.Contains(t, out, e.ID, "the merged entry must be visible to a role:builder identity via cairn list")
 }

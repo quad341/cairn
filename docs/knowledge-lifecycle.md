@@ -220,8 +220,10 @@ Two recurring loops dogfood cairn itself (see [`../formulas/README.md`](../formu
 | `version` | print version information |
 
 Global flags: `--identity` (recall scope, or `$CAIRN_IDENTITY`), `--store` (store
-repo path, or `$CAIRN_STORE`), `--json` (machine-readable output), `--trace`
-(mirror the debug log to stderr).
+repo path, or `$CAIRN_STORE`), `--pretty` (indent the compact JSON emitted by
+model-facing discovery reads for human inspection), `--trace` (mirror the debug
+log to stderr). `prime`, `search`, and `list` emit compact JSON by default;
+`get` emits its raw Markdown body.
 
 `doctor` covers every entry in the store rather than one identity's view, so it
 refuses to run while `$CAIRN_IDENTITY` is set — use `env -u CAIRN_IDENTITY cairn
@@ -251,8 +253,8 @@ notifications instead of mailing a reviewer per entry.
   and never aborts its siblings. Successful shared-tier entries are grouped
   by resolved reviewer, sending one notification per group rather than one
   per entry.
-- **`--json` result shape** — a top-level object with `batch_id`, `total`,
+- **Batch result shape** — the structured result is a top-level object with `batch_id`, `total`,
   `succeeded`, `failed`, `unanchored`, and `entries` (one per manifest line).
   Each entry carries `line` and, on failure, `error`, plus — on success — the
   same `id`/`scope`/`commit`/`review_branch`/`reviewer` fields single-entry
-  `remember --json` reports.
+  capture reports.

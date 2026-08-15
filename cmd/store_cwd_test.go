@@ -80,7 +80,7 @@ func TestListResolvesBodyPathAgainstStoreNotCWD(t *testing.T) {
 	var out string
 	var err error
 	runFromElsewhere(t, func() {
-		out, err = execRoot("list", "cwd-topic", "--store", store)
+		out, err = execRootJSON(t, "list", "cwd-topic", "--store", store)
 	})
 	require.NoError(t, err, "cairn list must resolve entry bodies against the resolved store root, not the process cwd")
 	assert.Contains(t, out, "g/a")

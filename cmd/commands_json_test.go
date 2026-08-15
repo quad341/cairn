@@ -30,6 +30,18 @@ func resetJSONFlag() error {
 	return nil
 }
 
+func resetPrettyFlag() error {
+	f := rootCmd.PersistentFlags().Lookup("pretty")
+	if f == nil {
+		return errors.New("pretty flag not registered on rootCmd")
+	}
+	if err := f.Value.Set("false"); err != nil {
+		return err
+	}
+	f.Changed = false
+	return nil
+}
+
 // execRootJSON runs the cairn CLI in-process with args (mirroring execRoot in
 // ergonomics_scenario.go) and returns cmd.OutOrStdout()'s buffered content
 // instead of bare stdout: --json output is written via emitJSON/emitError,
@@ -39,9 +51,11 @@ func execRootJSON(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	require.NoError(t, resetIdentityFlag())
 	require.NoError(t, resetJSONFlag())
+	require.NoError(t, resetPrettyFlag())
 	t.Cleanup(func() {
 		_ = resetIdentityFlag()
 		_ = resetJSONFlag()
+		_ = resetPrettyFlag()
 	})
 
 	var buf bytes.Buffer
@@ -203,13 +217,16 @@ func TestListJSONOutputsResults(t *testing.T) {
 	out, err := execRootJSON(t, "list", "topic-a", "--json", "--store", dir)
 	require.NoError(t, err)
 
-	var items []ListResult
-	require.NoError(t, json.Unmarshal([]byte(out), &items))
-	require.Len(t, items, 1)
-	assert.Equal(t, "g/a", items[0].ID)
-	assert.Equal(t, "A", items[0].Title)
-	assert.Equal(t, "summary text", items[0].Summary)
-	assert.NotEmpty(t, items[0].Freshness.Status)
+	var result listOutput
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	require.Len(t, result.Entries, 1)
+	assert.Equal(t, listInstruction, result.Instruction)
+	require.NotNil(t, result.TopicKey)
+	assert.Equal(t, "topic-a", *result.TopicKey)
+	assert.Equal(t, "g/a", result.Entries[0].ID)
+	assert.Equal(t, "A", result.Entries[0].Title)
+	assert.NotEmpty(t, result.Entries[0].Freshness)
+	assert.NotContains(t, out, "summary text")
 }
 
 func TestListJSONNotFoundEmitsErrorEnvelope(t *testing.T) {

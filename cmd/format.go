@@ -95,6 +95,38 @@ func emitJSON(w io.Writer, v any) error {
 	return enc.Encode(v)
 }
 
+// emitCompactJSON writes the model-facing default encoding: one minified JSON
+// value followed by a newline. Unlike emitJSON, it deliberately adds no
+// presentation whitespace; this output is injected into model context.
+func emitCompactJSON(w io.Writer, v any) error {
+	return json.NewEncoder(w).Encode(v)
+}
+
+// emitModelJSON writes a model-facing result compactly by default and indents
+// it only when the explicit human escape hatch, --pretty, is requested.
+func emitModelJSON(cmd *cobra.Command, v any) error {
+	pretty, _ := cmd.Flags().GetBool("pretty")
+	if pretty {
+		return emitJSON(cmd.OutOrStdout(), v)
+	}
+	return emitCompactJSON(cmd.OutOrStdout(), v)
+}
+
+// emitModelError is the error counterpart to emitModelJSON for commands whose
+// default contract is JSON. It suppresses Cobra's prose so stdout contains one
+// parseable error value in both default and --pretty modes.
+func emitModelError(cmd *cobra.Command, err error) error {
+	if err == nil {
+		return nil
+	}
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	if jsonErr := emitModelJSON(cmd, classify(err)); jsonErr != nil {
+		return jsonErr
+	}
+	return err
+}
+
 // emitError renders err as cairn --json's error envelope when --json was
 // requested, and silences cobra's default usage/error printing so the JSON
 // envelope is the only thing written. It always returns err unchanged, so
@@ -122,5 +154,7 @@ func nonNil[T any](s []T) []T {
 }
 
 func init() {
-	rootCmd.PersistentFlags().Bool("json", false, "emit machine-readable JSON output")
+	rootCmd.PersistentFlags().Bool("json", false, "deprecated compatibility alias for the default output")
+	_ = rootCmd.PersistentFlags().MarkHidden("json")
+	rootCmd.PersistentFlags().Bool("pretty", false, "indent JSON output for human inspection")
 }
