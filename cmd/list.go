@@ -2,23 +2,24 @@ package cmd
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/quad341/cairn/internal/cairn"
 	"github.com/spf13/cobra"
 )
 
-// ListResult is one entry in cairn list <topic> --json's output. Bare
-// array, no wrapper object -- mirrors status --json's convention since list,
-// like status, has no query-context metadata worth echoing beyond what the
-// topic argument itself already carries.
-type ListResult struct {
+const listInstruction = "Run cairn get <id> before acting on a relevant entry. If none is relevant, stop."
+
+type listOutput struct {
+	Instruction string     `json:"instruction"`
+	TopicKey    *string    `json:"topic_key"`
+	Entries     []listItem `json:"entries"`
+}
+
+type listItem struct {
 	ID        string               `json:"id"`
 	Title     string               `json:"title"`
-	Summary   string               `json:"summary"`
-	Scope     []string             `json:"scope"`
-	Freshness cairn.FreshnessInfo  `json:"freshness"`
-	Conflict  *cairn.TopicConflict `json:"conflict,omitempty"`
+	Freshness string               `json:"freshness"`
+	Conflict  *cairn.TopicConflict `json:"conflict"`
 }
 
 var listCmd = &cobra.Command{
@@ -33,45 +34,25 @@ var listCmd = &cobra.Command{
 		}
 		identity, err := resolveIdentityValidated(cmd)
 		if err != nil {
-			return emitError(cmd, err)
+			return emitModelError(cmd, err)
 		}
 		rows, err := cairn.ListByTopic(cmd.Context(), storePath(), key, identity)
 		if err != nil {
-			return emitError(cmd, err)
+			return emitModelError(cmd, err)
 		}
 		if len(rows) == 0 {
-			return emitError(cmd, classifiedErr(CategoryNotFound, topic, fmt.Errorf("no entries found for topic %q", topic)))
+			return emitModelError(cmd, classifiedErr(CategoryNotFound, topic, fmt.Errorf("no entries found for topic %q", topic)))
 		}
 
-		if wantsJSON(cmd) {
-			items := make([]ListResult, 0, len(rows))
-			for _, r := range rows {
-				items = append(items, ListResult{
-					ID:        r.ID,
-					Title:     r.Title,
-					Summary:   r.Summary,
-					Scope:     nonNil(r.Scope),
-					Freshness: cairn.FreshnessInfo{Status: r.FreshnessState, Detail: r.FreshnessDetail},
-					Conflict:  r.Conflict,
-				})
-			}
-			return emitJSON(cmd.OutOrStdout(), nonNil(items))
-		}
-
-		fmt.Printf("# cairn list %q -- %d entries\n", topic, len(rows))
+		items := make([]listItem, 0, len(rows))
 		for _, r := range rows {
-			scope := "global"
-			if len(r.Scope) > 0 {
-				scope = strings.Join(r.Scope, " ")
-			}
-			fmt.Printf("%s: %s\n", r.ID, r.Title)
-			fmt.Printf("  summary: %s\n", r.Summary)
-			fmt.Printf("  scope: %s  freshness: %s -- %s\n", scope, r.FreshnessState, r.FreshnessDetail)
-			if r.Conflict != nil {
-				fmt.Printf("  conflict: %s revisions: %s\n", r.Conflict.Reason, strings.Join(r.Conflict.EntryIDs, ", "))
-			}
+			items = append(items, listItem{ID: r.ID, Title: r.Title, Freshness: r.FreshnessState, Conflict: r.Conflict})
 		}
-		return nil
+		var topicKey *string
+		if key != "" {
+			topicKey = &key
+		}
+		return emitModelJSON(cmd, listOutput{Instruction: listInstruction, TopicKey: topicKey, Entries: items})
 	},
 }
 

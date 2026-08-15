@@ -39,12 +39,11 @@ func TestListCommandPrintsMatchedEntry(t *testing.T) {
 	dir := t.TempDir()
 	seedEntry(t, dir, "rig/list-cmd/lst1.md", listSingleEntry)
 
-	var err error
-	out := captureStdout(t, func() { err = runList(t, dir, "list-topic", "--identity", "rig:list-cmd") })
+	out, err := execRootJSON(t, "list", "list-topic", "--store", dir, "--identity", "rig:list-cmd")
 	require.NoError(t, err)
 	assert.Contains(t, out, "lst1")
 	assert.Contains(t, out, "List Target")
-	assert.Contains(t, out, "summary text")
+	assert.NotContains(t, out, "summary text", "list's default projection is a retrieval stub, not the body")
 }
 
 func TestListCommandErrorsOnZeroMatches(t *testing.T) {
@@ -57,8 +56,7 @@ func TestListCommandTranslatesUntopicedLabel(t *testing.T) {
 	dir := t.TempDir()
 	seedEntry(t, dir, "rig/list-cmd/lst-u1.md", listUntopicedEntry)
 
-	var err error
-	out := captureStdout(t, func() { err = runList(t, dir, cairn.UntopicedLabel, "--identity", "rig:list-cmd") })
+	out, err := execRootJSON(t, "list", cairn.UntopicedLabel, "--store", dir, "--identity", "rig:list-cmd")
 	require.NoError(t, err)
 	assert.Contains(t, out, "lst-u1")
 	assert.Contains(t, out, "Untopiced Target")
@@ -71,10 +69,10 @@ func TestListCommandJSONCarriesConflictOnEveryContestedHit(t *testing.T) {
 
 	out, err := execRootJSON(t, "list", "tied", "--json", "--store", dir, "--identity", "rig:list-cmd")
 	require.NoError(t, err)
-	var items []ListResult
-	require.NoError(t, json.Unmarshal([]byte(out), &items))
-	require.Len(t, items, 2)
-	for _, item := range items {
+	var result listOutput
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	require.Len(t, result.Entries, 2)
+	for _, item := range result.Entries {
 		require.NotNil(t, item.Conflict)
 		assert.Equal(t, []string{"a", "b"}, item.Conflict.EntryIDs)
 		assert.Equal(t, "indistinguishable", item.Conflict.Reason)
@@ -138,11 +136,11 @@ func TestListCommandSurfacesNewerEntryAfterTopicKeyCorrection(t *testing.T) {
 	require.Equal(t, first.CreatedAt, second.CreatedAt,
 		"test setup requires a created_at tie; a mismatch means a rare timing race crossed a second boundary between seeding and the real remember call -- rerun")
 
-	var listErr error
-	out := captureStdout(t, func() { listErr = runList(t, store, "probe-collision-test", "--identity", "agent:test") })
+	out, listErr := execRootJSON(t, "list", "probe-collision-test", "--store", store, "--identity", "agent:test")
 	require.NoError(t, listErr)
-	assert.Contains(t, out, "# cairn list \"probe-collision-test\" -- 1 entries",
-		"topic_key resolution must still collapse to exactly one winner")
+	var result listOutput
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	require.Len(t, result.Entries, 1, "topic_key resolution must still collapse to exactly one winner")
 	assert.Contains(t, out, second.ID,
 		"crn-pip8: cairn list must surface the newer, corrected entry")
 	assert.NotContains(t, out, first.ID,

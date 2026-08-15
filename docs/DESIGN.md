@@ -192,9 +192,12 @@ cairn reindex                 # explicit index rebuild/repair
 ## 9. Roadmap
 
 Shipped since this list was written: exact topic-to-entry retrieval (`list`),
-`--json` on every command, context-budgeted `prime` output carrying IDs and
-freshness, stdin/`--file` capture and anchor flags on `remember`, and store
-validation plus precedence explanation (`doctor`, `doctor explain`).
+compact model-facing JSON defaults for discovery reads (`prime`, `search`, and
+`list`) with `--pretty` for human inspection, context-budgeted `prime` output
+carrying IDs and freshness, stdin/`--file` capture and anchor flags on
+`remember`, and store validation plus precedence explanation (`doctor`,
+`doctor explain`). `get` deliberately keeps raw Markdown as its default because
+the body is the product.
 
 Still open:
 
