@@ -162,7 +162,12 @@ func collectBackfill(store string) ([]backfillRecord, classificationCounts, erro
 		if class != "derived" {
 			continue
 		}
-		records = append(records, backfillRecord{ID: e.ID, TopicKey: e.TopicKey, Body: e.Body, OriginalTitle: e.Title, OriginalSummary: e.Summary, OriginalTitleSource: e.TitleSource, OriginalSummarySource: e.SummarySource, BodySHA256: bodyHash(e.Body), Path: e.BodyPath})
+		records = append(records, backfillRecord{
+			ID: e.ID, TopicKey: e.TopicKey, Body: e.Body,
+			OriginalTitle: e.Title, OriginalSummary: e.Summary,
+			OriginalTitleSource: e.TitleSource, OriginalSummarySource: e.SummarySource,
+			BodySHA256: bodyHash(e.Body), Path: e.BodyPath,
+		})
 	}
 	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
 	return records, counts, nil
@@ -264,7 +269,8 @@ func applyBackfillRecord(ctx context.Context, store string, r backfillRecord, wr
 	if err != nil {
 		return applyResult{ID: r.ID, Status: "failed", Detail: err.Error()}, err
 	}
-	if e.Title == r.ProposedTitle && e.Summary == r.ProposedSummary && e.TitleSource == cairn.MetadataSourceAuthored && e.SummarySource == cairn.MetadataSourceAuthored {
+	if e.Title == r.ProposedTitle && e.Summary == r.ProposedSummary &&
+		e.TitleSource == cairn.MetadataSourceAuthored && e.SummarySource == cairn.MetadataSourceAuthored {
 		return applyResult{ID: r.ID, Status: "already_applied"}, nil
 	}
 	var diverged []string
@@ -288,7 +294,9 @@ func applyBackfillRecord(ctx context.Context, store string, r backfillRecord, wr
 		return applyResult{ID: r.ID, Status: "stale", Detail: err.Error()}, err
 	}
 	if !write {
-		return applyResult{ID: r.ID, Status: "preview", Detail: fmt.Sprintf("title: %q -> %q; summary: %q -> %q", e.Title, r.ProposedTitle, e.Summary, r.ProposedSummary)}, nil
+		detail := fmt.Sprintf("title: %q -> %q; summary: %q -> %q",
+			e.Title, r.ProposedTitle, e.Summary, r.ProposedSummary)
+		return applyResult{ID: r.ID, Status: "preview", Detail: detail}, nil
 	}
 	e.Title = r.ProposedTitle
 	e.Summary = r.ProposedSummary
