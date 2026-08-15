@@ -151,9 +151,9 @@ func TestValidateSummaryLengthAcceptsAtCap(t *testing.T) {
 // (that's flattenTopicKey's job, applied only when deriving Entry.ID).
 func TestValidateTopicKeyAcceptsSlashDelimitedSegments(t *testing.T) {
 	cases := map[string]string{
-		"two segments":     "team/alpha",
-		"three segments":   "a/b/c",
-		"no slash at all":  "plain-topic",
+		"two segments":    "team/alpha",
+		"three segments":  "a/b/c",
+		"no slash at all": "plain-topic",
 	}
 	for name, s := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -59,7 +59,7 @@ var rememberCmd = &cobra.Command{
 
 		topic, _ := cmd.Flags().GetString("topic")
 		if topic != "" {
-			if err := cairn.ValidatePathSegment(topic); err != nil {
+			if err := cairn.ValidateTopicKey(topic); err != nil {
 				return emitError(cmd, classifiedErr(CategoryInvalidInput, topic, fmt.Errorf("invalid --topic: %w", err)))
 			}
 		}
