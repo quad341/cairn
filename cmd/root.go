@@ -57,15 +57,12 @@ func redactArgv(argv []string, cmd *cobra.Command) []string {
 	out := make([]string, len(argv))
 	for i, a := range argv {
 		name, val, hasEq := strings.Cut(a, "=")
+		shorthandVal, shorthandOK := redactShorthandBundle(a, hasEq, cmd, redact)
 		switch {
 		case hasEq && strings.HasPrefix(a, "-") && redact[val]:
 			out[i] = name + "=«redacted»"
-		case !strings.HasPrefix(a, "--") && strings.HasPrefix(a, "-") && len(a) > 2 && redact[a[2:]]:
-			// POSIX/GNU shorthand-combined form: letter and value concatenated
-			// with no separator (e.g. -tSECRET). Neither case above catches
-			// this -- it has no "=" and the whole token isn't itself a
-			// redact-set value, only its suffix (after the shorthand letter) is.
-			out[i] = a[:2] + "«redacted»"
+		case shorthandOK:
+			out[i] = shorthandVal
 		case redact[a]:
 			out[i] = "«redacted»"
 		default:
@@ -73,6 +70,41 @@ func redactArgv(argv []string, cmd *cobra.Command) []string {
 		}
 	}
 	return out
+}
+
+// redactShorthandBundle handles the POSIX/GNU shorthand-combined form, where
+// one or more no-value (boolean/count-style) shorthands precede a
+// value-taking shorthand in the same token with no separator (e.g. -tSECRET,
+// or -v -tSECRET bundled as -vtSECRET). It walks the bundle one character at
+// a time -- mirroring pflag's own parseSingleShortArg loop -- resolving each
+// via cmd's registered shorthands and skipping past any flag whose
+// NoOptDefVal is set (it takes no attached value). The first value-taking
+// shorthand found (NoOptDefVal == "") consumes the rest of the token as its
+// value; only one such flag can appear per bundle, since pflag itself stops
+// there. Returns the redacted token and true only when that value is a
+// member of redact. Returns ("", false) -- signaling the caller to fall
+// through to its other cases -- when the token doesn't have this shape, an
+// equals form already claimed it, an unrecognized shorthand character is hit
+// (never guess), or the resolved value isn't in redact.
+func redactShorthandBundle(a string, hasEq bool, cmd *cobra.Command, redact map[string]bool) (string, bool) {
+	if hasEq || strings.HasPrefix(a, "--") || !strings.HasPrefix(a, "-") || len(a) <= 2 {
+		return "", false
+	}
+	for i := 1; i < len(a); i++ {
+		f := cmd.Flags().ShorthandLookup(string(a[i]))
+		if f == nil {
+			return "", false
+		}
+		if f.NoOptDefVal != "" {
+			continue
+		}
+		val := a[i+1:]
+		if !redact[val] {
+			return "", false
+		}
+		return a[:i+1] + "«redacted»", true
+	}
+	return "", false
 }
 
 // commandsExemptFromStoreGate lists the commands that never touch the
