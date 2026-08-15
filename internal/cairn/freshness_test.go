@@ -120,6 +120,72 @@ func TestFileAnchorNonexistentPathFingerprintEmpty(t *testing.T) {
 	assert.Equalf(t, Unknown, st, "detail: %s", detail)
 }
 
+// TestCommitAnchorInvalidSHAFingerprintEmpty covers crn-fqe, the type=commit
+// half of crn-6az.8.2's named AC gap: ComputeFingerprint's "commit" case
+// previously echoed a.Spec back unconditionally, so a bogus/nonexistent SHA
+// became a stable-but-fabricated fingerprint and Check would report Fresh
+// forever -- the same fabrication class the files-case fix (131c2b0)
+// eliminated for untracked paths, now closed for commit anchors too.
+func TestCommitAnchorInvalidSHAFingerprintEmpty(t *testing.T) {
+	ctx := t.Context()
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	a := Anchor{Type: "commit", Repo: repo, Spec: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+	fp, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	assert.Empty(t, fp, "a commit anchor spec that doesn't resolve to a real commit must not produce a fingerprint")
+}
+
+// TestCommitAnchorValidSHAFingerprintUnchanged pins the type=commit happy
+// path: a spec that does resolve to a real commit object in the anchor's
+// repo must still fingerprint to the spec verbatim -- only a spec that
+// fails to resolve is new behavior after crn-fqe.
+func TestCommitAnchorValidSHAFingerprintUnchanged(t *testing.T) {
+	ctx := t.Context()
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+	sha := strings.TrimSpace(gitFixtureRun(t, repo, "rev-parse", "HEAD"))
+
+	a := Anchor{Type: "commit", Repo: repo, Spec: sha}
+	fp, err := ComputeFingerprint(ctx, a)
+	require.NoError(t, err)
+	assert.Equal(t, sha, fp)
+}
+
+// TestComputeFingerprintCommitAnchorMissingRepoEmpty mirrors the files
+// case's own repo guard just above: a commit anchor's spec can't be checked
+// against anything without a repo to resolve it in, so it's a confirmed
+// negative like an unset files repo, not a git failure.
+func TestComputeFingerprintCommitAnchorMissingRepoEmpty(t *testing.T) {
+	a := Anchor{Type: "commit", Spec: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}
+	fp, err := ComputeFingerprint(t.Context(), a)
+	require.NoError(t, err)
+	assert.Empty(t, fp)
+}
+
+// TestCheckCommitAnchorInvalidSHANoLongerFreshForever is the Check-level
+// regression pin for crn-fqe: Fingerprint is pre-set to the same bogus SHA
+// as Spec, simulating an entry "verified" once under the old code (which
+// just echoed Spec back, so cur == a.Fingerprint trivially matched on every
+// later check). Before the fix this reported Fresh forever and never
+// surfaced Unknown, even though the anchor never pointed at a real commit.
+func TestCheckCommitAnchorInvalidSHANoLongerFreshForever(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "a.go"), []byte("package a\n"), 0o600))
+	gitCommitAll(t, repo, "init")
+
+	bogus := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	e := &Entry{ID: "x", Anchor: Anchor{Type: "commit", Repo: repo, Spec: bogus, Fingerprint: bogus}}
+	st, detail := Check(t.Context(), e)
+	assert.Equalf(t, Unknown, st, "detail: %s", detail)
+}
+
 // TestCheckNeverVerifiedIsFreeEvenWhenAnchorUnresolvable pins crn-0vqk.2's
 // in-scope Check() reorder: a never-verified files anchor must report "never
 // verified", not "not verifiable", even when the repo path can't actually be
