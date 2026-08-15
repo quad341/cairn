@@ -69,12 +69,13 @@ type BatchEntryResult struct {
 
 // BatchResult is cairn remember --batch-file's --json top-level shape.
 type BatchResult struct {
-	BatchID    string             `json:"batch_id"`
-	Total      int                `json:"total"`
-	Succeeded  int                `json:"succeeded"`
-	Failed     int                `json:"failed"`
-	Unanchored int                `json:"unanchored"`
-	Entries    []BatchEntryResult `json:"entries"`
+	BatchID         string             `json:"batch_id"`
+	Total           int                `json:"total"`
+	Succeeded       int                `json:"succeeded"`
+	Failed          int                `json:"failed"`
+	Unanchored      int                `json:"unanchored"`
+	DerivedMetadata int                `json:"derived_metadata"`
+	Entries         []BatchEntryResult `json:"entries"`
 }
 
 // countManifestLines streams path and reports how many lines it has,
@@ -166,7 +167,8 @@ func runRememberBatch(cmd *cobra.Command, batchFile string) error {
 		cmd.SilenceUsage = true
 		cmd.SilenceErrors = true
 	} else {
-		fmt.Printf("%d succeeded, %d failed\n", result.Succeeded, result.Failed)
+		fmt.Printf("%d succeeded, %d failed, %d used derived metadata\n",
+			result.Succeeded, result.Failed, result.DerivedMetadata)
 	}
 
 	if notifyErr != nil {
@@ -219,6 +221,10 @@ func scanBatchFile(cmd *cobra.Command, batchFile, createdBy, batchID string) (
 		}
 		if unanchored {
 			result.Unanchored++
+		}
+		if res.Error == "" && (res.Metadata.TitleSource == cairn.MetadataSourceDerived ||
+			res.Metadata.SummarySource == cairn.MetadataSourceDerived) {
+			result.DerivedMetadata++
 		}
 		if candidate != nil {
 			candidates = append(candidates, *candidate)
@@ -334,6 +340,7 @@ func commitBatchEntry(cmd *cobra.Command, e *cairn.Entry, scope []string, res *B
 	}
 	res.ID = e.ID
 	res.Scope = nonNil(e.Scope)
+	res.Metadata = metadataQuality(e)
 
 	if cairn.IsPrivateScope(e.Scope) {
 		sha, err := e.CommitDirect(cmd.Context(), storePath())

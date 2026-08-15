@@ -28,7 +28,9 @@ func writeFile(t *testing.T, dir, rel, content string) string {
 const sampleEntry = `+++
 id = "test/one"
 title = "One"
+title_source = "authored"
 summary = "s"
+summary_source = "derived"
 type = "reference"
 topic_key = "test/one"
 scope = ["rig:alpha"]
@@ -48,10 +50,20 @@ func TestParseEntry(t *testing.T) {
 	require.NotNil(t, e)
 	assert.Equal(t, "test/one", e.ID)
 	assert.Equal(t, "One", e.Title)
+	assert.Equal(t, MetadataSourceAuthored, e.TitleSource)
+	assert.Equal(t, MetadataSourceDerived, e.SummarySource)
 	assert.Equal(t, []string{"rig:alpha"}, e.Scope)
 	assert.Equal(t, "files", e.Anchor.Type)
 	assert.Len(t, e.Anchor.Paths, 1)
 	assert.Equal(t, "body here\n", e.Body)
+}
+
+func TestParseEntryLegacyMetadataSourcesRemainEmpty(t *testing.T) {
+	e, err := ParseEntry(writeFile(t, t.TempDir(), "global/legacy.md",
+		"+++\nid = \"legacy\"\ntitle = \"Legacy\"\nsummary = \"summary\"\n+++\nbody\n"))
+	require.NoError(t, err)
+	assert.Empty(t, e.TitleSource)
+	assert.Empty(t, e.SummarySource)
 }
 
 func TestParseEntryNoFrontmatter(t *testing.T) {

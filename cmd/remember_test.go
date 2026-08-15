@@ -105,6 +105,24 @@ func TestRememberDoesNotNudgeWhenAnchored(t *testing.T) {
 		"an already-anchored write must produce no anchor advice")
 }
 
+func TestRememberWarnsWhenRetrievalMetadataIsDerived(t *testing.T) {
+	stderr, err := runRememberCapturingStderr(t, "--topic", "valid-topic", "body first sentence")
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "title was derived")
+	assert.Contains(t, stderr, "summary was derived")
+	assert.Contains(t, stderr, "situational claim/action")
+	assert.Contains(t, stderr, "Merged is not deployed")
+}
+
+func TestRememberDoesNotWarnWhenRetrievalMetadataIsAuthored(t *testing.T) {
+	stderr, err := runRememberCapturingStderr(t, "--topic", "valid-topic",
+		"--title", "Build cache misses — inspect the resolved cache directory",
+		"--summary", "Use when a build unexpectedly recompiles; verify which cache directory the process resolved.",
+		"body")
+	require.NoError(t, err)
+	assert.NotContains(t, stderr, "was derived")
+}
+
 // runRememberAgainstStore runs "cairn remember" (plus extraArgs) against an
 // already-existing, already-git-initialized store, for tests that need two
 // remember calls to land in the same store (crn-28ge.1.4's capture-time
@@ -1482,6 +1500,22 @@ func TestRememberJSONPrivateTierOutputsResult(t *testing.T) {
 	assert.NotEmpty(t, result.Commit)
 	assert.Empty(t, result.ReviewBranch)
 	assert.Empty(t, result.Reviewer)
+	assert.Equal(t, cairn.MetadataSourceDerived, result.Metadata.TitleSource)
+	assert.Equal(t, cairn.MetadataSourceDerived, result.Metadata.SummarySource)
+	require.Len(t, result.Metadata.Warnings, 2)
+}
+
+func TestRememberJSONReportsAuthoredMetadataWithoutWarnings(t *testing.T) {
+	out, err := runRememberJSON(t, "--scope", "agent:test",
+		"--title", "Merged is not deployed — check the artifact on PATH",
+		"--summary", "Use after a merge when behavior is unchanged; inspect the deployed executable before debugging source.",
+		"body")
+	require.NoError(t, err)
+	var result RememberResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.Equal(t, cairn.MetadataSourceAuthored, result.Metadata.TitleSource)
+	assert.Equal(t, cairn.MetadataSourceAuthored, result.Metadata.SummarySource)
+	assert.Empty(t, result.Metadata.Warnings)
 }
 
 func TestRememberJSONSharedTierOutputsReviewBranchAndReviewer(t *testing.T) {

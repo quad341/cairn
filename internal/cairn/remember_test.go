@@ -82,6 +82,8 @@ func TestNewEntryParamsTitleSummaryDefaultToAutoDerivation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "auto title", e.Title)
 	assert.Equal(t, "auto title\nauto title\nauto summary from body", e.Summary)
+	assert.Equal(t, MetadataSourceDerived, e.TitleSource)
+	assert.Equal(t, MetadataSourceDerived, e.SummarySource)
 }
 
 // TestNewEntryParamsTitleOnlyAutoDerivesSummary covers the partial-defaulting
@@ -98,6 +100,8 @@ func TestNewEntryParamsTitleOnlyAutoDerivesSummary(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "explicit title", e.Title)
 	assert.Equal(t, "auto title line\nauto summary from body", e.Summary)
+	assert.Equal(t, MetadataSourceAuthored, e.TitleSource)
+	assert.Equal(t, MetadataSourceDerived, e.SummarySource)
 }
 
 // TestNewEntryParamsSummaryOnlyAutoDerivesTitle is
@@ -112,6 +116,8 @@ func TestNewEntryParamsSummaryOnlyAutoDerivesTitle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "auto title line", e.Title)
 	assert.Equal(t, "explicit summary", e.Summary)
+	assert.Equal(t, MetadataSourceDerived, e.TitleSource)
+	assert.Equal(t, MetadataSourceAuthored, e.SummarySource)
 }
 
 // TestNewEntryTruncatesAutoDerivedTitleAndSummaryToCap covers crn-3476 FR-3's
