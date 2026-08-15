@@ -94,7 +94,11 @@ var doctorExplainCmd = &cobra.Command{
 		asJSON, _ := cmd.Flags().GetBool("json")
 
 		if identityRequested(cmd) {
-			res, err := cairn.ExplainForIdentity(cmd.Context(), storePath(), resolveIdentity(cmd), args[0])
+			identity, err := resolveIdentityValidated(cmd)
+			if err != nil {
+				return emitError(cmd, err)
+			}
+			res, err := cairn.ExplainForIdentity(cmd.Context(), storePath(), identity, args[0])
 			if err != nil {
 				return err
 			}
