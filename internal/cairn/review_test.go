@@ -443,6 +443,7 @@ func TestMergeReviewBranchAutoActionableRejectedWhenKindExplicitlySetToNote(t *t
 	store := reviewStore(t)
 	e, err := NewEntry(NewEntryParams{Type: EntryTypeKnowledge, TopicKey: "draft-topic", Scope: []string{"rig:web"}, Body: "a note", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
+	e.Type = "" // genuinely legacy: Kind predates required Entry.Type
 	e.Kind = "remediation"
 	require.NoError(t, e.Create(store))
 	branch, err := e.CommitToReviewBranch(t.Context(), store)
@@ -484,6 +485,7 @@ func TestMergeReviewBranchAutoActionableSucceedsWhenEntryAlreadyHasRemediationKi
 	store := reviewStore(t)
 	e, err := NewEntry(NewEntryParams{Type: EntryTypeKnowledge, TopicKey: "draft-topic", Scope: []string{"rig:web"}, Body: "a note", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
+	e.Type = "" // genuinely legacy: Kind predates required Entry.Type
 	e.Kind = "remediation"
 	require.NoError(t, e.Create(store))
 	branch, err := e.CommitToReviewBranch(t.Context(), store)
