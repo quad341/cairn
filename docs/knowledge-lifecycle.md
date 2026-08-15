@@ -84,6 +84,20 @@ agent/<agent>/     # one agent, private
 - Bodies are the **source of truth** — human-readable, git-versioned, diffable,
   reviewable like code. The SQLite index is a rebuildable view, never the truth.
 
+Legacy retrieval metadata can be repaired without giving cairn LLM access:
+
+```sh
+cairn backfill export --sample 20 >work.jsonl  # deterministic spot-check work list
+# an external agent fills proposed_title and proposed_summary in work.jsonl
+cairn backfill validate --file work.jsonl
+cairn backfill apply --file work.jsonl         # review-only preview; no writes
+cairn backfill apply --file work.jsonl --write # explicit application step
+```
+
+Export skips entries already marked authored. Every proposal carries its original
+metadata and body digest; apply rejects stale entries by ID and divergent field,
+and reports each applied, already-applied, or failed proposal individually.
+
 ### 2. Surface — `cairn prime` / `cairn map`
 
 ```

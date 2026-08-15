@@ -12,6 +12,15 @@ index/*.db-*
 # make build output
 /cairn
 
+# Backfill exports/proposals contain private store content and are runtime-only.
+/cairn-backfill-*.json
+/cairn-backfill-*.jsonl
+/backfill-work*.json
+/backfill-work*.jsonl
+/backfill-proposals*.json
+/backfill-proposals*.jsonl
+/work.jsonl
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
