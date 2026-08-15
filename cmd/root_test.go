@@ -247,11 +247,12 @@ func TestRedactArgvLeavesNonFreeformPositionalAlone(t *testing.T) {
 
 func TestRedactArgvRedactsSuspiciousFlagValue(t *testing.T) {
 	tests := []struct {
-		name string
-		flag string
-		args []string
-		argv []string
-		want []string
+		name      string
+		flag      string
+		shorthand string
+		args      []string
+		argv      []string
+		want      []string
 	}{
 		{
 			name: "equals-joined token flag",
@@ -274,11 +275,28 @@ func TestRedactArgvRedactsSuspiciousFlagValue(t *testing.T) {
 			argv: []string{"cairn", "somecmd", "--API-Credential=hunter2"},
 			want: []string{"cairn", "somecmd", "--API-Credential=«redacted»"},
 		},
+		{
+			// POSIX/GNU shorthand-combined form: letter and value concatenated
+			// with no separator (e.g. curl -ofile.txt). Contains no "=" and the
+			// token itself isn't a bare redact-set value, so it must be caught
+			// by a dedicated shorthand branch rather than the equals-joined or
+			// space-separated ones.
+			name:      "shorthand-combined token flag",
+			flag:      "token",
+			shorthand: "t",
+			args:      []string{"-thunter2"},
+			argv:      []string{"cairn", "somecmd", "-thunter2"},
+			want:      []string{"cairn", "somecmd", "-t«redacted»"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := &cobra.Command{Use: "somecmd"}
-			cmd.Flags().String(tt.flag, "", "")
+			if tt.shorthand != "" {
+				cmd.Flags().StringP(tt.flag, tt.shorthand, "", "")
+			} else {
+				cmd.Flags().String(tt.flag, "", "")
+			}
 			require.NoError(t, cmd.Flags().Parse(tt.args))
 
 			got := redactArgv(tt.argv, cmd)
