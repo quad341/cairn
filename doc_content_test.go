@@ -63,3 +63,37 @@ func TestDesignDocStatesSharedRememberLeavesWorkingTreeUntracked(t *testing.T) {
 		}
 	}
 }
+
+// TestDesignDocStatesFilesAnchorSourcedFromOriginMain pins the crn-44uuq
+// documentation fix: PR #82 changed objectHash (internal/cairn/freshness.go)
+// to source a files-anchor fingerprint from origin/main first, falling back
+// to HEAD only when origin/main does not resolve -- but both docs still
+// described the pre-#82 HEAD-only behavior, contradicting the shipped code
+// and its tests (TestFileAnchorFingerprintTracksOriginMainDrift et al.). A
+// reader relying on either doc to explain a freshness result would draw the
+// wrong conclusion about what "unchanged" actually measures.
+func TestDesignDocStatesFilesAnchorSourcedFromOriginMain(t *testing.T) {
+	body, err := os.ReadFile("docs/DESIGN.md")
+	if err != nil {
+		t.Fatalf("reading docs/DESIGN.md: %v", err)
+	}
+	s := string(body)
+	if !strings.Contains(s, "origin/main") {
+		t.Errorf("docs/DESIGN.md does not name origin/main as the files-anchor fingerprint source")
+	}
+	if strings.Contains(s, "hashes of those\n  paths at `HEAD`") {
+		t.Errorf("docs/DESIGN.md still describes the files-anchor fingerprint as sourced from HEAD unconditionally")
+	}
+
+	body, err = os.ReadFile("docs/knowledge-lifecycle.md")
+	if err != nil {
+		t.Fatalf("reading docs/knowledge-lifecycle.md: %v", err)
+	}
+	s = string(body)
+	if !strings.Contains(s, "origin/main") {
+		t.Errorf("docs/knowledge-lifecycle.md does not name origin/main as the files-anchor fingerprint source")
+	}
+	if strings.Contains(s, "hashes at `HEAD`") {
+		t.Errorf("docs/knowledge-lifecycle.md still describes the files-anchor fingerprint as sourced from HEAD unconditionally")
+	}
+}

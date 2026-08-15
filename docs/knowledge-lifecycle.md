@@ -159,7 +159,8 @@ unanchored; everything derived from code is not.
 Every entry may carry a source **anchor** — what it was derived from — so drift is
 mechanically detectable:
 
-- **`files`** — repo + path globs; fingerprint = the git object hashes at `HEAD`
+- **`files`** — repo + path globs; fingerprint = the git object hashes at
+  `origin/main`, falling back to `HEAD` only if `origin/main` doesn't resolve
   (so "source changed" means a *commit* touched it, not a WIP edit).
 - **`commit`** — pinned to a specific commit.
 - **`query` / `external`** — re-run or TTL *(roadmap)*.
