@@ -67,6 +67,27 @@ func RunPerfScenario(ctx context.Context, store string) Result {
 		return NewResult(DimensionPerf, perfScenarioID, Fail, fmt.Sprintf("seed fixtures: %v", err))
 	}
 
+	// seedEntries commits, which moves HEAD and leaves the index watermark
+	// behind it. Visible() -> Status() -> ensureFresh() would therefore
+	// rebuild the whole index from a perfFixtureCount-file walk INSIDE the
+	// timed region below, and that rebuild — not the query — is what the
+	// number would end up reporting.
+	//
+	// That is not a rounding error, and the rebuild is where all the
+	// variance lives. Idle, the cold call measured 81-115ms against 7.7-12.8ms
+	// for the query itself. Under 12 concurrent processes the cold call
+	// stretched to 801ms while the warm query held at 5-28ms across the same
+	// 48 samples. Running both shapes simultaneously on one box, 72 samples
+	// each, the pre-hoist scenario returned 2 Fail and 56 Degraded verdicts
+	// (slowest 2546ms) and the hoisted one returned 72 Pass (slowest 71ms) —
+	// so the Fail verdict, and the bead auto-filed off it, described an index
+	// rebuild while claiming to describe Visible() (crn-9k30). Build the index
+	// here so the measurement below is the query this scenario says it times.
+	// Reindex cost is real but it is a different dimension's job.
+	if _, err := cairn.Reindex(ctx, store); err != nil {
+		return NewResult(DimensionPerf, perfScenarioID, Fail, fmt.Sprintf("warm index: %v", err))
+	}
+
 	start := time.Now()
 	visible, err := cairn.Visible(ctx, store, []string{rig})
 	elapsed := time.Since(start)
