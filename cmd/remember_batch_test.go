@@ -19,6 +19,9 @@ import (
 // one line of a --batch-file manifest.
 func batchManifestLine(t *testing.T, fields map[string]any) string {
 	t.Helper()
+	if _, ok := fields["type"]; !ok {
+		fields["type"] = cairn.EntryTypeKnowledge
+	}
 	b, err := json.Marshal(fields)
 	require.NoError(t, err)
 	return string(b)
@@ -311,7 +314,8 @@ func TestRememberBatchLargeSingleTierBatchSendsOneNotification(t *testing.T) {
 // a slash-delimited topic must be accepted the same way as the single-entry
 // path, and the resulting entry ID must flatten the slash to a dash.
 func TestRememberBatchAcceptsSlashTopic(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "batched slash-topic entry", "scope": []string{"agent:test"}, "topic": "team/alpha"}),
 	)
 	store, err := runBatchRemember(t, manifest)
@@ -326,7 +330,8 @@ func TestRememberBatchAcceptsSlashTopic(t *testing.T) {
 // line must not stop its siblings from committing, and the plain-text
 // summary must still report both outcomes.
 func TestRememberBatchEntryFailureDoesNotBlockSiblingCommits(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "good entry one", "scope": []string{"agent:test"}, "topic": "sibling-good-1"}),
 		batchManifestLine(t, map[string]any{"body": "bad entry", "scope": []string{"not-a-valid-scope-tag"}, "topic": "sibling-bad"}),
 		batchManifestLine(t, map[string]any{"body": "good entry two", "scope": []string{"agent:test"}, "topic": "sibling-good-2"}),
@@ -341,7 +346,8 @@ func TestRememberBatchEntryFailureDoesNotBlockSiblingCommits(t *testing.T) {
 
 // TestRememberBatchNotificationBodyListsEveryEntryIDAndBranch is FR-4.
 func TestRememberBatchNotificationBodyListsEveryEntryIDAndBranch(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "first shared entry", "scope": []string{"rig:web"}}),
 		batchManifestLine(t, map[string]any{"body": "second shared entry", "scope": []string{"rig:web"}}),
 	)
@@ -368,7 +374,8 @@ func TestRememberBatchNotificationBodyListsEveryEntryIDAndBranch(t *testing.T) {
 // already makes every one of them independently mergeable with zero code
 // changes -- this test is what actually proves it for batch specifically.
 func TestRememberBatchEntriesIndependentlyMergeable(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "mergeable entry one", "scope": []string{"rig:web"}, "topic": "merge-test-one"}),
 		batchManifestLine(t, map[string]any{"body": "mergeable entry two", "scope": []string{"rig:web"}, "topic": "merge-test-two"}),
 		batchManifestLine(t, map[string]any{"body": "mergeable entry three", "scope": []string{"rig:web"}, "topic": "merge-test-three"}),
@@ -394,7 +401,8 @@ func TestRememberBatchEntriesIndependentlyMergeable(t *testing.T) {
 // non-zero when any line failed -- only the JSON shape differs from
 // single-entry mode's convention.
 func TestRememberBatchMixedValidInvalidLinesRecordsPerEntryFailures(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "good entry", "scope": []string{"agent:test"}, "topic": "mix-good-1"}),
 		`{not valid json`,
 		batchManifestLine(t, map[string]any{"body": "bad scope entry", "scope": []string{"not-a-valid-scope-tag"}, "topic": "mix-bad-1"}),
@@ -428,7 +436,8 @@ func TestRememberBatchMixedValidInvalidLinesRecordsPerEntryFailures(t *testing.T
 // explicit recipient, so a batch spanning rig/role/global tiers still sends
 // exactly one notification.
 func TestRememberBatchReviewerFlagOverridesGroupingAcrossTiers(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "rig entry", "scope": []string{"rig:web"}, "topic": "override-rig"}),
 		batchManifestLine(t, map[string]any{"body": "role entry", "scope": []string{"role:builder"}, "topic": "override-role"}),
 		batchManifestLine(t, map[string]any{"body": "global entry", "scope": []string{}, "topic": "override-global"}),
@@ -450,7 +459,8 @@ func TestRememberBatchReviewerFlagOverridesGroupingAcrossTiers(t *testing.T) {
 // entry (a different resolved reviewer) must produce exactly two mail calls,
 // one per distinct reviewer -- not one per entry, and not one flat total.
 func TestRememberBatchGroupsMailByDistinctResolvedReviewer(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "first rig entry", "scope": []string{"rig:web"}, "topic": "group-rig-1"}),
 		batchManifestLine(t, map[string]any{"body": "second rig entry", "scope": []string{"rig:web"}, "topic": "group-rig-2"}),
 		batchManifestLine(t, map[string]any{"body": "role entry", "scope": []string{"role:builder"}, "topic": "group-role-1"}),
@@ -499,7 +509,8 @@ func TestRememberBatchRejectsManifestOverSizeCap(t *testing.T) {
 // while shared entries get a review branch and reviewer (no Commit) exactly
 // like single-entry mode's RememberResult already does per-entry.
 func TestRememberBatchJSONOutputMatchesBatchResultShape(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "private entry", "scope": []string{"agent:test"}, "topic": "shape-private"}),
 		batchManifestLine(t, map[string]any{"body": "shared entry", "scope": []string{"rig:web"}, "topic": "shape-shared"}),
 	)
@@ -515,6 +526,7 @@ func TestRememberBatchJSONOutputMatchesBatchResultShape(t *testing.T) {
 
 	priv := result.Entries[0]
 	assert.NotEmpty(t, priv.ID)
+	assert.Equal(t, cairn.EntryTypeKnowledge, priv.Type)
 	assert.Equal(t, []string{"agent:test"}, priv.Scope)
 	assert.NotEmpty(t, priv.Commit, "a private-tier batch entry must report a commit sha")
 	assert.Empty(t, priv.ReviewBranch)
@@ -534,7 +546,8 @@ func TestRememberBatchJSONOutputMatchesBatchResultShape(t *testing.T) {
 }
 
 func TestRememberBatchExitsNonZeroWhenAnyEntryFails(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "good entry", "scope": []string{"agent:test"}, "topic": "exit-good"}),
 		batchManifestLine(t, map[string]any{"body": "bad entry", "scope": []string{"not-a-valid-scope-tag"}, "topic": "exit-bad"}),
 	)
@@ -543,7 +556,8 @@ func TestRememberBatchExitsNonZeroWhenAnyEntryFails(t *testing.T) {
 }
 
 func TestRememberBatchExitsZeroWhenAllEntriesSucceed(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "good entry one", "scope": []string{"agent:test"}, "topic": "exit-ok-1"}),
 		batchManifestLine(t, map[string]any{"body": "good entry two", "scope": []string{"agent:test"}, "topic": "exit-ok-2"}),
 	)
@@ -568,7 +582,8 @@ func TestRememberBatchExitsZeroWhenAllEntriesSucceed(t *testing.T) {
 // discard as the second line's own per-entry failure, not crash and not
 // write a second file.
 func TestRememberBatchRecurrenceHitRecordedAsPerEntryFailure(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "a recurring fact about the build system", "scope": []string{"agent:test"}, "topic": "recur-test"}),
 		batchManifestLine(t, map[string]any{"body": "a recurring fact about the build system", "scope": []string{"agent:test"}, "topic": "recur-test"}),
 	)
@@ -602,7 +617,8 @@ func TestRememberBatchRecurrenceHitRecordedAsPerEntryFailure(t *testing.T) {
 // created and committed, recording which entry it overrides, rather than
 // being discarded.
 func TestRememberBatchForceFieldBypassesRecurrence(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "a recurring fact about the build system", "scope": []string{"agent:test"}, "topic": "force-recur-test"}),
 		batchManifestLine(t, map[string]any{"body": "a recurring fact about the build system", "scope": []string{"agent:test"}, "topic": "force-recur-test", "force": true}),
 	)
@@ -641,7 +657,8 @@ func TestRememberBatchForceFieldBypassesRecurrence(t *testing.T) {
 // mode's three-line nudge per unanchored line would flood stderr with no
 // value (crn-5wus's whole point was avoiding exactly that noise).
 func TestRememberBatchSuppressesUnanchoredStderrNudge(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "unanchored entry one", "scope": []string{"agent:test"}, "topic": "unanchored-1"}),
 		batchManifestLine(t, map[string]any{"body": "unanchored entry two", "scope": []string{"agent:test"}, "topic": "unanchored-2"}),
 	)
@@ -654,7 +671,8 @@ func TestRememberBatchSuppressesUnanchoredStderrNudge(t *testing.T) {
 // half: the count nudgeIfUnanchored's suppressed nudge rolls into instead,
 // per the design summary ("tally into BatchResult.Unanchored instead").
 func TestRememberBatchTalliesUnanchoredEntryCount(t *testing.T) {
-	manifest := writeBatchManifest(t,
+	manifest := writeBatchManifest(
+		t,
 		batchManifestLine(t, map[string]any{"body": "unanchored entry one", "scope": []string{"agent:test"}, "topic": "unanchored-count-1"}),
 		batchManifestLine(t, map[string]any{"body": "unanchored entry two", "scope": []string{"agent:test"}, "topic": "unanchored-count-2"}),
 	)

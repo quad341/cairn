@@ -101,7 +101,10 @@ func checkMapOutputShape() critic.Result {
 
 	const tag = "rig:critic-ergo-map"
 	const topic = "critic-ergo-map-topic"
-	e, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: topic, Scope: []string{tag}, Body: "ergonomics fixture body", CreatedBy: "critic"})
+	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: topic, Scope: []string{tag},
+		Body: "ergonomics fixture body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return critic.NewResult(critic.DimensionErgonomics, ergonomicsScenarioID, critic.Fail, fmt.Sprintf("build fixture: %v", err))
 	}

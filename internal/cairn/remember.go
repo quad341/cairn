@@ -21,7 +21,30 @@ const (
 	MetadataSourceAuthored = "authored"
 	// MetadataSourceDerived marks a retrieval field synthesized from the body.
 	MetadataSourceDerived = "derived"
+
+	// EntryTypeKnowledge is independently true knowledge about a system.
+	EntryTypeKnowledge = "knowledge"
+	// EntryTypeRemediation is conditional, independently testable recovery knowledge.
+	EntryTypeRemediation = "remediation"
+	// EntryTypePolicy is a directive that belongs in an agent prompt, not cairn.
+	EntryTypePolicy = "policy"
 )
+
+// ValidateNewEntryType enforces cairn's write-time content boundary. Policy is
+// named in the vocabulary so callers can classify honestly, then refused.
+func ValidateNewEntryType(entryType string) error {
+	switch entryType {
+	case EntryTypeKnowledge, EntryTypeRemediation:
+		return nil
+	case EntryTypePolicy:
+		return errors.New("policy is not knowledge and cannot be stored in cairn; " +
+			"put policy in the agent's prompt so it is always enforced rather than depending on retrieval")
+	case "":
+		return errors.New("entry type is required: classify it as knowledge, remediation, or policy")
+	default:
+		return fmt.Errorf("invalid entry type %q: must be knowledge, remediation, or policy", entryType)
+	}
+}
 
 // NewEntryParams holds NewEntry's inputs. An options struct rather than a
 // growing positional-arg list: the original 4 positional args (topicKey,
@@ -29,12 +52,14 @@ const (
 // FR-3/FR-4 (Title, Summary, Anchor), which is where positional args stop
 // being readable at the call site (DESIGN.md §11 Trade-offs).
 //
-// Title and Summary independently default to titleAndSummary(Body)'s
-// existing auto-derivation when left unset (the zero value, ""); Anchor
+// Type is required and validated by NewEntry itself. Title and Summary
+// independently default to titleAndSummary(Body)'s existing auto-derivation
+// when left unset (the zero value, ""); Anchor
 // defaults to Anchor{Type: "none"} when left at its zero value (Type == "").
 // A caller that wants only one of Title/Summary auto-derived may leave just
 // that field unset.
 type NewEntryParams struct {
+	Type      string
 	TopicKey  string
 	Scope     []string
 	Body      string
@@ -50,6 +75,9 @@ type NewEntryParams struct {
 // entries may deliberately share one topic_key (that's the whole point:
 // shadow() picks the most specific at read time, DESIGN.md §3).
 func NewEntry(p NewEntryParams) (*Entry, error) {
+	if err := ValidateNewEntryType(p.Type); err != nil {
+		return nil, err
+	}
 	suffix, err := randomSuffix()
 	if err != nil {
 		return nil, err
@@ -86,6 +114,7 @@ func NewEntry(p NewEntryParams) (*Entry, error) {
 		TitleSource:   titleSource,
 		Summary:       summary,
 		SummarySource: summarySource,
+		Type:          p.Type,
 		TopicKey:      p.TopicKey,
 		Scope:         p.Scope,
 		Anchor:        anchor,

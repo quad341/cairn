@@ -38,15 +38,21 @@ func checkShadowWinsBySpecificity(ctx context.Context, store, n string) Result {
 	topic := "critic-scope-" + n
 	rig := "rig:critic-" + n
 
-	global, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: topic, Body: "global body", CreatedBy: "critic"})
+	global, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: topic, Body: "global body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build global entry: %v", err))
 	}
-	rigOnly, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: topic, Scope: []string{rig}, Body: "rig body", CreatedBy: "critic"})
+	rigOnly, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: topic, Scope: []string{rig},
+		Body: "rig body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build rig entry: %v", err))
 	}
 	rigAndRole, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      cairn.EntryTypeKnowledge,
 		TopicKey:  topic,
 		Scope:     []string{rig, "role:builder"},
 		Body:      "rig+role body",
@@ -83,12 +89,18 @@ func checkShadowTiebreak(ctx context.Context, store, n string) Result {
 	topic := "critic-scope-tiebreak-" + n
 	rig := "rig:critic-" + n
 
-	older, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: topic, Scope: []string{rig}, Body: "older body", CreatedBy: "critic"})
+	older, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: topic, Scope: []string{rig},
+		Body: "older body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build older entry: %v", err))
 	}
 	older.VerifiedAt = "2020-01-01"
-	newer, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: topic, Scope: []string{rig}, Body: "newer body", CreatedBy: "critic"})
+	newer, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: topic, Scope: []string{rig},
+		Body: "newer body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build newer entry: %v", err))
 	}
@@ -121,22 +133,32 @@ func checkShadowTiebreak(ctx context.Context, store, n string) Result {
 // cannot reuse shadow()'s tag-count proxy store-wide.
 func checkShadowMapSupersetSemantics(ctx context.Context, store, n string) Result {
 	incTopic := "critic-scope-inc-" + n
-	a, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: incTopic, Scope: []string{"rig:critic-" + n}, Body: "a body", CreatedBy: "critic"})
+	a, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: incTopic, Scope: []string{"rig:critic-" + n},
+		Body: "a body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build incomparable a: %v", err))
 	}
-	b, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: incTopic, Scope: []string{"role:builder"}, Body: "b body", CreatedBy: "critic"})
+	b, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: incTopic, Scope: []string{"role:builder"},
+		Body: "b body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build incomparable b: %v", err))
 	}
 
 	supTopic := "critic-scope-sup-" + n
 	rig := "rig:critic-" + n
-	rigOnly, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: supTopic, Scope: []string{rig}, Body: "rig body", CreatedBy: "critic"})
+	rigOnly, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: supTopic, Scope: []string{rig},
+		Body: "rig body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("build superset rig-only: %v", err))
 	}
 	rigRole, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      cairn.EntryTypeKnowledge,
 		TopicKey:  supTopic,
 		Scope:     []string{rig, "role:builder"},
 		Body:      "rig+role body",

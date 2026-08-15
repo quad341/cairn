@@ -82,7 +82,7 @@ func TestValidationGitAnchorLoop(t *testing.T) {
 	// --- Step 2: cairn remember with a files anchor ---
 	resetRememberFlags(t)
 	rememberOut, err := execRootJSON(t, "remember", "--json", "--store", store,
-		"--identity", identity, "--topic", topic,
+		"--identity", identity, "--topic", topic, "--type", cairn.EntryTypeKnowledge,
 		"--anchor-repo", fixtureRepo, "--anchor-path", factFile, "--verify",
 		v1Body)
 	require.NoError(t, err, "remember (v1) must succeed: %s", rememberOut)
@@ -151,7 +151,7 @@ func TestValidationGitAnchorLoop(t *testing.T) {
 	const v2Body = "cairn's Check() function (internal/cairn/freshness.go) reports one of four freshness statuses: fresh, stale, unknown, or errored (renamed from incomplete)."
 	resetRememberFlags(t)
 	rederiveOut, rederiveErr := execRootJSON(t, "remember", "--json", "--store", store,
-		"--identity", identity, "--topic", topic,
+		"--identity", identity, "--topic", topic, "--type", cairn.EntryTypeKnowledge,
 		"--anchor-repo", fixtureRepo, "--anchor-path", factFile, "--verify",
 		v2Body)
 	forced := false
@@ -159,7 +159,7 @@ func TestValidationGitAnchorLoop(t *testing.T) {
 		t.Logf("STEP 6a: plain re-remember was blocked (observed, not assumed) -- err=%v out=%s", rederiveErr, rederiveOut)
 		resetRememberFlags(t)
 		rederiveOut, rederiveErr = execRootJSON(t, "remember", "--json", "--store", store,
-			"--identity", identity, "--topic", topic,
+			"--identity", identity, "--topic", topic, "--type", cairn.EntryTypeKnowledge,
 			"--anchor-repo", fixtureRepo, "--anchor-path", factFile, "--verify", "--force",
 			v2Body)
 		forced = true

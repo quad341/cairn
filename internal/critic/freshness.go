@@ -53,6 +53,7 @@ func RunFreshnessScenario(ctx context.Context, store string) Result {
 // Check reports Unknown — the "time-based freshness only" case.
 func checkFreshnessNoAnchor(ctx context.Context, store, n string) Result {
 	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      cairn.EntryTypeKnowledge,
 		TopicKey:  "critic-freshness-no-anchor-" + n,
 		Body:      "no-anchor fixture body",
 		CreatedBy: "critic",
@@ -84,6 +85,7 @@ func checkFreshnessNoAnchor(ctx context.Context, store, n string) Result {
 // "never verified" case, distinct from the no-anchor case above.
 func checkFreshnessNeverVerified(ctx context.Context, store, n, repo string) Result {
 	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      cairn.EntryTypeKnowledge,
 		TopicKey:  "critic-freshness-never-verified-" + n,
 		Body:      "never-verified fixture body",
 		CreatedBy: "critic",
@@ -126,7 +128,10 @@ func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Re
 	}
 	anchor.Fingerprint = fp
 
-	e, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: "critic-freshness-drift-" + n, Body: "drift fixture body", CreatedBy: "critic"})
+	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: "critic-freshness-drift-" + n,
+		Body: "drift fixture body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionFreshness, freshnessScenarioID, Fail, fmt.Sprintf("build entry: %v", err))
 	}
@@ -170,6 +175,7 @@ func checkFreshnessDriftDetection(ctx context.Context, store, n, repo string) Re
 // concurrent git calls from other scenarios/sweeps sharing the process.
 func checkFreshnessInvocationIncomplete(ctx context.Context, store, n, repo string) Result {
 	e, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      cairn.EntryTypeKnowledge,
 		TopicKey:  "critic-freshness-invocation-incomplete-" + n,
 		Body:      "invocation-incomplete fixture body",
 		CreatedBy: "critic",

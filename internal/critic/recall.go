@@ -26,11 +26,15 @@ func RunRecallScenario(ctx context.Context, store string) Result {
 	}
 	rig := "rig:critic-" + n
 
-	global, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: "critic-recall-" + n + "-global", Body: "global body", CreatedBy: "critic"})
+	global, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type: cairn.EntryTypeKnowledge, TopicKey: "critic-recall-" + n + "-global",
+		Body: "global body", CreatedBy: "critic",
+	})
 	if err != nil {
 		return NewResult(DimensionRecall, recallScenarioID, Fail, fmt.Sprintf("build global entry: %v", err))
 	}
 	rigOnly, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      cairn.EntryTypeKnowledge,
 		TopicKey:  "critic-recall-" + n + "-rig-only",
 		Scope:     []string{rig},
 		Body:      "rig-only body",
@@ -40,6 +44,7 @@ func RunRecallScenario(ctx context.Context, store string) Result {
 		return NewResult(DimensionRecall, recallScenarioID, Fail, fmt.Sprintf("build rig-only entry: %v", err))
 	}
 	rigAndRole, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      cairn.EntryTypeKnowledge,
 		TopicKey:  "critic-recall-" + n + "-rig-and-role",
 		Scope:     []string{rig, "role:builder"},
 		Body:      "rig+role body",
@@ -49,6 +54,7 @@ func RunRecallScenario(ctx context.Context, store string) Result {
 		return NewResult(DimensionRecall, recallScenarioID, Fail, fmt.Sprintf("build rig+role entry: %v", err))
 	}
 	otherRig, err := cairn.NewEntry(cairn.NewEntryParams{
+		Type:      cairn.EntryTypeKnowledge,
 		TopicKey:  "critic-recall-" + n + "-other-rig",
 		Scope:     []string{"rig:other-" + n},
 		Body:      "other-rig body",

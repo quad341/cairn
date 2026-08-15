@@ -41,11 +41,16 @@ isolation. Direct by-ID lookup deliberately bypasses identity filtering.
   Bodies are the **source of truth**: human-readable, git-versioned, diffable,
   reviewable like code.
 
-- **Frontmatter convention: every entry declares a `type`.** Cairn follows
-  OKF's minimum-viable-schema principle — exactly one required field per
-  concept, everything else left to the producer. `Entry.Type` exists in the
-  schema as that field today: an optional, producer-supplied convention, not
-  (yet) a code-enforced requirement.
+- **Every new entry declares a content `type`.** `knowledge` is an
+  independently true fact, mechanism, interface, location, or observation;
+  `remediation` is conditional, independently testable recovery knowledge.
+  `policy` names directives, preferences, permissions, and behavioral rules,
+  but is refused at write time: policy belongs in the agent prompt, where its
+  enforcement cannot depend on retrieval. Legacy entries without a type remain
+  readable and queryable as `unclassified`. This top-level `Entry.Type` is
+  distinct from `Entry.Anchor.Type`, which describes freshness evidence. This
+  keeps OKF's minimum-viable-schema principle while making its one classification
+  field an enforced contract rather than a producer convention.
 
 - **The index** is a gitignored **SQLite** database. Entry content and curated
   metadata come from the bodies; the index also carries operational state such
@@ -172,8 +177,9 @@ confirm it with `git branch -a`, `git log --all`, or
 cairn prime                   # scoped topic map + agent usage prompt
 cairn map                     # scoped topic map only
 cairn get <id>                # unscoped exact-ID body + freshness lookup
-cairn remember <body>         # private commit or shared review-branch proposal
+cairn remember --type knowledge <body> # private commit or shared review-branch proposal
 cairn remember --batch-file <path>  # JSONL manifest: many entries in one call
+cairn entries --type <value>  # machine-readable maintenance query by content type
 cairn freshness <id>          # freshness of one entry
 cairn status                  # freshness of every entry
 cairn verify <id>             # recompute and write a supported fingerprint

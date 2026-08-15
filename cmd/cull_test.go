@@ -29,7 +29,7 @@ func gitCommitAll(t *testing.T, dir, msg string) {
 // committed, not just written.
 func seedCommittedEntry(t *testing.T, store string, scope []string) *cairn.Entry {
 	t.Helper()
-	e, err := cairn.NewEntry(cairn.NewEntryParams{TopicKey: "old-fact", Scope: scope, Body: "a body", CreatedBy: "agent:bot"})
+	e, err := cairn.NewEntry(cairn.NewEntryParams{Type: cairn.EntryTypeKnowledge, TopicKey: "old-fact", Scope: scope, Body: "a body", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	gitCommitAll(t, store, "add "+e.ID)

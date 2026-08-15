@@ -94,6 +94,7 @@ func TestSeedEntriesLeavesIndexStale(t *testing.T) {
 	entries := make([]*cairn.Entry, 0, perfFixtureCount)
 	for i := range perfFixtureCount {
 		e, err := cairn.NewEntry(cairn.NewEntryParams{
+			Type:      cairn.EntryTypeKnowledge,
 			TopicKey:  fmt.Sprintf("critic-perf-%s-%d", n, i),
 			Scope:     []string{rig},
 			Body:      "perf fixture body",

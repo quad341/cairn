@@ -65,7 +65,7 @@ type Entry struct {
 	TitleSource   string   `toml:"title_source,omitempty"`
 	Summary       string   `toml:"summary,omitempty"`
 	SummarySource string   `toml:"summary_source,omitempty"`
-	Type          string   `toml:"type,omitempty"`
+	Type          string   `toml:"type,omitempty"` // legacy empty | knowledge | remediation | migration-only policy
 	TopicKey      string   `toml:"topic_key,omitempty"`
 	Scope         []string `toml:"scope,omitempty"` // tags, e.g. ["rig:web"]
 	Anchor        Anchor   `toml:"anchor"`
@@ -74,8 +74,8 @@ type Entry struct {
 	CreatedAt     string   `toml:"created_at,omitempty"`
 	HitCount      int      `toml:"hit_count,omitzero"`
 
-	Kind            string `toml:"kind,omitempty"`             // "" (note, default) | "remediation"
-	AutoActionable  bool   `toml:"auto_actionable,omitempty"`  // only for Kind=="remediation"; reviewer-granted, not self-declared
+	Kind            string `toml:"kind,omitempty"`             // legacy; new writes classify with Type
+	AutoActionable  bool   `toml:"auto_actionable,omitempty"`  // only for Type/legacy Kind == "remediation"
 	RecurrenceCount int    `toml:"recurrence_count,omitzero"`  // incremented on a recurrence match, topic_key + content (crn-qxj3)
 	PromotedBeadID  string `toml:"promoted_bead_id,omitempty"` // empty until promoted; promotion idempotency guard
 	LastRecalledAt  string `toml:"last_recalled_at,omitempty"` // RFC3339; written only by the get/freshness/verify call site (crn-28ge.1.5)
@@ -636,7 +636,8 @@ func Find(ctx context.Context, store, id string) (*Entry, error) {
 	// locked" (crn-ui5i5).
 	err = retryOnBusy(ctx, func() error {
 		now := time.Now().Format(time.RFC3339)
-		return db.QueryRowContext(ctx,
+		return db.QueryRowContext(
+			ctx,
 			`UPDATE entries SET hit_count = hit_count + 1, last_recalled_at = ? WHERE id = ? RETURNING hit_count, last_recalled_at`,
 			now, id,
 		).Scan(&e.HitCount, &e.LastRecalledAt)
@@ -1091,9 +1092,9 @@ func scopeSuperset(super, sub []string) bool {
 // Title/Summary/HitCount to render entries without a body read, crn-0vqk.2/
 // crn-od2x.2). Check only ever reads e.Anchor, ShadowMap only ever reads ID,
 // TopicKey, Scope, VerifiedAt, CreatedAt, and OverriddenDuplicateOf, and Prime
-// additionally reads Title, Summary, and HitCount -- so those are the only
-// fields populated here; Type, CreatedBy, Body, and BodyPath are left
-// zero-valued for every caller. OverriddenDuplicateOf was added for
+// additionally reads Title, Summary, and HitCount. EntriesByType requires Type
+// for unattended maintenance. Those are the populated fields; CreatedBy, Body,
+// and BodyPath remain zero-valued for every caller. OverriddenDuplicateOf was added for
 // moreSpecificReason's override check (crn-3476/crn-zcxq FR-6): without it,
 // every entry Visible/Prime ever see from this path has an empty override,
 // silently no-opping the --force correction shadowReason is supposed to
@@ -1117,7 +1118,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 	}
 
 	rows, err := db.QueryContext(ctx, `SELECT
-		id, title, title_source, summary, summary_source, hit_count, topic_key, verified_at, created_at,
+		id, title, title_source, summary, summary_source, type, hit_count, topic_key, verified_at, created_at,
 		anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
 		overridden_duplicate_of
 		FROM entries ORDER BY id`)
@@ -1131,7 +1132,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 		e := &Entry{}
 		var anchorPaths string
 		if err := rows.Scan(
-			&e.ID, &e.Title, &e.TitleSource, &e.Summary, &e.SummarySource,
+			&e.ID, &e.Title, &e.TitleSource, &e.Summary, &e.SummarySource, &e.Type,
 			&e.HitCount, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt,
 			&e.Anchor.Type, &e.Anchor.Repo, &anchorPaths, &e.Anchor.Spec, &e.Anchor.Fingerprint,
 			&e.OverriddenDuplicateOf,
@@ -1146,6 +1147,28 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+// EntriesByType returns every entry whose persisted content classification
+// exactly matches entryType. The special value "unclassified" selects legacy
+// entries with no Type. This is store-wide maintenance data, not identity-
+// scoped retrieval.
+func EntriesByType(ctx context.Context, store, entryType string) ([]*Entry, error) {
+	entries, err := Status(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	want := entryType
+	if entryType == "unclassified" {
+		want = ""
+	}
+	out := make([]*Entry, 0)
+	for _, e := range entries {
+		if e.Type == want {
+			out = append(out, e)
+		}
 	}
 	return out, nil
 }
