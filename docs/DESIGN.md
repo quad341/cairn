@@ -91,8 +91,9 @@ Every entry may carry a source **anchor** — what it was derived from — so dr
 is *mechanically detectable*:
 
 - `files` — a repo + path globs; fingerprint = the git object hashes of those
-  paths at `HEAD` (so "the source changed" means a *commit* touched it, not a
-  work-in-progress edit).
+  paths at `origin/main`, falling back to `HEAD` only when `origin/main` does
+  not resolve (no origin remote, or the path is not tracked there) — so "the
+  source changed" means a *commit* touched it, not a work-in-progress edit.
 - `commit` — pinned to a specific commit.
 - `query` / `external` — re-run, or TTL (roadmap).
 
