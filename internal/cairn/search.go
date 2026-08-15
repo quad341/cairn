@@ -136,8 +136,10 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 		return SearchResult{}, err
 	}
 	byID := make(map[string]*Entry, len(visible))
+	visibleIDs := make(map[string]bool, len(visible))
 	for _, e := range visible {
 		byID[e.ID] = e
+		visibleIDs[e.ID] = true
 	}
 
 	db, err := openDB(store)
@@ -146,7 +148,21 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 	}
 	defer func() { _ = db.Close() }()
 
-	ranked, err := ftsRanked(ctx, db, terms)
+	ranked, err := ftsRanked(ctx, db, terms, visibleIDs)
+	if err != nil {
+		return SearchResult{}, err
+	}
+	// Captured before paging: TotalMatched reports how many visible entries
+	// matched, not how many fit on this page.
+	totalMatched := len(ranked)
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	pageIDs := make([]string, len(ranked))
+	for i, r := range ranked {
+		pageIDs[i] = r.id
+	}
+	snippets, err := snippetsFor(ctx, db, pageIDs, terms)
 	if err != nil {
 		return SearchResult{}, err
 	}
@@ -156,21 +172,12 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 		Identity:     identity,
 		Query:        query,
 		QueryTerms:   terms,
+		TotalMatched: totalMatched,
 		TotalVisible: len(visible),
 		Hits:         []SearchHit{},
 	}
 	for _, r := range ranked {
-		e, ok := byID[r.id]
-		if !ok {
-			// Matched the index but is not visible to this identity, or lost
-			// its topic key to a more specific entry. Not an error: it is the
-			// scope filter and the shadow resolver doing their job.
-			continue
-		}
-		result.TotalMatched++
-		if len(result.Hits) >= limit {
-			continue
-		}
+		e := byID[r.id]
 		status, detail := Check(ctx, e)
 		result.Hits = append(result.Hits, SearchHit{
 			ID:        e.ID,
@@ -179,7 +186,7 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 			Summary:   truncateRunes(e.Summary, searchSummaryCap),
 			HitCount:  e.HitCount,
 			Score:     r.score,
-			Snippet:   r.snippet,
+			Snippet:   snippets[e.ID],
 			Scope:     e.Scope,
 			Freshness: FreshnessInfo{Status: status, Detail: detail},
 		})
@@ -187,82 +194,63 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 	return result, nil
 }
 
-// rankedRow is one FTS5 match, before visibility filtering.
+// rankedRow is one scored entry, already known to be visible to the caller.
 type rankedRow struct {
-	id      string
-	score   float64
-	snippet string
+	id    string
+	score float64
 }
 
-// ftsRanked runs the MATCH query and returns every hit, best first.
+// termHit records where in an entry a query term landed. Field membership
+// comes from FTS5 itself rather than from string comparison in Go, so it uses
+// exactly the same porter stemming as the index: "merges" in a title really
+// does register for the query term "merged", and "database-migration" really
+// does not register for "data".
+type termHit struct {
+	topicKey bool
+	title    bool
+}
+
+// ftsRanked scores every visible entry matching any of terms, best first.
 //
-// It deliberately does not push the caller's limit into SQL. The visibility
-// filter runs in Go over these rows, so a SQL LIMIT could return a page made
-// entirely of entries the caller cannot see and report zero hits while
-// relevant visible ones sat just past the cutoff. Store size here is
-// hundreds to low thousands of entries and only matched rows are returned,
-// so ranking the full match set is cheap.
-func ftsRanked(ctx context.Context, db *sql.DB, terms []string) ([]rankedRow, error) {
-	var total int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM entries_fts`).Scan(&total); err != nil {
-		return nil, err
-	}
+// Both the ranking and the corpus statistics behind it are computed over the
+// caller's visible set alone. That is stronger than filtering results
+// afterwards: document frequency, and therefore every term's IDF, is a
+// property of the corpus it is measured against, so including entries the
+// caller cannot see would let an invisible entry depress a term's weight and
+// silently reorder the visible ones. Filtering after ranking prevents hidden
+// entries from taking result slots but not from changing the order of the
+// slots that remain.
+func ftsRanked(ctx context.Context, db *sql.DB, terms []string, visible map[string]bool) ([]rankedRow, error) {
+	total := len(visible)
 	if total == 0 {
 		return nil, nil
 	}
-
-	// One lookup per term, so scoring knows exactly which terms each entry
-	// matched. FTS5 can rank a whole OR expression in a single query, but it
-	// will not tell you *why* a row matched, and "how many distinct
-	// meaningful query terms does this entry contain" is precisely the
-	// signal that separates a real answer from an entry that happened to
-	// share one common word.
-	matchedBy := map[string][]string{} // entry id -> terms it matched
-	idf := map[string]float64{}
-	for _, t := range terms {
-		ids, err := idsMatching(ctx, db, t)
-		if err != nil {
-			return nil, err
-		}
-		if len(ids) == 0 {
-			continue
-		}
-		idf[t] = inverseDocFrequency(len(ids), total)
-		for _, id := range ids {
-			matchedBy[id] = append(matchedBy[id], t)
-		}
-	}
-	if len(matchedBy) == 0 {
-		return nil, nil
-	}
-
-	fields, err := entryFields(ctx, db)
+	matched, idf, err := collectTermHits(ctx, db, terms, visible, total)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]rankedRow, 0, len(matchedBy))
-	for id, hitTerms := range matchedBy {
-		f := fields[id]
+	out := make([]rankedRow, 0, len(matched))
+	for id, hits := range matched {
 		var score float64
-		for _, t := range hitTerms {
+		for t, h := range hits {
 			// A term is worth its rarity, multiplied up when it lands in a
 			// field that identifies the entry rather than merely mentioning
-			// it. Summing over *distinct* terms is what makes an entry that
-			// matches four of the query's words beat one that repeats a
-			// single common word forty times -- the failure mode that made
-			// raw BM25 over a sentence-length OR query score 6.7% recall@10
-			// on the reference store.
+			// it. Summing over *distinct* terms is what makes an entry
+			// matching four of the query's words beat one repeating a single
+			// common word forty times -- the failure mode that made raw BM25
+			// over a sentence-length OR query score 6.7% recall@10 on the
+			// reference store.
 			weight := 1.0
-			if containsTerm(f.topicKey, t) {
+			if h.topicKey {
 				weight += topicKeyTermBoost
 			}
-			if containsTerm(f.title, t) {
+			if h.title {
 				weight += titleTermBoost
 			}
 			score += idf[t] * weight
 		}
-		out = append(out, rankedRow{id: id, score: score, snippet: f.snippet(terms)})
+		out = append(out, rankedRow{id: id, score: score})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
@@ -272,6 +260,53 @@ func ftsRanked(ctx context.Context, db *sql.DB, terms []string) ([]rankedRow, er
 		return out[i].id < out[j].id
 	})
 	return out, nil
+}
+
+// collectTermHits resolves, for every query term, which visible entries
+// contain it and where -- plus that term's IDF over the visible corpus.
+func collectTermHits(ctx context.Context, db *sql.DB, terms []string, visible map[string]bool, total int) (
+	map[string]map[string]termHit, map[string]float64, error,
+) {
+	matched := map[string]map[string]termHit{} // entry id -> term -> where it hit
+	idf := map[string]float64{}
+	for _, t := range terms {
+		ids, err := idsMatching(ctx, db, "", t)
+		if err != nil {
+			return nil, nil, err
+		}
+		ids = retainVisible(ids, visible)
+		if len(ids) == 0 {
+			continue
+		}
+		idf[t] = inverseDocFrequency(len(ids), total)
+
+		topicHits, err := idSet(ctx, db, "topic_key", t)
+		if err != nil {
+			return nil, nil, err
+		}
+		titleHits, err := idSet(ctx, db, "title", t)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, id := range ids {
+			if matched[id] == nil {
+				matched[id] = map[string]termHit{}
+			}
+			matched[id][t] = termHit{topicKey: topicHits[id], title: titleHits[id]}
+		}
+	}
+	return matched, idf, nil
+}
+
+// retainVisible drops ids the caller cannot see.
+func retainVisible(ids []string, visible map[string]bool) []string {
+	out := ids[:0]
+	for _, id := range ids {
+		if visible[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // topicKeyTermBoost and titleTermBoost multiply a term's IDF when it appears
@@ -296,11 +331,13 @@ func ftsRanked(ctx context.Context, db *sql.DB, terms []string) ([]rankedRow, er
 //	6.0 / 3.0       33.3%      60.0%   0.390
 //	10.0 / 4.0      26.7%      60.0%   0.352
 //
-// The boosts themselves clearly earn their keep -- they nearly double
-// recall@10 over pure IDF. Choosing between the three non-zero rows is a
-// different matter: at n=15 they differ by one or two queries, which is
-// noise. These are the best of the four measured, not a calibrated optimum.
-// Re-tune when the eval set is larger; do not hand-tune them on 15 samples.
+// Read that as: field boosting itself clearly earns its keep, nearly doubling
+// recall@10 over pure IDF. The choice *among* the non-zero rows does not --
+// every one of them reaches the same recall@10, and 6.0/3.0 wins the earlier
+// ranks by one or two queries out of fifteen, which is noise. These are
+// provisional defaults selected in-sample, not a calibrated optimum, and the
+// 60% is development-set performance rather than an expectation about new
+// queries. Re-tune when the eval set is larger; do not hand-tune on n=15.
 var (
 	topicKeyTermBoost = 6.0
 	titleTermBoost    = 3.0
@@ -317,10 +354,18 @@ func inverseDocFrequency(df, total int) float64 {
 	return math.Log(1 + (float64(total)-float64(df)+0.5)/(float64(df)+0.5))
 }
 
-// idsMatching returns the ids of every entry matching a single term.
-func idsMatching(ctx context.Context, db *sql.DB, term string) ([]string, error) {
+// idsMatching returns the ids of every entry matching a single term. An empty
+// column searches all of them; otherwise the match is confined to that
+// column.
+func idsMatching(ctx context.Context, db *sql.DB, column, term string) ([]string, error) {
+	match := buildFTSQuery([]string{term})
+	if column != "" {
+		// column is always one of this file's own literals, never caller
+		// input, so it cannot inject FTS5 syntax here.
+		match = column + ":" + match
+	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT id FROM entries_fts WHERE entries_fts MATCH ?`, buildFTSQuery([]string{term}))
+		`SELECT id FROM entries_fts WHERE entries_fts MATCH ?`, match)
 	if err != nil {
 		return nil, fmt.Errorf("search query failed for term %q: %w", term, err)
 	}
@@ -337,83 +382,84 @@ func idsMatching(ctx context.Context, db *sql.DB, term string) ([]string, error)
 	return ids, rows.Err()
 }
 
-// indexedFields is an entry's searchable text, as stored.
-type indexedFields struct {
-	topicKey string
-	title    string
-	summary  string
-	body     string
+// idSet is idsMatching as a set, for membership tests.
+func idSet(ctx context.Context, db *sql.DB, column, term string) (map[string]bool, error) {
+	ids, err := idsMatching(ctx, db, column, term)
+	if err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set, nil
 }
 
-// snippet returns a short window of body text around the first query term
-// that occurs in it, so a caller can see *why* an entry matched without
-// pulling the whole body.
+// snippetsFor returns a short window of body text around a query term, for
+// the handful of entries actually being returned.
+//
+// Bodies are loaded here, after ranking and limiting, rather than during
+// scoring: scoring needs only which terms an entry matched, which FTS5
+// already knows. Loading every body to score a query would read the whole
+// store on every search -- tolerable at 500 entries, roughly 30 MB per query
+// at 10,000.
+func snippetsFor(ctx context.Context, db *sql.DB, ids, terms []string) (map[string]string, error) {
+	out := make(map[string]string, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	// The concatenated segment is always literal "?" placeholders, one per
+	// id; the ids themselves are parameterized through args.
+	//nolint:gosec // placeholders are literal "?"s; values are parameterized
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, body FROM entries_fts WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var id, body string
+		if err := rows.Scan(&id, &body); err != nil {
+			return nil, err
+		}
+		out[id] = bodySnippet(body, terms)
+	}
+	return out, rows.Err()
+}
+
+// bodySnippet cuts a readable window around the first query term occurring in
+// body.
 //
 // FTS5's own snippet() is not used: it is only available on a query that
-// MATCHes, and scoring here is assembled from per-term lookups rather than
-// one ranked MATCH.
-func (f indexedFields) snippet(terms []string) string {
+// MATCHes, and scoring here is assembled from per-term lookups rather than one
+// ranked MATCH.
+func bodySnippet(body string, terms []string) string {
 	const window = 160
-	hay := strings.ToLower(f.body)
+	hay := strings.ToLower(body)
 	for _, t := range terms {
 		i := strings.Index(hay, t)
 		if i < 0 {
 			continue
 		}
 		start := max(i-window/2, 0)
-		end := min(start+window, len(f.body))
-		out := strings.Join(strings.Fields(f.body[start:end]), " ")
+		end := min(start+window, len(body))
+		out := strings.Join(strings.Fields(body[start:end]), " ")
 		if start > 0 {
 			out = "..." + out
 		}
-		if end < len(f.body) {
+		if end < len(body) {
 			out += "..."
 		}
 		return out
 	}
 	return ""
-}
-
-// entryFields loads every entry's indexed text in one query. The store is
-// hundreds to low thousands of entries, so reading them all costs less than
-// issuing a second round of per-candidate lookups.
-func entryFields(ctx context.Context, db *sql.DB) (map[string]indexedFields, error) {
-	rows, err := db.QueryContext(ctx, `SELECT id, topic_key, title, summary, body FROM entries_fts`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	out := map[string]indexedFields{}
-	for rows.Next() {
-		var id string
-		var f indexedFields
-		if err := rows.Scan(&id, &f.topicKey, &f.title, &f.summary, &f.body); err != nil {
-			return nil, err
-		}
-		out[id] = f
-	}
-	return out, rows.Err()
-}
-
-// containsTerm reports whether field contains term as a token.
-//
-// Matching is prefix-tolerant in both directions because the index is
-// porter-stemmed but this comparison is not: the stored token for "merges"
-// and the query token "merged" share only the stem "merg". Requiring four
-// leading characters keeps that from collapsing short unrelated words into
-// each other.
-func containsTerm(field, term string) bool {
-	if field == "" {
-		return false
-	}
-	for _, ft := range ftsTokenPattern.FindAllString(strings.ToLower(field), -1) {
-		if ft == term || (len(term) >= 4 && len(ft) >= 4 &&
-			(strings.HasPrefix(ft, term) || strings.HasPrefix(term, ft))) {
-			return true
-		}
-	}
-	return false
 }
 
 // ftsTokenPattern matches the runs of characters FTS5's unicode61 tokenizer
