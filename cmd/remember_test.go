@@ -232,6 +232,22 @@ func stubGCFail(t *testing.T) {
 	writeStubGC(t, "#!/bin/sh\nexit 1\n")
 }
 
+// stubGCWithRig mirrors stubGC (a stub gc binary that always succeeds), but
+// pins GC_RIG to rig instead of writeStubGC's fixed "test-rig" -- letting a
+// test control rig/role-tier default-reviewer resolution directly, including
+// simulating $GC_RIG being unset (rig == "") to make resolveReviewer's
+// rig-tier branch fail deterministically. A caller cannot get this effect by
+// just calling t.Setenv("GC_RIG", ...) around a runStaleBranches/runRemember
+// call that stubs with plain stubGC: writeStubGC's own GC_RIG pin runs
+// inside that call (stub(t) fires before rootCmd.Execute()) and always wins.
+func stubGCWithRig(rig string) func(*testing.T) {
+	return func(t *testing.T) {
+		t.Helper()
+		writeStubGC(t, "#!/bin/sh\nexit 0\n")
+		t.Setenv("GC_RIG", rig)
+	}
+}
+
 // writeStubGC shadows the real gc binary on PATH with a stub running script,
 // and pins GC_RIG to a fixed value so tier-default reviewer resolution
 // (defaultReviewer) is deterministic regardless of the real environment this
