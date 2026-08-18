@@ -251,6 +251,65 @@ func TestDoctorExplainWithIdentityFiltersCandidates(t *testing.T) {
 	assert.Contains(t, out, "does not satisfy")
 }
 
+// TestDoctorExplainRejectsMalformedEnvIdentity confirms doctor explain
+// validates $CAIRN_IDENTITY the same way list/map/prime/remember do.
+// $CAIRN_IDENTITY is split on whitespace (identity.go's identityWithSource),
+// so a natural comma-joined value like "rig:alpha,role:investigator"
+// produces one malformed tag containing a literal comma. Before this fix,
+// doctorExplainCmd resolved identity via the unvalidated resolveIdentity and
+// that malformed tag flowed straight into scope resolution, silently
+// matching nothing ("winner: none") instead of erroring — indistinguishable
+// from a genuinely unrelated identity. Must go through the env var, not
+// --identity: that flag is a pflag StringSlice and cobra comma-splits it
+// before this code ever sees a single string, so it cannot reproduce this.
+func TestDoctorExplainRejectsMalformedEnvIdentity(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "rig/alpha/s1.md", explainLessSpecific)
+	seedEntry(t, dir, "role/investigator/s2.md", explainMoreSpecific)
+
+	t.Setenv("CAIRN_IDENTITY", "rig:alpha,role:investigator")
+
+	_, err := runDoctorExplain(t, dir, "shared")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid identity tag")
+}
+
+// TestDoctorExplainAcceptsCommaIdentityFlag is the regression guard for
+// TestDoctorExplainRejectsMalformedEnvIdentity's fix: cobra comma-splits a
+// StringSlice flag before resolveIdentityValidated ever sees it, so
+// "rig:alpha,role:investigator" passed via --identity must keep resolving
+// as the two valid tags ["rig:alpha", "role:investigator"], not get
+// rejected the way the equivalent env var value now is.
+func TestDoctorExplainAcceptsCommaIdentityFlag(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "rig/alpha/s1.md", explainLessSpecific)
+	seedEntry(t, dir, "role/investigator/s2.md", explainMoreSpecific)
+
+	out, err := runDoctorExplain(t, dir, "shared", "--identity", "rig:alpha,role:investigator")
+	require.NoError(t, err)
+	assert.Contains(t, out, "winner: s2")
+}
+
+// TestDoctorExplainJSONRendersInvalidInputForMalformedIdentity is the
+// end-to-end counterpart to TestDoctorExplainRejectsMalformedEnvIdentity:
+// it proves the malformed-identity error is not just returned but actually
+// rendered through emitError's --json envelope, the same way
+// TestEmitErrorWritesEnvelopeWithJSON (cmd/format_test.go) proves emitError
+// itself renders a CategoryInvalidInput error. Composition of those two
+// facts implies this outcome, but nothing previously exercised doctor
+// explain's --json output on this error path directly.
+func TestDoctorExplainJSONRendersInvalidInputForMalformedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "rig/alpha/s1.md", explainLessSpecific)
+	seedEntry(t, dir, "role/investigator/s2.md", explainMoreSpecific)
+
+	t.Setenv("CAIRN_IDENTITY", "rig:alpha,role:investigator")
+
+	out, err := runDoctorExplain(t, dir, "shared", "--json")
+	require.Error(t, err)
+	assert.Contains(t, out, `"category": "invalid_input"`)
+}
+
 func TestDoctorExplainJSONOutput(t *testing.T) {
 	dir := t.TempDir()
 	seedEntry(t, dir, "rig/alpha/s1.md", explainLessSpecific)
