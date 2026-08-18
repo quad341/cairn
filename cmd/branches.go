@@ -188,6 +188,9 @@ func evaluateBranch(cmd *cobra.Command, b cairn.ReviewBranch, notifyAfter, escal
 	reviewer, err := resolveReviewer(cmd, b.Tier, b.Value)
 	if err != nil {
 		f.Error = fmt.Sprintf("resolve reviewer: %v", err)
+		if f.Status == "escalate" {
+			f.Status = "error"
+		}
 		return f
 	}
 	f.Reviewer = reviewer
