@@ -881,6 +881,145 @@ test_static_shared_branch_rejection_pattern_present() {
 # (crn-elja.1).
 
 # ---------------------------------------------------------------------------
+# Deploy ancestry/scope safety (crn-oj8dl) — assert_deploy_ancestry_scope.
+# ---------------------------------------------------------------------------
+
+# new_scope_repo <commit_msg> <changed_file> <file_content>
+#
+# Bare remote with one commit on main (pushed, so origin/main resolves), plus
+# a local clone with a deploy-branch-shaped branch carrying ONE commit that
+# writes <file_content> to <changed_file> with message <commit_msg>. Echoes
+# "<work-dir> <remote-dir>" (space-separated — callers split and rm -rf both).
+new_scope_repo() {
+    local commit_msg="$1" changed_file="$2" file_content="$3"
+    local remote seed work
+    remote="$(new_bare_remote)"
+    seed="$(mktemp -d "${TMPDIR:-/tmp}/gc-deployer-scope-seed.XXXXXX")"
+    git clone -q "$remote" "$seed" 2>/dev/null
+    (
+        cd "$seed" || exit 1
+        git config commit.gpgsign false
+        printf 'base\n' > base.txt; git add -A; git commit -qm base
+        git push -q origin main
+    )
+    work="$(mktemp -d "${TMPDIR:-/tmp}/gc-deployer-scope-work.XXXXXX")"
+    git clone -q "$remote" "$work"
+    (
+        cd "$work" || exit 1
+        git config commit.gpgsign false
+        git checkout -q -b "deploy/crn-scope1-gate"
+        mkdir -p "$(dirname "$changed_file")"
+        printf '%s' "$file_content" > "$changed_file"
+        git add -A && git commit -qm "$commit_msg"
+    )
+    printf '%s %s' "$work" "$remote"
+    rm -rf "$seed"
+}
+
+test_ancestry_scope_passes_when_cited_and_in_scope() {
+    local pair work remote
+    pair="$(new_scope_repo "feat: add widget (refs crn-scope1)" "cmd/widget.go" "package cmd
+")"
+    work="${pair%% *}"; remote="${pair##* }"
+    local rc
+    ( cd "$work" && assert_deploy_ancestry_scope "crn-scope1" "main" "cmd/*.go" ) >/dev/null 2>&1; rc=$?
+    if [[ $rc -eq 0 ]]; then
+        record_pass "ancestry-scope/passes-when-cited-and-in-scope"
+    else
+        record_fail "ancestry-scope/passes-when-cited-and-in-scope" "expected rc=0, got rc=$rc"
+    fi
+    rm -rf "$work" "$remote"
+}
+
+test_ancestry_scope_refuses_uncited_commit() {
+    local pair work remote
+    pair="$(new_scope_repo "feat: add widget" "cmd/widget.go" "package cmd
+")"
+    work="${pair%% *}"; remote="${pair##* }"
+    local rc out
+    out="$(cd "$work" && assert_deploy_ancestry_scope "crn-scope1" "main" "cmd/*.go" 2>&1)"; rc=$?
+    if [[ $rc -eq 1 ]] && printf '%s' "$out" | grep -qF "crn-scope1"; then
+        record_pass "ancestry-scope/refuses-uncited-commit (rc=1)"
+    else
+        record_fail "ancestry-scope/refuses-uncited-commit" "rc=$rc out=$out"
+    fi
+    rm -rf "$work" "$remote"
+}
+
+test_ancestry_scope_refuses_out_of_scope_path() {
+    local pair work remote
+    pair="$(new_scope_repo "feat: add settings (refs crn-scope1)" ".claude/settings.json" "{}")"
+    work="${pair%% *}"; remote="${pair##* }"
+    local rc out
+    out="$(cd "$work" && assert_deploy_ancestry_scope "crn-scope1" "main" "cmd/*.go" 2>&1)"; rc=$?
+    if [[ $rc -eq 2 ]] && printf '%s' "$out" | grep -qF ".claude/settings.json"; then
+        record_pass "ancestry-scope/refuses-out-of-scope-path (rc=2)"
+    else
+        record_fail "ancestry-scope/refuses-out-of-scope-path" "rc=$rc out=$out"
+    fi
+    rm -rf "$work" "$remote"
+}
+
+test_ancestry_scope_multiple_patterns_or_matching() {
+    local pair work remote
+    pair="$(new_scope_repo "docs: note widget (refs crn-scope1)" "docs/widget.md" "# widget
+")"
+    work="${pair%% *}"; remote="${pair##* }"
+    local rc
+    ( cd "$work" && assert_deploy_ancestry_scope "crn-scope1" "main" "cmd/*.go" "docs/*.md" ) >/dev/null 2>&1; rc=$?
+    if [[ $rc -eq 0 ]]; then
+        record_pass "ancestry-scope/multiple-patterns-or-matching"
+    else
+        record_fail "ancestry-scope/multiple-patterns-or-matching" "expected rc=0, got rc=$rc"
+    fi
+    rm -rf "$work" "$remote"
+}
+
+test_ancestry_scope_rejects_bad_usage() {
+    local pair work remote
+    pair="$(new_scope_repo "feat: add widget (refs crn-scope1)" "cmd/widget.go" "package cmd
+")"
+    work="${pair%% *}"; remote="${pair##* }"
+    local rc_no_bead rc_no_base rc_no_pattern rc_bad_base
+    ( cd "$work" && assert_deploy_ancestry_scope "" "main" "cmd/*.go" ) >/dev/null 2>&1; rc_no_bead=$?
+    ( cd "$work" && assert_deploy_ancestry_scope "crn-scope1" "" "cmd/*.go" ) >/dev/null 2>&1; rc_no_base=$?
+    ( cd "$work" && assert_deploy_ancestry_scope "crn-scope1" "main" ) >/dev/null 2>&1; rc_no_pattern=$?
+    ( cd "$work" && assert_deploy_ancestry_scope "crn-scope1" "no-such-base-ref" "cmd/*.go" ) >/dev/null 2>&1; rc_bad_base=$?
+    if [[ $rc_no_bead -eq 10 && $rc_no_base -eq 10 && $rc_no_pattern -eq 10 && $rc_bad_base -eq 10 ]]; then
+        record_pass "ancestry-scope/rejects-bad-usage (empty bead-id, empty base-ref, no patterns, unresolvable base -> rc 10)"
+    else
+        record_fail "ancestry-scope/rejects-bad-usage" "rc_no_bead=$rc_no_bead rc_no_base=$rc_no_base rc_no_pattern=$rc_no_pattern rc_bad_base=$rc_bad_base"
+    fi
+    rm -rf "$work" "$remote"
+}
+
+test_ancestry_scope_noop_when_no_new_commits() {
+    # Deploy branch checked out with zero commits beyond the cut point:
+    # trivially in scope (nothing to check), rc=0.
+    local remote work seed
+    remote="$(new_bare_remote)"
+    seed="$(mktemp -d "${TMPDIR:-/tmp}/gc-deployer-scope-seed.XXXXXX")"
+    git clone -q "$remote" "$seed" 2>/dev/null
+    (
+        cd "$seed" || exit 1
+        git config commit.gpgsign false
+        printf 'base\n' > base.txt; git add -A; git commit -qm base
+        git push -q origin main
+    )
+    work="$(mktemp -d "${TMPDIR:-/tmp}/gc-deployer-scope-work.XXXXXX")"
+    git clone -q "$remote" "$work"
+    ( cd "$work" && git config commit.gpgsign false && git checkout -q -b "deploy/crn-scope1-gate" )
+    local rc
+    ( cd "$work" && assert_deploy_ancestry_scope "crn-scope1" "main" "cmd/*.go" ) >/dev/null 2>&1; rc=$?
+    if [[ $rc -eq 0 ]]; then
+        record_pass "ancestry-scope/noop-when-no-new-commits (rc=0)"
+    else
+        record_fail "ancestry-scope/noop-when-no-new-commits" "expected rc=0, got rc=$rc"
+    fi
+    rm -rf "$remote" "$work" "$seed"
+}
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -912,6 +1051,12 @@ run_all() {
     test_resolve_deploy_branch_target_incident_replay
     test_resolve_deploy_branch_target_rejects_bad_input
     test_static_shared_branch_rejection_pattern_present
+    test_ancestry_scope_passes_when_cited_and_in_scope
+    test_ancestry_scope_refuses_uncited_commit
+    test_ancestry_scope_refuses_out_of_scope_path
+    test_ancestry_scope_multiple_patterns_or_matching
+    test_ancestry_scope_rejects_bad_usage
+    test_ancestry_scope_noop_when_no_new_commits
 
     echo
     echo "pass=$pass fail=$fail"
