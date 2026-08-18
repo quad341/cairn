@@ -290,6 +290,26 @@ func TestDoctorExplainAcceptsCommaIdentityFlag(t *testing.T) {
 	assert.Contains(t, out, "winner: s2")
 }
 
+// TestDoctorExplainJSONRendersInvalidInputForMalformedIdentity is the
+// end-to-end counterpart to TestDoctorExplainRejectsMalformedEnvIdentity:
+// it proves the malformed-identity error is not just returned but actually
+// rendered through emitError's --json envelope, the same way
+// TestEmitErrorWritesEnvelopeWithJSON (cmd/format_test.go) proves emitError
+// itself renders a CategoryInvalidInput error. Composition of those two
+// facts implies this outcome, but nothing previously exercised doctor
+// explain's --json output on this error path directly.
+func TestDoctorExplainJSONRendersInvalidInputForMalformedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "rig/alpha/s1.md", explainLessSpecific)
+	seedEntry(t, dir, "role/investigator/s2.md", explainMoreSpecific)
+
+	t.Setenv("CAIRN_IDENTITY", "rig:alpha,role:investigator")
+
+	out, err := runDoctorExplain(t, dir, "shared", "--json")
+	require.Error(t, err)
+	assert.Contains(t, out, `"category": "invalid_input"`)
+}
+
 func TestDoctorExplainJSONOutput(t *testing.T) {
 	dir := t.TempDir()
 	seedEntry(t, dir, "rig/alpha/s1.md", explainLessSpecific)
