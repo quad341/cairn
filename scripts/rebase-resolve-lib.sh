@@ -652,3 +652,124 @@ resolve_deploy_branch_target() {
     printf '%s\n' "$deploy_branch"
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# Deploy ancestry/scope safety — new for crn-oj8dl. resolve_deploy_branch_target
+# and assert_safe_push_target (above) close the crn-wya incident's WHERE: they
+# guarantee the deploy branch is cut from exactly the reviewed SHA and pushed
+# to an isolated target. Neither checks WHAT is actually in that diff. The
+# deployer's gate-run for crn-a17wj substituted a manual check in place of this
+# function: read the diff-owned file list by hand, confirm nothing outside the
+# reviewed bead's scope snuck in (e.g. `.claude/**`), and confirm every commit
+# in range names the build bead it implements. assert_deploy_ancestry_scope is
+# that check made mechanical.
+# ---------------------------------------------------------------------------
+
+# assert_deploy_ancestry_scope <bead-id> <base-ref> <allowed-path-pattern>...
+#
+# Hard gate for the deployer to call on the checked-out deploy branch, after
+# resolve_deploy_branch_target and before push. Computes the cut point —
+# `git merge-base origin/<base-ref> HEAD` — and checks the whole range
+# cut-point..HEAD against two independent criteria:
+#
+#   1. ATTRIBUTION: every commit in range must name <bead-id> somewhere in its
+#      message (fixed-string match — bead IDs may contain '.', which is a
+#      regex metachar). Matches this fleet's own "(refs <bead-id>)" commit
+#      convention without requiring that exact parenthetical. A commit that
+#      doesn't cite the bead means either an unreviewed commit rode along, or
+#      the wrong SHA/branch was cut.
+#   2. SCOPE: every path touched across the WHOLE range (one merged diff
+#      against the cut point, not per-commit) must match at least one
+#      <allowed-path-pattern> (a shell glob, e.g. 'cmd/*.go' or 'docs/*.md' —
+#      pass as many as the authorized scope needs; matching is OR across all
+#      of them). An unmatched path is exactly the ".claude/** sneaking into a
+#      deploy diff" failure mode this function exists to catch.
+#
+# Read-only: does not fetch. The caller is responsible for an up-to-date
+# origin/<base-ref>, same as assert_safe_push_target does no I/O of its own.
+#
+# Returns:
+#   0  — every commit in range cites <bead-id> and every changed path matches
+#        an allowed pattern (including the trivial case: HEAD is already at
+#        the cut point, nothing to check).
+#   10 — setup failure: empty bead-id/base-ref, zero patterns given,
+#        origin/<base-ref> does not resolve, HEAD does not resolve, or HEAD
+#        and origin/<base-ref> share no common ancestor.
+#   1  — REFUSED: a commit in range does not cite <bead-id>. The offending
+#        commit sha + subject is printed to stderr.
+#   2  — REFUSED: one or more changed paths matched no allowed pattern. Every
+#        offending path is printed to stderr.
+assert_deploy_ancestry_scope() {
+    local bead_id="$1"
+    local base_ref="$2"
+    shift 2 2>/dev/null
+
+    if [[ -z "$bead_id" || -z "$base_ref" || "$#" -eq 0 ]]; then
+        echo "assert_deploy_ancestry_scope: usage: assert_deploy_ancestry_scope <bead-id> <base-ref> <allowed-path-pattern>..." >&2
+        return 10
+    fi
+
+    if ! git rev-parse --verify --quiet "origin/${base_ref}" >/dev/null 2>&1; then
+        echo "assert_deploy_ancestry_scope: 'origin/$base_ref' does not resolve" >&2
+        return 10
+    fi
+
+    local head_sha
+    head_sha="$(git rev-parse --verify --quiet HEAD 2>/dev/null)"
+    if [[ -z "$head_sha" ]]; then
+        echo "assert_deploy_ancestry_scope: HEAD does not resolve" >&2
+        return 10
+    fi
+
+    local cut_point
+    cut_point="$(git merge-base "origin/${base_ref}" HEAD 2>/dev/null)"
+    if [[ -z "$cut_point" ]]; then
+        echo "assert_deploy_ancestry_scope: no common ancestor between HEAD and origin/$base_ref" >&2
+        return 10
+    fi
+
+    local commits
+    commits="$(git log --format=%H "${cut_point}..${head_sha}" 2>/dev/null)"
+    local sha
+    while IFS= read -r sha; do
+        [[ -z "$sha" ]] && continue
+        local msg
+        msg="$(git log -1 --format=%B "$sha" 2>/dev/null)"
+        if ! printf '%s' "$msg" | grep -qF -- "$bead_id"; then
+            local subject
+            subject="$(git log -1 --format=%s "$sha" 2>/dev/null)"
+            echo "assert_deploy_ancestry_scope: REFUSED — commit $sha ('$subject') does not cite '$bead_id'" >&2
+            return 1
+        fi
+    done <<<"$commits"
+
+    local changed
+    changed="$(git diff --name-only "${cut_point}" "${head_sha}" 2>/dev/null)"
+    local out_of_scope=""
+    local f
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        local matched=0
+        local pattern
+        for pattern in "$@"; do
+            case "$f" in
+                $pattern) matched=1; break ;;
+            esac
+        done
+        if [[ "$matched" -eq 0 ]]; then
+            if [[ -z "$out_of_scope" ]]; then
+                out_of_scope="$f"
+            else
+                out_of_scope="$out_of_scope"$'\n'"$f"
+            fi
+        fi
+    done <<<"$changed"
+
+    if [[ -n "$out_of_scope" ]]; then
+        echo "assert_deploy_ancestry_scope: REFUSED — out-of-scope path(s) in diff against cut point $cut_point:" >&2
+        echo "$out_of_scope" | while IFS= read -r p; do echo "  $p" >&2; done
+        return 2
+    fi
+
+    return 0
+}
