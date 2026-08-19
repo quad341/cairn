@@ -30,7 +30,7 @@ func TestRunRecallScenarioCleansUpAfterItself(t *testing.T) {
 	r := RunRecallScenario(t.Context(), store)
 	require.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 
-	entries, err := cairn.IterEntries(store)
+	entries, err := cairn.IterEntries(t.Context(), store)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "RunRecallScenario must leave no entries behind in the store after a passing run")
 }
