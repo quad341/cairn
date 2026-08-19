@@ -63,7 +63,7 @@ func TestBackfillPreservesLegacyRemediationClassification(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "known.md"), []byte(classified), 0o600))
 	gitInit(t, store)
 
-	records, counts, err := collectBackfill(store)
+	records, counts, err := collectBackfill(context.Background(), store)
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	assert.Equal(t, 1, counts.Classified, "reruns skip entries already carrying a type")

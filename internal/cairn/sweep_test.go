@@ -79,7 +79,7 @@ func TestSweepEntriesUsesSuppliedList(t *testing.T) {
 	require.NotEmpty(t, fp)
 	writeFile(t, dir, "global/fresh.md", filesEntry("fresh-1", repo, []string{"a.go"}, fp))
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(ctx, dir)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 

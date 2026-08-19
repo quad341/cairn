@@ -1,6 +1,7 @@
 package cairn
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,7 +38,7 @@ func TestDedupTopicKeyCollisionSameTier(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/one.md", minimalEntry("rig/one", "One", "s1", "dup-key", `["rig:alpha"]`))
 	writeFile(t, dir, "rig/beta/two.md", minimalEntry("rig/two", "Two", "s2", "dup-key", `["rig:beta"]`))
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 
 	tk := dedupFindingsOfKind(findings, "topic_key")
@@ -55,7 +56,7 @@ func TestDedupEntriesUsesSuppliedList(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/one.md", minimalEntry("rig/one", "One", "s1", "dup-key", `["rig:alpha"]`))
 	writeFile(t, dir, "rig/beta/two.md", minimalEntry("rig/two", "Two", "s2", "dup-key", `["rig:beta"]`))
 
-	all, failures, err := IterEntriesTolerant(dir)
+	all, failures, err := IterEntriesTolerant(context.Background(), dir)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 
@@ -75,7 +76,7 @@ func TestDedupTopicKeyCollisionGroupOfThree(t *testing.T) {
 	writeFile(t, dir, "global/b.md", minimalEntry("g/b", "B", "sb", "shared", "[]"))
 	writeFile(t, dir, "global/c.md", minimalEntry("g/c", "C", "sc", "shared", "[]"))
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 
 	tk := dedupFindingsOfKind(findings, "topic_key")
@@ -91,7 +92,7 @@ func TestDedupTopicKeyNoCollisionAcrossTiers(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/default.md", minimalEntry("rig/default", "Default", "d", "override-me", `["rig:alpha"]`))
 	writeFile(t, dir, "role/builder/override.md", minimalEntry("role/override", "Override", "o", "override-me", `["rig:alpha", "role:builder"]`))
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 
 	assert.Empty(t, dedupFindingsOfKind(findings, "topic_key"), "cross-tier shared topic_key is intentional shadowing, not a dup")
@@ -105,7 +106,7 @@ func TestDedupUntopicedNeverCollide(t *testing.T) {
 	writeFile(t, dir, "global/a.md", "+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n+++\nbody\n")
 	writeFile(t, dir, "global/b.md", "+++\nid = \"g/b\"\ntitle = \"B\"\nscope = []\n+++\nbody\n")
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 
 	assert.Empty(t, dedupFindingsOfKind(findings, "topic_key"))
@@ -169,7 +170,7 @@ func TestDedupContentSimilarityPair(t *testing.T) {
 		"g/hook-b", "Enabling the shared pre-commit hook",
 		"How to configure the git pre-commit hook in this repo", "topic-b", "[]"))
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 
 	content := dedupFindingsOfKind(findings, "content")
@@ -190,7 +191,7 @@ func TestDedupDistinctLowOverlapNoBead(t *testing.T) {
 		"g/deploy", "Deploying the worker service to production",
 		"Rolling out a new worker build via the deploy pipeline", "topic-b", "[]"))
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }
@@ -209,7 +210,7 @@ func TestDedupSkipsContentPairAlreadySharingTopicKey(t *testing.T) {
 		"role/hook", "Enabling the shared pre-commit hook",
 		"How to configure the git pre-commit hook in this repo", "shared-hook", `["rig:alpha", "role:builder"]`))
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 	assert.Empty(t, findings, "same topic_key with a genuine superset scope relationship is legitimate shadowing; no separate content finding")
 }
@@ -230,7 +231,7 @@ func TestDedupCrossTierSharedTopicKeyIncomparableScopesGetsContentCheck(t *testi
 		"role/hook", "Enabling the shared pre-commit hook",
 		"How to configure the git pre-commit hook in this repo", "shared-hook", `["role:builder"]`))
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 
 	content := dedupFindingsOfKind(findings, "content")
@@ -257,7 +258,7 @@ func TestDedupCrossTierSharedTopicKeyIncomparableScopesLowSimilarityStillNoBead(
 		"role/deploy", "Deploying the worker service to production",
 		"Rolling out a new worker build via the deploy pipeline", "shared-key", `["role:builder"]`))
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }
@@ -269,7 +270,7 @@ func TestDedupAgentTierExcluded(t *testing.T) {
 	writeFile(t, dir, "agent/bot1/a.md", minimalEntry("agent/a", "A", "sa", "dup", "[]"))
 	writeFile(t, dir, "agent/bot2/b.md", minimalEntry("agent/b", "B", "sb", "dup", "[]"))
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }
@@ -299,7 +300,7 @@ func TestDedupNeverWrites(t *testing.T) {
 		before[p] = b
 	}
 
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 	require.NotEmpty(t, findings, "this fixture must actually produce findings for the no-write check to mean anything")
 
@@ -314,7 +315,7 @@ func TestDedupNeverWrites(t *testing.T) {
 // return an empty, non-nil-shaped result rather than erroring.
 func TestDedupEmptyStoreNoPanic(t *testing.T) {
 	dir := t.TempDir()
-	findings, err := Dedup(dir)
+	findings, err := Dedup(context.Background(), dir)
 	require.NoError(t, err)
 	assert.Empty(t, findings)
 }

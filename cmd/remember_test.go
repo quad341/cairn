@@ -1256,19 +1256,20 @@ func TestRememberSharedTierRoleScopeVisibleAfterReviewMerge(t *testing.T) {
 // TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch for
 // the same fix exercised directly against the git primitive; this proves
 // RunE actually wires it up end to end.
-// TestRememberCrossCallSharedTierRecurrenceNotDetectedWhilePendingReview
-// documents crn-rymq3's fix as it appears one layer above
-// TestWriteBackRecurrenceCountFailsWhilePendingReview
-// (internal/cairn/remember_test.go): recurrenceMatch (cmd/remember.go)
-// finds candidates via cairn.IterEntries, a disk scan of the store's own
-// working tree -- and crn-rymq3 removes e1's body file from there entirely
-// once its first review commit lands, for as long as that commit is still
-// pending on remember/<e1.ID>. So a second call with a near-identical body,
-// made before anyone has reviewed the first, no longer finds e1 as a
-// candidate at all: it is treated as an unrelated, brand-new capture, not
-// discarded as a recurrence -- crn-qxj3's dedup behavior, working correctly
-// before crn-rymq3, is now a known, documented gap. Follow-up: crn-evw98.
-func TestRememberCrossCallSharedTierRecurrenceNotDetectedWhilePendingReview(t *testing.T) {
+// TestRememberCrossCallSharedTierRecurrenceReusesReviewBranch documents
+// crn-evw98's fix restoring crn-qxj3's dedup behavior on the shared tier:
+// recurrenceMatch (cmd/remember.go) finds candidates via cairn.IterEntries,
+// which now enumerates open remember/* branches (cairn.ListReviewBranches)
+// in addition to the store's own working tree -- so e1 remains a visible
+// recurrence candidate for as long as its review commit is pending on
+// remember/<e1.ID>, exactly as it was before commitToReviewWorktree started
+// clearing the working-tree copy (#121). Mirrors
+// TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly's shape, the
+// shared tier's own already-passing counterpart; see internal/cairn's
+// TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch for
+// the same fix exercised directly against the git primitive, proving RunE
+// actually wires it up end to end.
+func TestRememberCrossCallSharedTierRecurrenceReusesReviewBranch(t *testing.T) {
 	t.Setenv("CAIRN_IDENTITY", "rig:web role:reviewer")
 	store := t.TempDir()
 	gitInit(t, store)
@@ -1283,28 +1284,33 @@ func TestRememberCrossCallSharedTierRecurrenceNotDetectedWhilePendingReview(t *t
 	branch1 := "remember/" + e1.ID
 	firstCommit := strings.TrimSpace(gitOutput(t, store, "rev-parse", branch1))
 
-	secondOut := captureStdout(t, func() {
-		err := runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "role:reviewer", "configure the shared hook")
-		require.NoError(t, err, "with e1 no longer visible on disk while its review is pending, a near-identical second call must be treated as an unrelated new entry, not rejected as a recurrence")
+	var secondErr error
+	stderr := captureStderr(t, func() {
+		captureStdout(t, func() {
+			secondErr = runRememberAgainstStore(t, store, "--topic", "shared-hook", "--scope", "role:reviewer", "configure the shared hook")
+		})
 	})
-	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
-	require.Len(t, secondLines, 3, "the second call must print the same ordinary new-entry shape as the first -- it has no way left to know e1 exists")
+	require.Error(t, secondErr, "crn-qxj3: a genuine same-body recurrence must be reported as a discarded write, not silent success")
+	assert.Contains(t, secondErr.Error(), e1.ID)
+	assert.Contains(t, stderr, e1.ID, "the discard must be explained on stderr")
 
-	// e1's own review branch, under rig/web, must be completely untouched:
-	// still the only entry there, RecurrenceCount still 0, tip unmoved.
+	// e1's own review branch, under rig/web, must gain a second commit
+	// bumping RecurrenceCount -- the recurrence bump is real telemetry even
+	// though the overall write is reported as an error (crn-qxj3).
 	e1After := requireSingleEntryOnReviewBranch(t, store, filepath.Join(store, "rig", "web"))
 	assert.Equal(t, e1.ID, e1After.ID)
-	assert.Equal(t, 0, e1After.RecurrenceCount, "e1 must remain unmatched -- its RecurrenceCount was never incremented")
+	assert.Equal(t, 1, e1After.RecurrenceCount, "e1 must be matched -- its RecurrenceCount must be incremented")
 
-	unchangedCommit := strings.TrimSpace(gitOutput(t, store, "rev-parse", branch1))
-	assert.Equal(t, firstCommit, unchangedCommit, "e1's own review branch must be completely untouched -- no recurrence commit was ever appended to it")
+	secondCommit := strings.TrimSpace(gitOutput(t, store, "rev-parse", branch1))
+	assert.NotEqual(t, firstCommit, secondCommit, "the recurrence commit must land as a second commit on e1's own review branch")
+	parent := strings.TrimSpace(gitOutput(t, store, "rev-parse", branch1+"~1"))
+	assert.Equal(t, firstCommit, parent, "the recurrence commit must land directly on top of e1's first-capture commit")
 
-	// The second call's own --scope (role:reviewer, unchanged from the
-	// original pre-crn-rymq3 test's deliberate cross-scope setup) routes its
-	// new entry to a directory of its own, independent of e1: proof it was
-	// filed as a brand-new capture, not detected as a recurrence and merged.
-	e2 := requireSingleEntryOnReviewBranch(t, store, filepath.Join(store, "role", "reviewer"))
-	assert.NotEqual(t, e1.ID, e2.ID, "the second call must create its own independent entry, not reuse or merge into e1's id")
+	// A recurrence hit never calls Create (recordRecurrence returns before
+	// RunE reaches it), so the second call's own --scope (role:reviewer)
+	// must never get a scope directory of its own.
+	assert.NoDirExists(t, filepath.Join(store, "role", "reviewer"),
+		"a recurrence hit must never create the discarded candidate's own scope directory, since Create is never called")
 }
 
 // TestRememberCrossCallPrivateTierRecurrenceCommitsDirectly covers
@@ -1536,17 +1542,12 @@ func TestRememberEmptyTopicNeverMatchesForRecurrence(t *testing.T) {
 // role:reviewer; an identity of just rig:web can't see it (Visible is a
 // subset match -- every scope tag on the entry must be in the identity's own
 // tag set, and role:reviewer isn't in {rig:web}) -- even though E1's scope
-// IS genuinely incomparable with the second call's rig:web scope, the same
-// mechanism that lets
-// TestRememberCrossCallSharedTierRecurrenceNotDetectedWhilePendingReview's
-// first call be found at all once merged. E1 is merged before the second
-// call specifically so that recurrenceMatch's disk scan (cairn.IterEntries)
-// can find it in principle: left pending, crn-rymq3 would remove it from
-// the store's working tree entirely, giving this test a second, unrelated
-// reason for the same "no match" outcome and confounding what it claims to
-// isolate (see
-// TestRememberCrossCallSharedTierRecurrenceNotDetectedWhilePendingReview for
-// that pending-review case on its own). This keeps visibility the one
+// IS genuinely incomparable with the second call's rig:web scope. E1 is
+// merged before the second call purely to keep the fixture on a plain
+// working-tree read (requireSingleEntry, not the review-branch helpers);
+// since crn-evw98, cairn.IterEntries finds a candidate whether its review is
+// pending or merged, so that choice no longer isolates anything -- it's
+// simplification, not confound-avoidance. This keeps visibility the one
 // variable under test.
 func TestRememberRecurrenceRequiresVisibleMatch(t *testing.T) {
 	store := t.TempDir()
@@ -1948,19 +1949,15 @@ func TestRememberForceOverridesRecurrenceMatchPrivateTier(t *testing.T) {
 	assert.Equal(t, first.ID, second.OverriddenDuplicateOf, "the forced entry must record which entry it overrode")
 }
 
-// TestRememberForceCannotNameDuplicateWhilePendingReview is
+// TestRememberForceOverridesRecurrenceMatchSharedTier is
 // TestRememberForceOverridesRecurrenceMatchPrivateTier's shared-tier
-// counterpart, documenting the same crn-rymq3 gap from --force's angle:
-// --force's override-and-name-duplicate behavior (crn-lzn4.1.1) still goes
-// through recurrenceMatch to find what it's overriding, and that lookup no
-// longer finds a shared-tier entry once its own review commit is pending
-// (see TestRememberCrossCallSharedTierRecurrenceNotDetectedWhilePendingReview
-// above). So --force against a still-pending first entry can no longer name
-// a duplicate to override at all: it falls back to behaving exactly like
-// TestRememberForceWithNoMatchBehavesLikeOrdinaryCreate below -- an
-// ordinary create, no override line, no OverriddenDuplicateOf -- even
-// though a genuine duplicate exists. Follow-up: crn-evw98.
-func TestRememberForceCannotNameDuplicateWhilePendingReview(t *testing.T) {
+// counterpart: --force against a candidate that would otherwise match an
+// existing pending-review entry as a recurrence (see
+// TestRememberCrossCallSharedTierRecurrenceReusesReviewBranch) instead
+// creates a new entry on its own review branch, records
+// OverriddenDuplicateOf on it, and prints the override line between the id
+// and the review-branch/mailed-reviewer lines.
+func TestRememberForceOverridesRecurrenceMatchSharedTier(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
 	t.Setenv("CAIRN_IDENTITY", "rig:web")
@@ -1984,7 +1981,10 @@ func TestRememberForceCannotNameDuplicateWhilePendingReview(t *testing.T) {
 	require.Contains(t, byID, first.ID, "first's own review branch must still exist, untouched")
 
 	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
-	require.Len(t, secondLines, 3, "with no duplicate left to name, --force must fall back to the ordinary create shape: id, review branch, mailed reviewer -- no override line")
+	require.Len(t, secondLines, 4, "a forced-override shared-tier create prints the id, override line, review branch, and mailed reviewer")
+	assert.Equal(t, "override: forced past duplicate of "+first.ID, secondLines[1])
+	assert.True(t, strings.HasPrefix(secondLines[2], "review branch: "))
+	assert.True(t, strings.HasPrefix(secondLines[3], "mailed reviewer: "))
 
 	var second *cairn.Entry
 	for _, e := range byID {
@@ -1993,7 +1993,7 @@ func TestRememberForceCannotNameDuplicateWhilePendingReview(t *testing.T) {
 		}
 	}
 	require.NotNil(t, second)
-	assert.Empty(t, second.OverriddenDuplicateOf, "with the duplicate undiscoverable, --force has nothing to record as overridden")
+	assert.Equal(t, first.ID, second.OverriddenDuplicateOf, "the forced entry must record which entry it overrode")
 }
 
 // TestRememberForceWithNoMatchBehavesLikeOrdinaryCreate covers crn-lzn4.1.1's

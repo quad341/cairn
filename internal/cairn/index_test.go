@@ -67,7 +67,7 @@ func TestReindexEntriesBuildsIndexFromSuppliedList(t *testing.T) {
 	body := "+++\nid = \"a\"\ntitle = \"A\"\ntopic_key = \"t/a\"\nscope = [\"rig:alpha\"]\n+++\nbody\n"
 	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"), []byte(body), 0o600))
 
-	entries, failures, err := IterEntriesTolerant(store)
+	entries, failures, err := IterEntriesTolerant(ctx, store)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 
