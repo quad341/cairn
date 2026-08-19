@@ -254,7 +254,7 @@ func reindexOnce(ctx context.Context, db *sql.DB, store string, entries []*Entry
 	}
 
 	return timedRetryOnBusy(ctx, "finalize", func() error {
-		return reindexFinalizeTx(ctx, db, store, missing)
+		return reindexFinalizeTx(ctx, db, store, entries, missing)
 	})
 }
 
@@ -372,14 +372,15 @@ func reindexUpsertChunkTx(ctx context.Context, db *sql.DB, batch []*Entry) error
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO entries (
-				id, title, summary, type, topic_key, body_path,
+				id, title, title_source, summary, summary_source, type, topic_key, body_path,
 				anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
 				verified_at, created_by, created_at, hit_count,
 				kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at,
 				overridden_duplicate_of
-			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(id) DO UPDATE SET
-				title=excluded.title, summary=excluded.summary, type=excluded.type,
+				title=excluded.title, title_source=excluded.title_source,
+				summary=excluded.summary, summary_source=excluded.summary_source, type=excluded.type,
 				topic_key=excluded.topic_key, body_path=excluded.body_path,
 				anchor_type=excluded.anchor_type, anchor_repo=excluded.anchor_repo,
 				anchor_paths=excluded.anchor_paths, anchor_spec=excluded.anchor_spec,
@@ -395,7 +396,7 @@ func reindexUpsertChunkTx(ctx context.Context, db *sql.DB, batch []*Entry) error
 			// overridden_duplicate_of is body-sourced (like created_at), not
 			// index-only, so unlike those it IS in the UPDATE SET -- a --force
 			// correction edited into the body must overwrite a stale indexed copy.
-			e.ID, e.Title, e.Summary, e.Type, e.TopicKey, e.BodyPath,
+			e.ID, e.Title, e.TitleSource, e.Summary, e.SummarySource, e.Type, e.TopicKey, e.BodyPath,
 			e.Anchor.Type, e.Anchor.Repo, string(anchorPaths), e.Anchor.Spec, e.Anchor.Fingerprint,
 			e.VerifiedAt, e.CreatedBy, e.CreatedAt, e.HitCount,
 			e.Kind, autoActionable, e.RecurrenceCount, e.PromotedBeadID, e.LastRecalledAt,
@@ -414,19 +415,35 @@ func reindexUpsertChunkTx(ctx context.Context, db *sql.DB, batch []*Entry) error
 	return tx.Commit()
 }
 
-// reindexFinalizeTx drops entries whose source file is gone and stamps the
-// index_meta watermark, as the last transaction of a Reindex call. missing is
-// reindexOnce's precomputed diff (existing ids not in the fresh entries
-// list) rather than a SQL NOT IN over every current id, so this DELETE scales
-// with how many entries actually disappeared, not with store size.
+// reindexFinalizeTx rebuilds entries_fts from the fresh entry list, drops
+// entries whose source file is gone, and stamps the index_meta watermark, as
+// the last transaction of a Reindex call. missing is reindexOnce's
+// precomputed diff (existing ids not in the fresh entries list) rather than a
+// SQL NOT IN over every current id, so this DELETE scales with how many
+// entries actually disappeared, not with store size.
+//
+// entries_fts is rebuilt here from the same full entries list reindexOnce
+// upserted (across possibly several chunk transactions) into entries, rather
+// than per-chunk: rebuildSearchIndexTx drops and repopulates the whole table
+// in one shot, and doing that once per Reindex call -- in the same
+// transaction as the watermark stamp below -- mirrors the old
+// single-transaction reindexTx's invariant that the full-text index can never
+// disagree with what the store currently contains (crn-f0rb7.2 split the
+// per-entry upserts into per-chunk transactions, but a full-list rebuild like
+// this one doesn't chunk, so it stays here rather than moving into
+// reindexUpsertChunkTx).
 //
 // The watermark update is deliberately the last statement of the last
 // transaction: ensureFresh's "stale never served as fresh" guarantee (NFR-3,
 // crn-t250) depends on the commit stamped here only ever describing a fully
 // applied reindex.
-func reindexFinalizeTx(ctx context.Context, db *sql.DB, store string, missing []string) error {
+func reindexFinalizeTx(ctx context.Context, db *sql.DB, store string, entries []*Entry, missing []string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
+		return err
+	}
+	if err := rebuildSearchIndexTx(ctx, tx, entries); err != nil {
+		_ = tx.Rollback()
 		return err
 	}
 	if len(missing) > 0 {
@@ -450,9 +467,11 @@ func reindexFinalizeTx(ctx context.Context, db *sql.DB, store string, missing []
 	// staleness (crn-t250).
 	commit, _, _ := git(ctx, store, "rev-parse", "HEAD")
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO index_meta (id, indexed_at_commit) VALUES (1, ?)
-		 ON CONFLICT(id) DO UPDATE SET indexed_at_commit = excluded.indexed_at_commit`,
-		commit,
+		`INSERT INTO index_meta (id, indexed_at_commit, schema_version) VALUES (1, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   indexed_at_commit = excluded.indexed_at_commit,
+		   schema_version = excluded.schema_version`,
+		commit, indexSchemaVersion,
 	); err != nil {
 		_ = tx.Rollback()
 		return err
@@ -496,97 +515,6 @@ func retryOnBusy(ctx context.Context, fn func() error) error {
 			return err
 		}
 	}
-	return err
-}
-
-// reindexTx does the per-entry upsert, drops entries whose source file is
-// gone, and stamps the index_meta watermark, all inside the caller's tx.
-func reindexTx(ctx context.Context, tx *sql.Tx, store string, entries []*Entry) error {
-	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE current_ids (id TEXT PRIMARY KEY)`); err != nil {
-		return err
-	}
-	for _, e := range entries {
-		anchorPaths, err := json.Marshal(e.Anchor.Paths)
-		if err != nil {
-			return err
-		}
-		autoActionable := 0
-		if e.AutoActionable {
-			autoActionable = 1
-		}
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO entries (
-				id, title, title_source, summary, summary_source, type, topic_key, body_path,
-				anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
-				verified_at, created_by, created_at, hit_count,
-				kind, auto_actionable, recurrence_count, promoted_bead_id, last_recalled_at,
-				overridden_duplicate_of
-			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(id) DO UPDATE SET
-				title=excluded.title, title_source=excluded.title_source,
-				summary=excluded.summary, summary_source=excluded.summary_source, type=excluded.type,
-				topic_key=excluded.topic_key, body_path=excluded.body_path,
-				anchor_type=excluded.anchor_type, anchor_repo=excluded.anchor_repo,
-				anchor_paths=excluded.anchor_paths, anchor_spec=excluded.anchor_spec,
-				anchor_fingerprint=excluded.anchor_fingerprint,
-				verified_at=excluded.verified_at, created_by=excluded.created_by,
-				created_at=excluded.created_at,
-				overridden_duplicate_of=excluded.overridden_duplicate_of`,
-			// hit_count, kind, auto_actionable, recurrence_count, promoted_bead_id,
-			// and last_recalled_at are deliberately not in the UPDATE SET: like
-			// hit_count (crn-6az.6.1.1), they're index-only state a future call
-			// site writes directly via SQL (crn-28ge.1.1), so a reindex must not
-			// stamp a surviving row back to the body's stale seed value.
-			// overridden_duplicate_of is body-sourced (like created_at), not
-			// index-only, so unlike those it IS in the UPDATE SET -- a --force
-			// correction edited into the body must overwrite a stale indexed copy.
-			e.ID, e.Title, e.TitleSource, e.Summary, e.SummarySource, e.Type, e.TopicKey, e.BodyPath,
-			e.Anchor.Type, e.Anchor.Repo, string(anchorPaths), e.Anchor.Spec, e.Anchor.Fingerprint,
-			e.VerifiedAt, e.CreatedBy, e.CreatedAt, e.HitCount,
-			e.Kind, autoActionable, e.RecurrenceCount, e.PromotedBeadID, e.LastRecalledAt,
-			e.OverriddenDuplicateOf,
-		); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO current_ids(id) VALUES (?)`, e.ID); err != nil {
-			return err
-		}
-		for _, tag := range e.Scope {
-			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO entry_tags(entry_id,tag) VALUES (?,?)`, e.ID, tag); err != nil {
-				return err
-			}
-		}
-	}
-	// entries_fts is rebuilt from the same entry list, in the same
-	// transaction, so the full-text index can never disagree with the rows
-	// above about what the store contains.
-	if err := rebuildSearchIndexTx(ctx, tx, entries); err != nil {
-		return err
-	}
-
-	// entries no longer backed by a body (deleted/renamed) don't belong in a
-	// rebuilt index -- the ON CONFLICT upsert above only ever adds or
-	// refreshes rows, so without this they'd linger forever.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM entries WHERE id NOT IN (SELECT id FROM current_ids)`); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DROP TABLE current_ids`); err != nil {
-		return err
-	}
-
-	// commit is "" if store isn't a git repo (yet), has no commits, or git
-	// couldn't be invoked -- reindexTx's own correctness doesn't depend on
-	// which; indexStale (not this stamp) is what must distinguish "confirmed
-	// non-git" from "invocation error" to avoid silently under-detecting
-	// staleness (crn-t250).
-	commit, _, _ := git(ctx, store, "rev-parse", "HEAD")
-	_, err := tx.ExecContext(ctx,
-		`INSERT INTO index_meta (id, indexed_at_commit, schema_version) VALUES (1, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET
-		   indexed_at_commit = excluded.indexed_at_commit,
-		   schema_version = excluded.schema_version`,
-		commit, indexSchemaVersion,
-	)
 	return err
 }
 
