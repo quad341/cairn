@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -222,6 +223,45 @@ func truncateRunes(s string, n int) string {
 	}
 	r := []rune(s)
 	return string(r[:n])
+}
+
+// truncateWords bounds s to at most n runes, the same as truncateRunes, but
+// breaks at the nearest word boundary before the cut and appends an
+// ellipsis rather than cutting mid-word -- this is what NewEntry and
+// DerivedTitleSummary use for auto-derived Title/Summary (crn-q08yt), since
+// those values are lifted verbatim from a contributor's body text and a
+// mid-word cut there reads as a bug, not a bound. truncateRunes itself stays
+// a plain hard cut: Prime's read-time re-truncation (NFR-3) needs a cheap,
+// provable ceiling over arbitrary on-disk data regardless of shape, not
+// word-aware parsing.
+func truncateWords(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		// No room for both a word-boundary cut and an ellipsis rune --
+		// fall back to the same hard cut truncateRunes would produce.
+		return truncateRunes(s, n)
+	}
+	r := []rune(s)
+	cut := r[:n-1] // reserve one rune for the ellipsis
+	// Only back up to the previous word boundary if the cut actually split
+	// a word -- i.e. both the last rune kept and the first rune dropped are
+	// non-space. If the boundary already fell on whitespace, the cut is
+	// already clean and backing up would discard a whole word that fit.
+	if !unicode.IsSpace(cut[len(cut)-1]) && !unicode.IsSpace(r[n-1]) {
+		lastSpace := -1
+		for i := len(cut) - 1; i >= 0; i-- {
+			if unicode.IsSpace(cut[i]) {
+				lastSpace = i
+				break
+			}
+		}
+		if lastSpace > 0 {
+			cut = cut[:lastSpace]
+		}
+	}
+	return strings.TrimRight(string(cut), " \t\n") + "…"
 }
 
 // explorationBandIDs returns the IDs of the slots most-recently-created

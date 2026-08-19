@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -158,6 +159,13 @@ func TestNewEntryParamsSummaryOnlyAutoDerivesTitle(t *testing.T) {
 // before NewEntry ever runs (see TestValidateTitleLengthRejectsOverCap) --
 // there is no user-supplied value to reject here, only an auto-derived one
 // to bound.
+//
+// The fixture body has no spaces, so there is no word boundary to back up
+// to (crn-q08yt): truncation falls back to a hard cut, reserving one rune
+// for the ellipsis so the result still never exceeds the cap. The
+// word-boundary case is covered separately by
+// TestNewEntryAutoDerivedTitleTruncatesAtWordBoundaryWithEllipsis and its
+// summary sibling.
 func TestNewEntryTruncatesAutoDerivedTitleAndSummaryToCap(t *testing.T) {
 	origTitleCap, origSummaryCap := titleCap, summaryCap
 	titleCap, summaryCap = 5, 10
@@ -169,8 +177,49 @@ func TestNewEntryTruncatesAutoDerivedTitleAndSummaryToCap(t *testing.T) {
 		Body:     "0123456789ABCDEF",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "01234", e.Title, "auto-derived title must be truncated to titleCap")
-	assert.Equal(t, "0123456789", e.Summary, "auto-derived summary must be truncated to summaryCap")
+	assert.Equal(t, "0123…", e.Title, "auto-derived title must be truncated to titleCap, reserving room for an ellipsis")
+	assert.Equal(t, "012345678…", e.Summary, "auto-derived summary must be truncated to summaryCap, reserving room for an ellipsis")
+}
+
+// TestNewEntryAutoDerivedTitleTruncatesAtWordBoundaryWithEllipsis covers
+// crn-q08yt: an auto-derived title that exceeds titleCap must break at the
+// last word boundary before the cap and end with an ellipsis, never cut a
+// word in half the way the pre-fix titleCap truncation did (reproduced live
+// on the shared store as a title ending "...Two distinct bugs wo").
+func TestNewEntryAutoDerivedTitleTruncatesAtWordBoundaryWithEllipsis(t *testing.T) {
+	orig := titleCap
+	titleCap = 20
+	defer func() { titleCap = orig }()
+
+	e, err := NewEntry(NewEntryParams{
+		Type:     EntryTypeKnowledge,
+		TopicKey: "t",
+		Body:     "the quick brown fox jumps over the lazy dog\nrest of body",
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, utf8.RuneCountInString(e.Title), 20, "truncated title must stay within titleCap")
+	assert.Equal(t, "the quick brown fox…", e.Title, "must break at the word boundary nearest the cap and append an ellipsis, not cut \"fox\" or \"jumps\" in half")
+}
+
+// TestNewEntryAutoDerivedSummaryTruncatesAtWordBoundaryWithEllipsis is
+// TestNewEntryAutoDerivedTitleTruncatesAtWordBoundaryWithEllipsis's summary
+// sibling: crn-q08yt's own investigation found summary shares titleCap's
+// exact truncation code path (both call truncateRunes), so summary carries
+// the identical mid-word-cut bug, just less visible at a 280-rune default
+// cap than titleCap's 100.
+func TestNewEntryAutoDerivedSummaryTruncatesAtWordBoundaryWithEllipsis(t *testing.T) {
+	orig := summaryCap
+	summaryCap = 20
+	defer func() { summaryCap = orig }()
+
+	e, err := NewEntry(NewEntryParams{
+		Type:     EntryTypeKnowledge,
+		TopicKey: "t",
+		Body:     "the quick brown fox jumps over the lazy dog",
+	})
+	require.NoError(t, err)
+	assert.LessOrEqual(t, utf8.RuneCountInString(e.Summary), 20, "truncated summary must stay within summaryCap")
+	assert.Equal(t, "the quick brown fox…", e.Summary, "must break at the word boundary nearest the cap and append an ellipsis, not cut \"fox\" or \"jumps\" in half")
 }
 
 // TestNewEntryParamsCallerSuppliedAnchorIsUsedVerbatim covers crn-lzn4.1.1's
