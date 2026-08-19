@@ -302,7 +302,7 @@ func TestRememberBatchLargeSingleTierBatchSendsOneNotification(t *testing.T) {
 	}, manifest)
 	require.NoError(t, err)
 
-	requireEntries(t, filepath.Join(store, "rig", "web"), 105)
+	requireEntriesOnReviewBranches(t, store, filepath.Join(store, "rig", "web"), 105)
 	assert.Equal(t, 1, readGCCallCount(t, countFile),
 		"a large single-tier batch must send exactly one notification, not one per entry")
 }
@@ -358,7 +358,7 @@ func TestRememberBatchNotificationBodyListsEveryEntryIDAndBranch(t *testing.T) {
 	}, manifest)
 	require.NoError(t, err)
 
-	entries := requireEntries(t, filepath.Join(store, "rig", "web"), 2)
+	entries := requireEntriesOnReviewBranches(t, store, filepath.Join(store, "rig", "web"), 2)
 	args := readStubGCArgs(t, captureFile)
 	require.Len(t, args, 7, "gc mail send <reviewer> -s <subject> -m <body>")
 	body := args[6]
@@ -383,7 +383,7 @@ func TestRememberBatchEntriesIndependentlyMergeable(t *testing.T) {
 	store, err := runBatchRemember(t, manifest)
 	require.NoError(t, err)
 
-	entries := requireEntries(t, filepath.Join(store, "rig", "web"), 3)
+	entries := requireEntriesOnReviewBranches(t, store, filepath.Join(store, "rig", "web"), 3)
 	for _, e := range entries {
 		branch := "remember/" + e.ID
 		require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store, "--topic-key", e.TopicKey),
@@ -542,7 +542,7 @@ func TestRememberBatchJSONOutputMatchesBatchResultShape(t *testing.T) {
 	assert.NotEmpty(t, shared.Reviewer)
 
 	requireSingleEntry(t, filepath.Join(store, "agent", "test"))
-	requireSingleEntry(t, filepath.Join(store, "rig", "web"))
+	requireSingleEntryOnReviewBranch(t, store, filepath.Join(store, "rig", "web"))
 }
 
 func TestRememberBatchExitsNonZeroWhenAnyEntryFails(t *testing.T) {

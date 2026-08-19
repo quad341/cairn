@@ -711,16 +711,29 @@ func TestCommitRecurrenceToReviewBranchCreatesBranchWhenAbsent(t *testing.T) {
 	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1, "the scratch review worktree must be cleaned up")
 }
 
-// TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch
-// covers the ordinary case (crn-28ge.1.4): a recurrence hit almost always
-// happens while the entry's original review commit from CommitToReviewBranch
-// is still pending on its remember/<id> branch -- a recurring topic tends to
-// recur before anyone has reviewed the first report, not only after.
-// CommitRecurrenceToReviewBranch must append a second commit to that SAME
-// branch rather than fail on "branch already exists" (which reusing
-// CommitToReviewBranch as-is would do on this, the common case) or fork a
-// competing branch.
-func TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch(t *testing.T) {
+// TestWriteBackRecurrenceCountFailsWhilePendingReview documents crn-rymq3's
+// intentional cost, not an accident: the ordinary case (crn-28ge.1.4) is a
+// recurrence hit landing while the entry's original review commit from
+// CommitToReviewBranch is still pending on its remember/<id> branch -- a
+// recurring topic tends to recur before anyone has reviewed the first
+// report, not only after. commitToReviewWorktree's post-commit cleanup
+// (crn-rymq3) now removes e.BodyPath from the store's working tree entirely
+// once it's committed there for the first time (the untracked,
+// never-merged case), because leaving it there is exactly what made `git
+// merge remember/<id>` refuse to merge later. WriteBackRecurrenceCount's
+// read/patch/write cycle (writeBackPatched, entry.go) unconditionally reads
+// e.BodyPath first, so it now has nothing left to read: a recurrence can no
+// longer be persisted at all while the original is still pending review,
+// not just left undetected by the caller one layer up (see
+// cmd/remember_test.go's
+// TestRememberCrossCallSharedTierRecurrenceNotDetectedWhilePendingReview,
+// where recurrenceMatch itself never even finds the candidate to try).
+// Follow-up: crn-evw98. The complementary case -- an already-merged entry
+// recurring again -- is unaffected and still fully covered by
+// TestCommitRecurrenceToReviewBranchOnAlreadyMergedEntryRestoresWorkingTree
+// below: e.BodyPath is tracked and present there, just stale, so
+// writeBackPatched's read succeeds.
+func TestWriteBackRecurrenceCountFailsWhilePendingReview(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
 	gitInit(t, store)
@@ -731,47 +744,14 @@ func TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch(t *te
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 
-	firstBranch, err := e.CommitToReviewBranch(ctx, store)
+	_, err = e.CommitToReviewBranch(ctx, store)
 	require.NoError(t, err)
-	firstCommit, err := gitRun(ctx, store, "rev-parse", firstBranch)
-	require.NoError(t, err)
-	firstCommit = strings.TrimSpace(firstCommit)
-
-	branchBefore, err := gitRun(ctx, store, "branch", "--show-current")
-	require.NoError(t, err)
-	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
-	require.NoError(t, err)
-	headBefore = strings.TrimSpace(headBefore)
+	assert.NoFileExists(t, e.BodyPath, "precondition: the first commit's cleanup must have already removed the untracked working-tree copy (crn-rymq3)")
 
 	e.RecurrenceCount = 1
-	require.NoError(t, e.WriteBackRecurrenceCount())
-	branch, err := e.CommitRecurrenceToReviewBranch(ctx, store)
-	require.NoError(t, err)
-	assert.Equal(t, firstBranch, branch, "a recurrence commit must reuse the entry's existing review branch, not a new one")
-
-	parent, err := gitRun(ctx, store, "rev-parse", branch+"~1")
-	require.NoError(t, err)
-	assert.Equal(t, firstCommit, strings.TrimSpace(parent),
-		"the recurrence commit must be appended on top of the original review commit, not replace or precede it, and must be the only new commit")
-
-	msg, err := gitRun(ctx, store, "log", "-1", "--format=%B", branch)
-	require.NoError(t, err)
-	assert.Contains(t, msg, e.ID)
-	assert.Contains(t, msg, "recurrence")
-	assert.Contains(t, msg, "count 1")
-
-	branchAfter, err := gitRun(ctx, store, "branch", "--show-current")
-	require.NoError(t, err)
-	assert.Equal(t, strings.TrimSpace(branchBefore), strings.TrimSpace(branchAfter),
-		"CommitRecurrenceToReviewBranch must not switch the store's checked-out branch")
-	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
-	require.NoError(t, err)
-	assert.Equal(t, headBefore, strings.TrimSpace(headAfter), "the store's own HEAD must be unaffected")
-
-	worktrees, err := gitRun(ctx, store, "worktree", "list")
-	require.NoError(t, err)
-	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
-		"the scratch review worktree must be cleaned up, leaving only the store's own")
+	err = e.WriteBackRecurrenceCount()
+	require.Error(t, err, "a recurrence patch on a still-pending entry must fail loudly, not silently no-op or corrupt a neighboring file")
+	assert.True(t, os.IsNotExist(err), "the failure must be exactly the missing working-tree file, not some other error masking it: %v", err)
 }
 
 // TestCommitRecurrenceToReviewBranchOnAlreadyMergedEntryRestoresWorkingTree
@@ -804,6 +784,19 @@ func TestCommitRecurrenceToReviewBranchOnAlreadyMergedEntryRestoresWorkingTree(t
 	firstBranch, err := e.CommitToReviewBranch(ctx, store)
 	require.NoError(t, err)
 
+	rel, err := filepath.Rel(store, e.BodyPath)
+	require.NoError(t, err)
+
+	// commitToReviewWorktree removes the store's own working-tree copy right
+	// after the review commit (crn-rymq3), so nothing is left on disk here
+	// to feed the "simulate merge" commit below. Re-materialize it from the
+	// review branch first -- a real `git merge` would restore this same
+	// content, and this only rebuilds the fixture's pre-state, it doesn't
+	// touch what the test actually asserts afterward.
+	committed, err := gitRun(ctx, store, "show", firstBranch+":"+rel)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(e.BodyPath, []byte(committed), 0o600))
+
 	// Simulate the first review commit having already been reviewed and
 	// merged: commit the working-tree copy Create wrote directly onto the
 	// store's default branch. This models the post-merge end state (entry
@@ -812,8 +805,6 @@ func TestCommitRecurrenceToReviewBranchOnAlreadyMergedEntryRestoresWorkingTree(t
 	// untracked-leftover bug this test file is now guarding against as a
 	// precondition of its own setup.
 	gitCommitAll(t, store, "simulate merge of "+firstBranch)
-	rel, err := filepath.Rel(store, e.BodyPath)
-	require.NoError(t, err)
 	mergedHead, err := gitRun(ctx, store, "rev-parse", "HEAD")
 	require.NoError(t, err)
 	mergedHead = strings.TrimSpace(mergedHead)
@@ -914,15 +905,16 @@ func TestCommitPromotionToReviewBranchCreatesBranchWhenAbsent(t *testing.T) {
 	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1, "the scratch review worktree must be cleaned up")
 }
 
-// TestCommitPromotionToReviewBranchAppendsSecondCommitToExistingBranch covers
-// the ordinary case (crn-ghn8.1): a promotion frequently happens while the
-// entry's original review commit from CommitToReviewBranch is still pending
-// on its remember/<id> branch. CommitPromotionToReviewBranch must append a
-// second commit to that SAME branch rather than fail on "branch already
-// exists" or fork a competing branch -- mirrors
-// TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch one
-// field over.
-func TestCommitPromotionToReviewBranchAppendsSecondCommitToExistingBranch(t *testing.T) {
+// TestWriteBackPromotedBeadIDFailsWhilePendingReview mirrors
+// TestWriteBackRecurrenceCountFailsWhilePendingReview one field over
+// (crn-ghn8.1 is promotion's counterpart to crn-28ge.1.4): a promotion
+// frequently lands while the entry's original review commit is still
+// pending on its remember/<id> branch, and WriteBackPromotedBeadID shares
+// the same writeBackPatched read/patch/write cycle (entry.go), so it fails
+// for the identical reason -- e.BodyPath was already removed from the
+// store's working tree by commitToReviewWorktree's crn-rymq3 cleanup.
+// Follow-up: crn-evw98.
+func TestWriteBackPromotedBeadIDFailsWhilePendingReview(t *testing.T) {
 	ctx := t.Context()
 	store := t.TempDir()
 	gitInit(t, store)
@@ -933,47 +925,14 @@ func TestCommitPromotionToReviewBranchAppendsSecondCommitToExistingBranch(t *tes
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 
-	firstBranch, err := e.CommitToReviewBranch(ctx, store)
+	_, err = e.CommitToReviewBranch(ctx, store)
 	require.NoError(t, err)
-	firstCommit, err := gitRun(ctx, store, "rev-parse", firstBranch)
-	require.NoError(t, err)
-	firstCommit = strings.TrimSpace(firstCommit)
-
-	branchBefore, err := gitRun(ctx, store, "branch", "--show-current")
-	require.NoError(t, err)
-	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
-	require.NoError(t, err)
-	headBefore = strings.TrimSpace(headBefore)
+	assert.NoFileExists(t, e.BodyPath, "precondition: the first commit's cleanup must have already removed the untracked working-tree copy (crn-rymq3)")
 
 	e.PromotedBeadID = "crn-abcd"
-	require.NoError(t, e.WriteBackPromotedBeadID())
-	branch, err := e.CommitPromotionToReviewBranch(ctx, store)
-	require.NoError(t, err)
-	assert.Equal(t, firstBranch, branch, "a promotion commit must reuse the entry's existing review branch, not a new one")
-
-	parent, err := gitRun(ctx, store, "rev-parse", branch+"~1")
-	require.NoError(t, err)
-	assert.Equal(t, firstCommit, strings.TrimSpace(parent),
-		"the promotion commit must be appended on top of the original review commit, not replace or precede it, and must be the only new commit")
-
-	msg, err := gitRun(ctx, store, "log", "-1", "--format=%B", branch)
-	require.NoError(t, err)
-	assert.Contains(t, msg, e.ID)
-	assert.Contains(t, msg, "promote")
-	assert.Contains(t, msg, "crn-abcd")
-
-	branchAfter, err := gitRun(ctx, store, "branch", "--show-current")
-	require.NoError(t, err)
-	assert.Equal(t, strings.TrimSpace(branchBefore), strings.TrimSpace(branchAfter),
-		"CommitPromotionToReviewBranch must not switch the store's checked-out branch")
-	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
-	require.NoError(t, err)
-	assert.Equal(t, headBefore, strings.TrimSpace(headAfter), "the store's own HEAD must be unaffected")
-
-	worktrees, err := gitRun(ctx, store, "worktree", "list")
-	require.NoError(t, err)
-	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
-		"the scratch review worktree must be cleaned up, leaving only the store's own")
+	err = e.WriteBackPromotedBeadID()
+	require.Error(t, err, "a promotion patch on a still-pending entry must fail loudly, not silently no-op or corrupt a neighboring file")
+	assert.True(t, os.IsNotExist(err), "the failure must be exactly the missing working-tree file, not some other error masking it: %v", err)
 }
 
 func TestCommitDirectLogsWritePathAndSteps(t *testing.T) {
@@ -1084,7 +1043,21 @@ func TestCommitToReviewBranchLogsWritePathAndSteps(t *testing.T) {
 	}
 }
 
+// TestCommitRecurrenceAndPromotionLogDistinctOperationNames confirms the
+// write_path/write_path_step log records tag recurrence and promotion
+// commits with their own operation names, not a shared or blank one. Runs
+// against an already-merged entry (not the ordinary pending-review case
+// crn-28ge.1.4/crn-ghn8.1 usually land in) because WriteBackRecurrenceCount
+// and WriteBackPromotedBeadID both require a tracked e.BodyPath to patch
+// (writeBackPatched, entry.go) -- crn-rymq3 removes that file from the
+// store's working tree entirely for as long as the review commit is still
+// pending, so only the already-merged pre-state can reach either write-back
+// call at all here (see TestWriteBackRecurrenceCountFailsWhilePendingReview
+// and TestWriteBackPromotedBeadIDFailsWhilePendingReview above for the
+// pending case itself). That choice is orthogonal to what this test
+// actually verifies: operation-name tagging, not pending-vs-merged timing.
 func TestCommitRecurrenceAndPromotionLogDistinctOperationNames(t *testing.T) {
+	ctx := t.Context()
 	store := t.TempDir()
 	gitInit(t, store)
 	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
@@ -1093,8 +1066,15 @@ func TestCommitRecurrenceAndPromotionLogDistinctOperationNames(t *testing.T) {
 	e, err := NewEntry(NewEntryParams{Type: EntryTypeKnowledge, TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
-	_, err = e.CommitToReviewBranch(t.Context(), store)
+	branch, err := e.CommitToReviewBranch(ctx, store)
 	require.NoError(t, err)
+
+	rel, err := filepath.Rel(store, e.BodyPath)
+	require.NoError(t, err)
+	committed, err := gitRun(ctx, store, "show", branch+":"+rel)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(e.BodyPath, []byte(committed), 0o600))
+	gitCommitAll(t, store, "simulate merge of "+branch)
 
 	e.RecurrenceCount = 1
 	require.NoError(t, e.WriteBackRecurrenceCount())
