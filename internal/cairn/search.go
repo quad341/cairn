@@ -193,7 +193,7 @@ func Search(ctx context.Context, store, query string, identity []string, limit i
 			ID:        e.ID,
 			TopicKey:  e.TopicKey,
 			Title:     truncateRunes(e.Title, searchTitleCap),
-			Summary:   truncateRunes(e.Summary, searchSummaryCap),
+			Summary:   truncateWords(e.Summary, searchSummaryCap),
 			HitCount:  e.HitCount,
 			Score:     r.score,
 			Snippet:   snippets[e.ID],
