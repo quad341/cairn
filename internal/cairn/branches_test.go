@@ -100,12 +100,6 @@ func TestListReviewBranchesExcludesMergedBranches(t *testing.T) {
 	base := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	e := commitReviewBranchAt(t, store, "merged-topic", nil, base)
 
-	// Create left the entry file sitting untracked in store's own working
-	// tree (CommitToReviewBranch only ever commits a copy of it, in an
-	// isolated worktree) -- a real reviewer would be on a separate clone
-	// without that stray file, so remove it before merging in place here.
-	require.NoError(t, os.Remove(e.BodyPath))
-
 	out, err := exec.CommandContext(t.Context(), "git", "-C", store,
 		"merge", "--no-ff", "-m", "merge review branch", "remember/"+e.ID).CombinedOutput()
 	require.NoErrorf(t, err, "git merge: %s", out)

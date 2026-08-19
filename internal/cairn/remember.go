@@ -425,6 +425,29 @@ func (e *Entry) commitToReviewWorktree(ctx context.Context, store, branch string
 	}); err != nil {
 		return fmt.Errorf("commit entry to review branch: %w", err)
 	}
+
+	// The review commit above is now the sole safe copy of e's content;
+	// leaving it also present in the store's own working tree is what makes
+	// `git merge remember/<id>` refuse to merge later (crn-rymq3). Two
+	// pre-states reach here, and each needs the opposite cleanup: a fresh
+	// Create (never committed to the store's default branch) left rel
+	// untracked, so it must be removed; a WriteBackRecurrenceCount/
+	// WriteBackPromotedBeadID patch of an already-merged entry left rel
+	// tracked-and-modified, so it must be restored to HEAD's content, not
+	// deleted. Whether rel exists at HEAD distinguishes the two.
+	// git cat-file -e reports "not at HEAD" via more than one shape --
+	// exit 1 (no such path at all) or exit 128 with a "exists on disk, but
+	// not in 'HEAD'" fatal (rel's own case, written by Create but never
+	// committed) -- so any error here means not-tracked, not just exit 1.
+	if _, err := gitRun(ctx, store, "cat-file", "-e", "HEAD:"+rel); err == nil {
+		if _, err := gitStep(ctx, operation, "git_checkout_head", func() (string, error) {
+			return gitRun(ctx, store, "checkout", "HEAD", "--", rel)
+		}); err != nil {
+			return fmt.Errorf("restore %s to last-committed content: %w", rel, err)
+		}
+	} else if rmErr := os.Remove(e.BodyPath); rmErr != nil && !os.IsNotExist(rmErr) {
+		return fmt.Errorf("remove untracked %s from store working tree: %w", rel, rmErr)
+	}
 	return nil
 }
 
