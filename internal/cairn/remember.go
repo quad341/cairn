@@ -94,11 +94,11 @@ func NewEntry(p NewEntryParams) (*Entry, error) {
 	if title == "" || summary == "" {
 		autoTitle, autoSummary := titleAndSummary(p.Body)
 		if title == "" {
-			title = truncateRunes(autoTitle, titleCap)
+			title = truncateWords(autoTitle, titleCap)
 			titleSource = MetadataSourceDerived
 		}
 		if summary == "" {
-			summary = truncateRunes(autoSummary, summaryCap)
+			summary = truncateWords(autoSummary, summaryCap)
 			summarySource = MetadataSourceDerived
 		}
 	}
@@ -147,7 +147,7 @@ func titleAndSummary(body string) (title, summary string) {
 // metadata using the exact write-path algorithm rather than a lookalike.
 func DerivedTitleSummary(body string) (title, summary string) {
 	title, summary = titleAndSummary(body)
-	return truncateRunes(title, titleCap), truncateRunes(summary, summaryCap)
+	return truncateWords(title, titleCap), truncateWords(summary, summaryCap)
 }
 
 func randomSuffix() (string, error) {
