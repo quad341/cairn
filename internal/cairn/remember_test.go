@@ -602,8 +602,11 @@ func TestCommitToReviewBranchCreatesIsolatedBranchLeavingDefaultUntouched(t *tes
 	// line rather than naming the file inside it.
 	status, err := gitRun(ctx, store, "status", "--porcelain", "--untracked-files=all")
 	require.NoError(t, err)
-	assert.Contains(t, status, "?? "+rel,
-		"the entry file Create wrote must remain untracked on the store's own branch -- only the review branch's isolated worktree copy was committed")
+	assert.NotContains(t, status, rel,
+		"the entry file Create wrote must be removed from the store's own working tree once its content is safely committed on the review branch -- an untracked leftover here is what makes 'git merge remember/<id>' refuse to merge (crn-rymq3)")
+
+	_, err = os.Stat(e.BodyPath)
+	assert.True(t, os.IsNotExist(err), "e.BodyPath must no longer exist in the main store working tree after a successful review-branch commit")
 }
 
 // TestCommitToReviewBranchFailureLeavesEntryWrittenButUncommittedAndReportsError
@@ -764,6 +767,92 @@ func TestCommitRecurrenceToReviewBranchAppendsSecondCommitToExistingBranch(t *te
 	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
 	require.NoError(t, err)
 	assert.Equal(t, headBefore, strings.TrimSpace(headAfter), "the store's own HEAD must be unaffected")
+
+	worktrees, err := gitRun(ctx, store, "worktree", "list")
+	require.NoError(t, err)
+	assert.Len(t, strings.Split(strings.TrimSpace(worktrees), "\n"), 1,
+		"the scratch review worktree must be cleaned up, leaving only the store's own")
+}
+
+// TestCommitRecurrenceToReviewBranchOnAlreadyMergedEntryRestoresWorkingTree
+// covers crn-rymq3's second, rarer pre-state: an entry whose FIRST review
+// commit was already reviewed and merged to the store's default branch, so
+// e.BodyPath is tracked there -- not the fresh-Create/never-merged case every
+// other test in this file sets up. A later recurrence hit patches that
+// already-tracked file in place via WriteBackRecurrenceCount (a raw
+// os.WriteFile, see entry.go's writeBackPatched), leaving it modified but
+// uncommitted at the moment CommitRecurrenceToReviewBranch runs. The bug
+// report measured exactly one store-wide instance of this shape (an
+// agent:mayor entry edited in place) among 51 stuck branches, versus 37 of
+// the untracked shape TestCommitToReviewBranchCreatesIsolatedBranchLeaving-
+// DefaultUntouched now covers -- both pre-states share the same
+// commitToReviewWorktree helper, so both need their own coverage: removing
+// an untracked leftover is not the same operation as restoring a tracked one
+// to HEAD, and a fix for one shape alone would leave the other's working
+// tree dirty.
+func TestCommitRecurrenceToReviewBranchOnAlreadyMergedEntryRestoresWorkingTree(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	gitInit(t, store)
+	require.NoError(t, os.WriteFile(filepath.Join(store, "README.md"), []byte("seed\n"), 0o600))
+	gitCommitAll(t, store, "seed")
+
+	e, err := NewEntry(NewEntryParams{Type: EntryTypeKnowledge, TopicKey: "build-flags", Scope: []string{"rig:web"}, Body: "prefer feature flags over env vars", CreatedBy: "agent:bot"})
+	require.NoError(t, err)
+	require.NoError(t, e.Create(store))
+
+	firstBranch, err := e.CommitToReviewBranch(ctx, store)
+	require.NoError(t, err)
+
+	// Simulate the first review commit having already been reviewed and
+	// merged: commit the working-tree copy Create wrote directly onto the
+	// store's default branch. This models the post-merge end state (entry
+	// file tracked on default, content identical to the review branch)
+	// without going through a real `git merge`, which would hit the very
+	// untracked-leftover bug this test file is now guarding against as a
+	// precondition of its own setup.
+	gitCommitAll(t, store, "simulate merge of "+firstBranch)
+	rel, err := filepath.Rel(store, e.BodyPath)
+	require.NoError(t, err)
+	mergedHead, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	mergedHead = strings.TrimSpace(mergedHead)
+
+	branchBefore, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+	headBefore, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	headBefore = strings.TrimSpace(headBefore)
+
+	e.RecurrenceCount = 1
+	require.NoError(t, e.WriteBackRecurrenceCount())
+
+	// Precondition: the patch left the tracked file modified, not untracked.
+	status, err := gitRun(ctx, store, "status", "--porcelain")
+	require.NoError(t, err)
+	require.Contains(t, status, " M "+rel, "WriteBackRecurrenceCount must modify the already-tracked file in place, not leave it untracked -- otherwise this test is not exercising the tracked-modified pre-state it claims to")
+
+	branch, err := e.CommitRecurrenceToReviewBranch(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, firstBranch, branch, "a recurrence commit must reuse the entry's existing review branch, not a new one")
+
+	statusAfter, err := gitRun(ctx, store, "status", "--porcelain")
+	require.NoError(t, err)
+	assert.NotContains(t, statusAfter, rel,
+		"once the recurrence patch is safely committed on the review branch, the store's own working-tree copy must be restored to its last-committed HEAD content, not left modified (crn-rymq3)")
+
+	restored, err := ParseEntry(e.BodyPath)
+	require.NoError(t, err)
+	assert.Equal(t, 0, restored.RecurrenceCount, "the working tree must show the pre-recurrence, last-committed value -- the incremented count belongs on the review branch only until that branch is merged")
+
+	branchAfter, err := gitRun(ctx, store, "branch", "--show-current")
+	require.NoError(t, err)
+	assert.Equal(t, strings.TrimSpace(branchBefore), strings.TrimSpace(branchAfter),
+		"CommitRecurrenceToReviewBranch must not switch the store's checked-out branch")
+	headAfter, err := gitRun(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, headBefore, strings.TrimSpace(headAfter), "the store's own HEAD must be unaffected")
+	assert.Equal(t, mergedHead, headBefore, "sanity: nothing between setup and the call under test should have moved the store's own HEAD")
 
 	worktrees, err := gitRun(ctx, store, "worktree", "list")
 	require.NoError(t, err)
