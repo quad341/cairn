@@ -133,6 +133,7 @@ type EntryResult struct {
 	Kind           string               `json:"kind"`
 	Type           string               `json:"type"`
 	AutoActionable bool                 `json:"auto_actionable"`
+	ReviewStatus   string               `json:"review_status"`
 	Conflicts      []cairn.DedupFinding `json:"conflicts"`
 	Body           string               `json:"body"`
 }
@@ -223,6 +224,7 @@ var getCmd = &cobra.Command{
 				Kind:           kind,
 				Type:           e.Type,
 				AutoActionable: e.AutoActionable,
+				ReviewStatus:   e.ReviewStatus,
 				Conflicts:      nonNil(conflicts),
 				Body:           e.Body,
 			})
@@ -240,6 +242,9 @@ var getCmd = &cobra.Command{
 		fmt.Printf("topic: %s  scope: %s\n", topic, scope)
 		fmt.Printf("freshness: %s — %s\n", st, detail)
 		fmt.Printf("type: %s  kind: %s  auto_actionable: %t\n", e.Type, kind, e.AutoActionable)
+		if e.ReviewStatus == cairn.ReviewStatusPending {
+			fmt.Println("[PENDING REVIEW]")
+		}
 
 		if len(conflicts) == 0 {
 			fmt.Println("conflicts: none")
