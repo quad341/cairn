@@ -189,6 +189,47 @@ func TestStaleBranchesEscalatesOnlyAfterPriorNotify(t *testing.T) {
 	assert.Empty(t, f.Error)
 }
 
+// TestStaleBranchesEscalateReviewerResolutionFailureReportsError is crn-w4c6's
+// repro: resolveReviewer can fail specifically on an escalate pass even
+// though it must have succeeded on an earlier notify pass for the exact same
+// branch+SHA (that's the only way state[b.Name] == b.SHA gets set at all).
+// Before this fix, evaluateBranch left f.Status == "escalate" in that case,
+// with f.Reviewer at its Go zero value and thus omitted from the JSON
+// (`json:"reviewer,omitempty"`) -- so mol-cairn-librarian(-rig)?.formula.toml's
+// `select(.status == "escalate")` filter still matched, `jq -r '.reviewer'`
+// on the missing key printed the literal string "null", and a filed bd bead
+// ended up reading "...was already sent to null on an earlier...", silently
+// dropping the real diagnostic that was sitting right there in f.Error.
+// The fix reports status "error" instead, mirroring the existing
+// b.Error != "" handling at the top of evaluateBranch (whose Status field
+// doc comment already lists error as a sibling of fresh|notify|escalate).
+func TestStaleBranchesEscalateReviewerResolutionFailureReportsError(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	e := commitReviewBranchAt(t, store, "escalate-topic", []string{"rig:web"}, time.Now().Add(-3*time.Hour))
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+
+	first, err := runStaleBranches(t, store, stubGCWithRig("myrig"),
+		"--notify-after", "1h", "--escalate-after", "2h", "--state-file", stateFile)
+	require.NoError(t, err)
+	require.Len(t, first, 1)
+	require.Equal(t, "notify", first[0].Status, "precondition: first pass must downgrade to notify, not escalate")
+	require.Equal(t, "myrig/architect", first[0].Reviewer, "precondition: reviewer must resolve successfully on the first pass")
+	require.True(t, first[0].Notified)
+
+	second, err := runStaleBranches(t, store, stubGCWithRig(""),
+		"--notify-after", "1h", "--escalate-after", "2h", "--state-file", stateFile)
+	require.NoError(t, err, "one branch's reviewer-resolution failure must not fail the whole command")
+	require.Len(t, second, 1)
+
+	f := second[0]
+	assert.Equal(t, e.ID, f.EntryID)
+	assert.Equal(t, "error", f.Status, `an escalate-eligible finding whose reviewer resolution fails must report status "error", not "escalate", so downstream select(.status == "escalate") filters never see it`)
+	assert.Empty(t, f.Reviewer, "no reviewer was actually resolved on this pass")
+	assert.False(t, f.Notified)
+	assert.NotEmpty(t, f.Error, "the real resolveReviewer diagnostic must still be surfaced")
+}
+
 // TestStaleBranchesDryRunDoesNotMail proves --dry-run computes and reports
 // status without actually shelling out to gc: stubGCFail would surface as a
 // per-finding Error if sendStaleBranchReminder were called despite dry-run,
