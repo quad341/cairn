@@ -42,13 +42,14 @@ type FreshnessInfo struct {
 
 // PrimeItem is one entry itemized in a PrimeResult.
 type PrimeItem struct {
-	ID        string         `json:"id"`
-	TopicKey  string         `json:"topic_key"`
-	Title     string         `json:"title"`
-	Summary   string         `json:"summary,omitempty"`
-	HitCount  int            `json:"hit_count"`
-	Freshness FreshnessInfo  `json:"freshness"`
-	Conflict  *TopicConflict `json:"conflict,omitempty"`
+	ID           string         `json:"id"`
+	TopicKey     string         `json:"topic_key"`
+	Title        string         `json:"title"`
+	Summary      string         `json:"summary,omitempty"`
+	HitCount     int            `json:"hit_count"`
+	Freshness    FreshnessInfo  `json:"freshness"`
+	Conflict     *TopicConflict `json:"conflict,omitempty"`
+	ReviewStatus string         `json:"review_status"`
 }
 
 // TopicCount is one topic_key's entry count in a PrimeResult's index view
@@ -154,13 +155,14 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 		}
 
 		item := PrimeItem{
-			ID:        e.ID,
-			TopicKey:  e.TopicKey,
-			Title:     truncateRunes(e.Title, titleCap),
-			Summary:   truncateRunes(e.Summary, summaryCap),
-			HitCount:  e.HitCount,
-			Freshness: FreshnessInfo{Status: status, Detail: detail},
-			Conflict:  conflictsByID[e.ID],
+			ID:           e.ID,
+			TopicKey:     e.TopicKey,
+			Title:        truncateRunes(e.Title, titleCap),
+			Summary:      truncateRunes(e.Summary, summaryCap),
+			HitCount:     e.HitCount,
+			Freshness:    FreshnessInfo{Status: status, Detail: detail},
+			Conflict:     conflictsByID[e.ID],
+			ReviewStatus: e.ReviewStatus,
 		}
 		// Once an entry doesn't fit in the remaining budget, stop itemizing
 		// entirely rather than skipping ahead to try later, lower-priority
@@ -358,7 +360,14 @@ func RenderPrimeText(r PrimeResult) string {
 			if topic == "" {
 				topic = UntopicedLabel
 			}
-			fmt.Fprintf(&b, "  %-12s %-30s hits:%-4d %-7s %s\n", it.ID, topic, it.HitCount, it.Freshness.Status, it.Title)
+			line := fmt.Sprintf("  %-12s %-30s hits:%-4d %-7s %s", it.ID, topic, it.HitCount, it.Freshness.Status, it.Title)
+			if it.ReviewStatus == ReviewStatusPending {
+				// Inline, not a standalone line like get's marker: prime renders
+				// multiple entries per call, so a standalone marker line would be
+				// ambiguous about which entry it belongs to (crn-evw98.1).
+				line += " [PENDING REVIEW]"
+			}
+			b.WriteString(line + "\n")
 			if it.Summary != "" {
 				fmt.Fprintf(&b, "      %s\n", it.Summary)
 			}

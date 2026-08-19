@@ -704,6 +704,13 @@ func TestPatchFrontmatterFieldsLeavesKindAndAutoActionableUntouchedWhenOmitted(t
 func TestPatchFrontmatterFieldsIsLineForLineSurgical(t *testing.T) {
 	e, err := NewEntry(NewEntryParams{Type: EntryTypeKnowledge, TopicKey: "draft", Scope: []string{"agent:bot"}, Body: "body text\nsecond line", CreatedBy: "agent:bot"})
 	require.NoError(t, err)
+	// Stamp pending first, matching every real entry patchFrontmatterFields
+	// ever sees in production (Create/commitToReviewWorktree always stamp
+	// review_status before a branch reaches curation) -- so the unconditional
+	// review_status=merged patch below hits setScalarLine's replace path, not
+	// its insert-when-absent path, and the "surgical, same line count" claim
+	// this test makes stays accurate (crn-evw98.1).
+	e.ReviewStatus = ReviewStatusPending
 	raw, err := e.marshal()
 	require.NoError(t, err)
 
@@ -712,13 +719,17 @@ func TestPatchFrontmatterFieldsIsLineForLineSurgical(t *testing.T) {
 
 	origLines := strings.Split(string(raw), "\n")
 	newLines := strings.Split(string(patched), "\n")
-	require.Equal(t, len(origLines), len(newLines), "a single scalar-field patch must not add or remove any line")
+	require.Equal(t, len(origLines), len(newLines), "a scalar-field patch on an already-stamped entry must not add or remove any line")
 	for i := range origLines {
-		if strings.HasPrefix(strings.TrimSpace(origLines[i]), "topic_key") {
+		trimmed := strings.TrimSpace(origLines[i])
+		switch {
+		case strings.HasPrefix(trimmed, "topic_key"):
 			assert.Equal(t, `topic_key = "curated"`, newLines[i])
-			continue
+		case strings.HasPrefix(trimmed, "review_status"):
+			assert.Equal(t, `review_status = "merged"`, newLines[i], "the unconditional merge-time stamp must flip review_status in place")
+		default:
+			assert.Equal(t, origLines[i], newLines[i], "line %d must be untouched", i)
 		}
-		assert.Equal(t, origLines[i], newLines[i], "line %d must be untouched", i)
 	}
 }
 
