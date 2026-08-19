@@ -47,7 +47,13 @@ var listCmd = &cobra.Command{
 
 		items := make([]listItem, 0, len(rows))
 		for _, r := range rows {
-			items = append(items, listItem{ID: r.ID, Title: r.Title, Freshness: r.FreshnessState, Conflict: r.Conflict, ReviewStatus: r.ReviewStatus})
+			items = append(items, listItem{
+				ID:           r.ID,
+				Title:        r.Title,
+				Freshness:    r.FreshnessState,
+				Conflict:     r.Conflict,
+				ReviewStatus: r.ReviewStatus,
+			})
 		}
 		var topicKey *string
 		if key != "" {

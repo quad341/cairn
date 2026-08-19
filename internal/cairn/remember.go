@@ -355,6 +355,27 @@ func (e *Entry) CommitToReviewBranch(ctx context.Context, store string) (string,
 	return branch, nil
 }
 
+// addReviewCommitWorktree creates (create true) or reopens (create false)
+// the throwaway worktree at wt that commitToReviewWorktree stages its
+// review commit in. Split out from commitToReviewWorktree to keep that
+// function's branching under the gocyclo threshold (crn-8lq2z).
+func addReviewCommitWorktree(ctx context.Context, store, branch, wt, operation string, create bool) error {
+	if create {
+		if _, err := gitStep(ctx, operation, "git_worktree_add", func() (string, error) {
+			return gitRun(ctx, store, "worktree", "add", "-b", branch, wt, "HEAD")
+		}); err != nil {
+			return fmt.Errorf("create review branch %q: %w", branch, err)
+		}
+		return nil
+	}
+	if _, err := gitStep(ctx, operation, "git_worktree_add", func() (string, error) {
+		return gitRun(ctx, store, "worktree", "add", wt, branch)
+	}); err != nil {
+		return fmt.Errorf("open existing review branch %q: %w", branch, err)
+	}
+	return nil
+}
+
 // commitToReviewWorktree is the worktree-isolation mechanics shared by
 // CommitToReviewBranch and CommitRecurrenceToReviewBranch: create a
 // throwaway worktree checked out to branch -- freshly created from the
@@ -387,18 +408,8 @@ func (e *Entry) commitToReviewWorktree(ctx context.Context, store, branch string
 	defer func() { _ = os.RemoveAll(scratch) }()
 
 	wt := filepath.Join(scratch, "wt")
-	if create {
-		if _, err := gitStep(ctx, operation, "git_worktree_add", func() (string, error) {
-			return gitRun(ctx, store, "worktree", "add", "-b", branch, wt, "HEAD")
-		}); err != nil {
-			return fmt.Errorf("create review branch %q: %w", branch, err)
-		}
-	} else {
-		if _, err := gitStep(ctx, operation, "git_worktree_add", func() (string, error) {
-			return gitRun(ctx, store, "worktree", "add", wt, branch)
-		}); err != nil {
-			return fmt.Errorf("open existing review branch %q: %w", branch, err)
-		}
+	if err := addReviewCommitWorktree(ctx, store, branch, wt, operation, create); err != nil {
+		return err
 	}
 	defer func() {
 		_, _ = gitStep(ctx, operation, "git_worktree_remove", func() (string, error) {
