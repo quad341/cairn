@@ -82,6 +82,10 @@ type Entry struct {
 	// OverriddenDuplicateOf is set to the matched entry's ID when --force
 	// creates a new entry past a detected duplicate (crn-lzn4.1.1).
 	OverriddenDuplicateOf string `toml:"overridden_duplicate_of,omitempty"`
+	// ReviewStatus is "pending" while an entry is on a remember/<id> review
+	// branch (or freshly Created) and "merged" once ReviewMergeBranch lands it
+	// (crn-evw98.1).
+	ReviewStatus string `toml:"review_status,omitempty"`
 
 	BodyPath string `toml:"-"`
 	Body     string `toml:"-"`
@@ -247,6 +251,15 @@ func (e *Entry) WriteBackRecurrenceCount() error {
 func (e *Entry) WriteBackPromotedBeadID() error {
 	return e.writeBackPatched(func(front string) (string, error) {
 		return patchPromotedBeadID(front, e.PromotedBeadID)
+	})
+}
+
+// WriteBackReviewStatus surgically patches review_status into the on-disk
+// frontmatter -- the same "patch, don't re-encode" contract WriteBack,
+// WriteBackRecurrenceCount, and WriteBackPromotedBeadID use.
+func (e *Entry) WriteBackReviewStatus() error {
+	return e.writeBackPatched(func(front string) (string, error) {
+		return patchReviewStatus(front, e.ReviewStatus)
 	})
 }
 
@@ -460,6 +473,39 @@ func patchPromotedBeadID(front, beadID string) (string, error) {
 	rest := lines[anchorAt:]
 
 	top = setTOMLLine(top, "promoted_bead_id", tomlQuote(beadID))
+
+	out := make([]string, 0, len(top)+len(rest))
+	out = append(out, top...)
+	out = append(out, rest...)
+	return strings.Join(out, "\n"), nil
+}
+
+// patchReviewStatus patches review_status -- a top-level field alongside
+// verified_at, recurrence_count, and promoted_bead_id, not one of anchor's --
+// into front, in place, using the same [anchor]-boundary-finding approach as
+// patchPromotedBeadID: every line at or after [anchor] passes through
+// completely unchanged, since review_status never lives there.
+func patchReviewStatus(front, status string) (string, error) {
+	lines := strings.Split(front, "\n")
+
+	anchorAt := -1
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "[anchor]" {
+			anchorAt = i
+			break
+		}
+	}
+	if anchorAt < 0 {
+		return "", errors.New("no [anchor] table in frontmatter")
+	}
+
+	// Three-index slice caps capacity at the region's own length, so
+	// setTOMLLine's append (when the key is absent) always allocates a fresh
+	// backing array instead of writing through into rest.
+	top := lines[:anchorAt:anchorAt]
+	rest := lines[anchorAt:]
+
+	top = setTOMLLine(top, "review_status", tomlQuote(status))
 
 	out := make([]string, 0, len(top)+len(rest))
 	out = append(out, top...)
@@ -1118,13 +1164,16 @@ func scopeSuperset(super, sub []string) bool {
 // Title/Summary/HitCount to render entries without a body read, crn-0vqk.2/
 // crn-od2x.2). Check only ever reads e.Anchor, ShadowMap only ever reads ID,
 // TopicKey, Scope, VerifiedAt, CreatedAt, and OverriddenDuplicateOf, and Prime
-// additionally reads Title, Summary, and HitCount. EntriesByType requires Type
-// for unattended maintenance. Those are the populated fields; CreatedBy, Body,
+// additionally reads Title, Summary, HitCount, and ReviewStatus. EntriesByType
+// requires Type for unattended maintenance. Those are the populated fields; CreatedBy, Body,
 // and BodyPath remain zero-valued for every caller. OverriddenDuplicateOf was added for
 // moreSpecificReason's override check (crn-3476/crn-zcxq FR-6): without it,
 // every entry Visible/Prime ever see from this path has an empty override,
 // silently no-opping the --force correction shadowReason is supposed to
-// honor. Adding a column here is a deliberate, reviewed cost trade-off (these
+// honor. ReviewStatus was added for get/prime's [PENDING REVIEW] marker and
+// list/prime's --json field (crn-evw98.1) -- body-sourced, like
+// OverriddenDuplicateOf, so it must come from Reindex's per-body parse.
+// Adding a column here is a deliberate, reviewed cost trade-off (these
 // were already indexed and populated by reindexUpsertChunkTx at zero
 // marginal query cost) -- not a precedent for extending this list on
 // request; any future addition needs the same analysis.
@@ -1146,7 +1195,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 	rows, err := db.QueryContext(ctx, `SELECT
 		id, title, title_source, summary, summary_source, type, hit_count, topic_key, verified_at, created_at,
 		anchor_type, anchor_repo, anchor_paths, anchor_spec, anchor_fingerprint,
-		overridden_duplicate_of
+		overridden_duplicate_of, review_status
 		FROM entries ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -1161,7 +1210,7 @@ func Status(ctx context.Context, store string) ([]*Entry, error) {
 			&e.ID, &e.Title, &e.TitleSource, &e.Summary, &e.SummarySource, &e.Type,
 			&e.HitCount, &e.TopicKey, &e.VerifiedAt, &e.CreatedAt,
 			&e.Anchor.Type, &e.Anchor.Repo, &anchorPaths, &e.Anchor.Spec, &e.Anchor.Fingerprint,
-			&e.OverriddenDuplicateOf,
+			&e.OverriddenDuplicateOf, &e.ReviewStatus,
 		); err != nil {
 			return nil, err
 		}

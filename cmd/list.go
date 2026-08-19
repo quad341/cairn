@@ -16,10 +16,11 @@ type listOutput struct {
 }
 
 type listItem struct {
-	ID        string               `json:"id"`
-	Title     string               `json:"title"`
-	Freshness string               `json:"freshness"`
-	Conflict  *cairn.TopicConflict `json:"conflict"`
+	ID           string               `json:"id"`
+	Title        string               `json:"title"`
+	Freshness    string               `json:"freshness"`
+	Conflict     *cairn.TopicConflict `json:"conflict"`
+	ReviewStatus string               `json:"review_status"`
 }
 
 var listCmd = &cobra.Command{
@@ -46,7 +47,7 @@ var listCmd = &cobra.Command{
 
 		items := make([]listItem, 0, len(rows))
 		for _, r := range rows {
-			items = append(items, listItem{ID: r.ID, Title: r.Title, Freshness: r.FreshnessState, Conflict: r.Conflict})
+			items = append(items, listItem{ID: r.ID, Title: r.Title, Freshness: r.FreshnessState, Conflict: r.Conflict, ReviewStatus: r.ReviewStatus})
 		}
 		var topicKey *string
 		if key != "" {

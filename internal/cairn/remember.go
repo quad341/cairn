@@ -28,6 +28,13 @@ const (
 	EntryTypeRemediation = "remediation"
 	// EntryTypePolicy is a directive that belongs in an agent prompt, not cairn.
 	EntryTypePolicy = "policy"
+
+	// ReviewStatusPending marks an entry not yet merged by a reviewer -- freshly
+	// Created, or committed to a remember/<id> review branch (crn-evw98.1).
+	ReviewStatusPending = "pending"
+	// ReviewStatusMerged marks an entry ReviewMergeBranch has landed onto the
+	// store's default branch.
+	ReviewStatusMerged = "merged"
 )
 
 // ValidateNewEntryType enforces cairn's write-time content boundary. Policy is
@@ -170,6 +177,7 @@ const maxCreateAttempts = 5
 // over a long-lived store. On collision it regenerates e.ID and retries,
 // rather than silently destroying whatever entry is already at that path.
 func (e *Entry) Create(store string) error {
+	e.ReviewStatus = ReviewStatusPending
 	dir := scopeDir(store, e.Scope)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
@@ -397,6 +405,17 @@ func (e *Entry) commitToReviewWorktree(ctx context.Context, store, branch string
 			return gitRun(ctx, store, "worktree", "remove", "--force", wt)
 		})
 	}()
+
+	// Stamp pending before reading the body into the review-commit copy below,
+	// so the review branch always carries review_status=pending -- including
+	// the recurrence-on-an-already-merged-entry case, where this write lands
+	// on the store's own working-tree copy first and is only overwritten back
+	// to "merged" by the existing checkout-HEAD restore further down
+	// (crn-evw98.1).
+	e.ReviewStatus = ReviewStatusPending
+	if err := e.WriteBackReviewStatus(); err != nil {
+		return fmt.Errorf("stamp pending review status: %w", err)
+	}
 
 	content, err := os.ReadFile(e.BodyPath)
 	if err != nil {
