@@ -84,10 +84,10 @@ func Diagnose(ctx context.Context, store string) (*Report, error) {
 func diagnose(
 	ctx context.Context,
 	store string,
-	iterEntriesTolerant func(string) ([]*Entry, []ParseFailure, error),
+	iterEntriesTolerant func(context.Context, string) ([]*Entry, []ParseFailure, error),
 	indexStaleFn func(context.Context, string) (bool, error),
 ) (*Report, error) {
-	entries, failures, err := iterEntriesTolerant(store)
+	entries, failures, err := iterEntriesTolerant(ctx, store)
 	if err != nil {
 		return nil, err
 	}
@@ -439,7 +439,7 @@ type ExplainResult struct {
 //
 //nolint:revive // see doc comment: deliberate signature-consistency param
 func ExplainEntry(ctx context.Context, store, entryID string) (*ExplainResult, error) {
-	entries, _, err := IterEntriesTolerant(store)
+	entries, _, err := IterEntriesTolerant(ctx, store)
 	if err != nil {
 		return nil, err
 	}
@@ -508,7 +508,7 @@ type IdentityExplainResult struct {
 //
 //nolint:revive // see doc comment: deliberate signature-consistency param
 func ExplainForIdentity(ctx context.Context, store string, identity []string, topicKey string) (*IdentityExplainResult, error) {
-	entries, _, err := IterEntriesTolerant(store)
+	entries, _, err := IterEntriesTolerant(ctx, store)
 	if err != nil {
 		return nil, err
 	}

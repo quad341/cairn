@@ -1,6 +1,7 @@
 package cairn
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"sort"
@@ -62,8 +63,8 @@ const dedupSimilarityThreshold = 0.5
 // concern, deferred to crn-0yv.5 and documented in
 // docs/plans/cairn-librarian-dedup-detection-beads.md, the same split
 // crn-0yv.2 established for freshness-drift beads.
-func Dedup(store string) ([]DedupFinding, error) {
-	all, err := IterEntries(store)
+func Dedup(ctx context.Context, store string) ([]DedupFinding, error) {
+	all, err := IterEntries(ctx, store)
 	if err != nil {
 		return nil, err
 	}
