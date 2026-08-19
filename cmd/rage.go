@@ -157,7 +157,7 @@ func runRage(cmd *cobra.Command, _ []string) (int, error) {
 
 	var entryBodies []RageEntryBody
 	if includeBodies, _ := cmd.Flags().GetBool("include-bodies"); includeBodies {
-		entries, _, ierr := cairn.IterEntriesTolerant(storeP)
+		entries, _, ierr := cairn.IterEntriesTolerant(cmd.Context(), storeP)
 		if ierr != nil {
 			return 1, fmt.Errorf("read entry bodies: %w", ierr)
 		}

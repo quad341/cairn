@@ -29,7 +29,7 @@ func EntryByID(ctx context.Context, store, id string) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ParseEntry(resolveBodyPath(store, bodyPath))
+	return parseEntryOrReviewBranch(ctx, store, id, bodyPath)
 }
 
 // EvictDirect deletes e's body file and commits that deletion straight to

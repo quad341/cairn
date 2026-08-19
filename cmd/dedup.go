@@ -20,7 +20,7 @@ var dedupCmd = &cobra.Command{
 			return fmt.Errorf("dedup covers every shared-tier entry and does not filter by identity; " +
 				"use 'cairn map' or 'cairn prime' for a scoped view")
 		}
-		findings, err := cairn.Dedup(storePath())
+		findings, err := cairn.Dedup(cmd.Context(), storePath())
 		if err != nil {
 			return err
 		}
