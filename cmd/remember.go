@@ -395,7 +395,7 @@ func recurrenceMatch(cmd *cobra.Command, candidate *cairn.Entry) (matched *cairn
 	for _, v := range visible {
 		visibleIDs[v.ID] = true
 	}
-	all, err := cairn.IterEntries(store)
+	all, err := cairn.IterEntries(cmd.Context(), store)
 	if err != nil {
 		return nil, false, fmt.Errorf("check for a recurring entry: %w", err)
 	}
@@ -470,7 +470,7 @@ func bestMatch(others []*cairn.Entry, topicMatch, contentMatch map[string]bool) 
 // only the exit code must be told too, not just a human reading stdout.
 func recordRecurrence(cmd *cobra.Command, matched *cairn.Entry) error {
 	matched.RecurrenceCount++
-	if err := matched.WriteBackRecurrenceCount(); err != nil {
+	if err := matched.WriteBackRecurrenceCount(cmd.Context(), storePath()); err != nil {
 		return emitError(cmd, fmt.Errorf("record recurrence for %s: %w", matched.ID, err))
 	}
 

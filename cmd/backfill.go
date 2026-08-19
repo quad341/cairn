@@ -62,7 +62,7 @@ func init() {
 var backfillExportCmd = &cobra.Command{
 	Use: "export", Short: "Emit unclassified entry work as JSONL", Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		records, counts, err := collectBackfill(storePath())
+		records, counts, err := collectBackfill(cmd.Context(), storePath())
 		if err != nil {
 			return err
 		}
@@ -148,8 +148,8 @@ var backfillApplyCmd = &cobra.Command{
 	},
 }
 
-func collectBackfill(store string) ([]backfillRecord, classificationCounts, error) {
-	entries, err := cairn.IterEntries(store)
+func collectBackfill(ctx context.Context, store string) ([]backfillRecord, classificationCounts, error) {
+	entries, err := cairn.IterEntries(ctx, store)
 	if err != nil {
 		return nil, classificationCounts{}, err
 	}

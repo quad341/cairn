@@ -379,7 +379,7 @@ func commitBatchEntry(cmd *cobra.Command, e *cairn.Entry, scope []string, res *B
 // view.
 func recordBatchRecurrence(ctx context.Context, matched *cairn.Entry) error {
 	matched.RecurrenceCount++
-	if err := matched.WriteBackRecurrenceCount(); err != nil {
+	if err := matched.WriteBackRecurrenceCount(ctx, storePath()); err != nil {
 		return fmt.Errorf("record recurrence for %s: %w", matched.ID, err)
 	}
 

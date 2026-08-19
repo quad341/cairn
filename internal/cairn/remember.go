@@ -333,8 +333,12 @@ func (e *Entry) CommitDirect(ctx context.Context, store string) (string, error) 
 // reviewBranchName is the git branch a shared-tier entry's review commit
 // lands on -- namespaced under remember/ and keyed by the entry's own ID, so
 // concurrent remember calls (even for the same topic_key) never collide.
-func reviewBranchName(e *Entry) string {
-	return "remember/" + e.ID
+// Takes a bare id, not an *Entry: reviewBranchContent's callers
+// (Find/EntryByID/writeBackPatchedOrBranch, crn-evw98.2) only ever have an id
+// in hand at the point they need this, an already-parsed entry being exactly
+// what they're trying to obtain.
+func reviewBranchName(id string) string {
+	return "remember/" + id
 }
 
 // CommitToReviewBranch commits e -- already written to store by Create --
@@ -347,7 +351,7 @@ func reviewBranchName(e *Entry) string {
 // worktree -- entirely separate from the store's HEAD, index, and working
 // tree -- cannot. Returns the branch name on success.
 func (e *Entry) CommitToReviewBranch(ctx context.Context, store string) (string, error) {
-	branch := reviewBranchName(e)
+	branch := reviewBranchName(e.ID)
 	msg := fmt.Sprintf("remember: %s\n\nscope: %s", e.ID, strings.Join(e.Scope, " "))
 	if err := e.commitToReviewWorktree(ctx, store, branch, true, msg, "commit_to_review_branch"); err != nil {
 		return "", err
@@ -498,6 +502,34 @@ func reviewBranchExists(ctx context.Context, store, branch string) (bool, error)
 	return false, fmt.Errorf("check for existing review branch %q: %w", branch, err)
 }
 
+// reviewBranchContent reads id's last-committed content from its pending
+// remember/<id> review branch (CommitToReviewBranch's namespace) at relPath,
+// mirroring ShowReviewBranch's git-show pattern (review.go) -- a remember/*
+// branch is never checked out anywhere, so `git show branch:relPath` is the
+// only way to read it. relPath must be relative to store's repo root, the
+// same convention commitToReviewWorktree committed it under
+// (filepath.Rel(store, e.BodyPath)); storeRelPath (entry.go) derives it from
+// a caller's own possibly-absolute BodyPath. ok is false, with raw, branch,
+// and err all zero, when no remember/<id> branch exists at all -- callers
+// should fall back to their own original disk-read error in that case, not
+// synthesize a new one. A branch that exists but fails to read at relPath
+// (corrupt ref, entry moved since) is a real error, not "no branch".
+func reviewBranchContent(ctx context.Context, store, id, relPath string) (raw []byte, branch string, ok bool, err error) {
+	branch = reviewBranchName(id)
+	exists, err := reviewBranchExists(ctx, store, branch)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if !exists {
+		return nil, "", false, nil
+	}
+	out, err := gitRun(ctx, store, "show", branch+":"+filepath.ToSlash(relPath))
+	if err != nil {
+		return nil, "", false, fmt.Errorf("read %s from %s: %w", relPath, branch, err)
+	}
+	return []byte(out), branch, true, nil
+}
+
 // CommitRecurrenceToReviewBranch commits e -- an existing shared-tier entry
 // whose RecurrenceCount cmd/remember.go's capture-time recurrence path
 // (crn-28ge.1.4) just incremented in place -- onto its own remember/<id>
@@ -511,7 +543,7 @@ func reviewBranchExists(ctx context.Context, store, branch string) (bool, error)
 // falling back to creating it fresh (identical to CommitToReviewBranch)
 // only when no such branch exists yet.
 func (e *Entry) CommitRecurrenceToReviewBranch(ctx context.Context, store string) (string, error) {
-	branch := reviewBranchName(e)
+	branch := reviewBranchName(e.ID)
 	exists, err := reviewBranchExists(ctx, store, branch)
 	if err != nil {
 		return "", err
@@ -533,7 +565,7 @@ func (e *Entry) CommitRecurrenceToReviewBranch(ctx context.Context, store string
 // branch -- appending a second commit to the same pending review -- falling
 // back to creating it fresh only when no such branch exists yet.
 func (e *Entry) CommitPromotionToReviewBranch(ctx context.Context, store string) (string, error) {
-	branch := reviewBranchName(e)
+	branch := reviewBranchName(e.ID)
 	exists, err := reviewBranchExists(ctx, store, branch)
 	if err != nil {
 		return "", err

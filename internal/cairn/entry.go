@@ -235,9 +235,12 @@ func patchTopLevelScalar(lines []string, key, value string) []string {
 // and calls this to persist it, without disturbing any other field a
 // curator or a prior WriteBack already wrote. As with WriteBack,
 // incrementing the field is the caller's responsibility; this only persists
-// whatever value is already there.
-func (e *Entry) WriteBackRecurrenceCount() error {
-	return e.writeBackPatched(func(front string) (string, error) {
+// whatever value is already there. ctx/store are threaded through to
+// writeBackPatchedOrBranch's still-pending-review branch fallback
+// (crn-evw98.2): a recurrence on an entry whose first commit hasn't been
+// reviewed yet finds no on-disk file to patch.
+func (e *Entry) WriteBackRecurrenceCount(ctx context.Context, store string) error {
+	return e.writeBackPatchedOrBranch(ctx, store, func(front string) (string, error) {
 		return patchRecurrenceCount(front, e.RecurrenceCount)
 	})
 }
@@ -247,9 +250,11 @@ func (e *Entry) WriteBackRecurrenceCount() error {
 // WriteBack and WriteBackRecurrenceCount use. cmd/promote.go's promote-mark
 // command sets e.PromotedBeadID in memory and calls this to persist it,
 // without disturbing any other field a curator or a prior WriteBack already
-// wrote.
-func (e *Entry) WriteBackPromotedBeadID() error {
-	return e.writeBackPatched(func(front string) (string, error) {
+// wrote. ctx/store are threaded through to writeBackPatchedOrBranch's
+// still-pending-review branch fallback (crn-evw98.2), the same as
+// WriteBackRecurrenceCount above.
+func (e *Entry) WriteBackPromotedBeadID(ctx context.Context, store string) error {
+	return e.writeBackPatchedOrBranch(ctx, store, func(front string) (string, error) {
 		return patchPromotedBeadID(front, e.PromotedBeadID)
 	})
 }
@@ -264,16 +269,66 @@ func (e *Entry) WriteBackReviewStatus() error {
 }
 
 // writeBackPatched is the read/split/patch/reassemble/write shell shared by
-// WriteBack, WriteBackRecurrenceCount, and WriteBackPromotedBeadID: read the
-// on-disk file, split it into frontmatter and body, hand the frontmatter to
-// patch, and write the merged result back. Every line patch itself doesn't
-// touch survives byte-for-byte, matching WriteBack's own "surgical patch,
-// not a full re-encode" contract.
+// WriteBack, WriteBackAnchor, WriteBackRetrievalMetadata, WriteBackBackfill,
+// and WriteBackReviewStatus: read the on-disk file, split it into
+// frontmatter and body, hand the frontmatter to patch, and write the merged
+// result back. Every line patch itself doesn't touch survives byte-for-byte,
+// matching WriteBack's own "surgical patch, not a full re-encode" contract.
+//
+// WriteBackRecurrenceCount and WriteBackPromotedBeadID use
+// writeBackPatchedOrBranch instead, not this: crn-evw98's still-pending-
+// review gap (see reviewBranchContent) applies to exactly those two, per
+// crn-evw98.2's exit_contract, and no other WriteBack* caller has been
+// observed to need it.
 func (e *Entry) writeBackPatched(patch func(front string) (string, error)) error {
 	raw, err := os.ReadFile(e.BodyPath)
 	if err != nil {
 		return err
 	}
+	return e.applyPatchedFrontmatter(raw, patch)
+}
+
+// writeBackPatchedOrBranch is writeBackPatched's counterpart for
+// WriteBackRecurrenceCount and WriteBackPromotedBeadID. commitToReviewWorktree
+// removes (or HEAD-restores) a shared-tier entry's on-disk copy the moment it
+// is first committed to its remember/<id> review branch, so a recurrence or
+// promotion write landing while that first commit is still pending review
+// finds no on-disk file to patch, or a stale pre-recurrence one. On
+// os.IsNotExist specifically, this reads the entry's last-committed content
+// back from its own pending review branch (reviewBranchContent, the same
+// git-show mechanism Find/EntryByID fall back to via parseEntryOrReviewBranch)
+// instead, patches that, and -- critically -- writes the patched result back
+// to e.BodyPath, rematerializing the untracked file so
+// CommitRecurrenceToReviewBranch/CommitPromotionToReviewBranch's own plain
+// os.ReadFile(e.BodyPath) right after this call finds it unchanged
+// (crn-evw98.2).
+func (e *Entry) writeBackPatchedOrBranch(ctx context.Context, store string, patch func(front string) (string, error)) error {
+	raw, err := os.ReadFile(e.BodyPath)
+	if err == nil {
+		return e.applyPatchedFrontmatter(raw, patch)
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
+
+	relPath, rerr := storeRelPath(store, e.BodyPath)
+	if rerr != nil {
+		return err // the original disk-read error is more useful than a path-resolution one
+	}
+	branchRaw, _, ok, berr := reviewBranchContent(ctx, store, e.ID, relPath)
+	if berr != nil {
+		return berr
+	}
+	if !ok {
+		return err // no pending branch either -- surface the original disk error
+	}
+	return e.applyPatchedFrontmatter(branchRaw, patch)
+}
+
+// applyPatchedFrontmatter is writeBackPatched/writeBackPatchedOrBranch's
+// shared split/patch/reassemble/write tail, once raw content has been
+// obtained from wherever (disk, or a pending review branch).
+func (e *Entry) applyPatchedFrontmatter(raw []byte, patch func(front string) (string, error)) error {
 	front, body, ok, err := splitFrontmatter(string(raw))
 	if err != nil {
 		return fmt.Errorf("%s: %w", e.BodyPath, err)
@@ -581,14 +636,19 @@ func (e *Entry) marshal() ([]byte, error) {
 	return []byte(sb.String()), nil
 }
 
-// walkEntries walks the scope dirs, parsing every .md file into an Entry.
-// onParseErr is invoked for each file that fails to parse for a reason other
-// than errNotEntry (which always just means "skip, not an entry"); returning
-// the error aborts the walk (IterEntries' contract), while recording it and
-// returning nil keeps going (IterEntriesTolerant's contract) -- the
-// traversal itself is identical between the two, only the parse-failure
-// policy differs.
-func walkEntries(store string, onParseErr func(path string, err error) error) ([]*Entry, error) {
+// walkEntries walks the scope dirs, parsing every .md file into an Entry,
+// then folds in every entry still pending review on an open remember/<id>
+// branch (reviewBranchEntries) -- crn-evw98's fix for the gap left by
+// commitToReviewWorktree removing a shared-tier entry's on-disk copy the
+// moment it's first committed for review (see mergeReviewBranchEntries for
+// why a branch-sourced copy always wins over a same-ID disk one). onParseErr
+// is invoked for each file -- or, now, each review branch -- that fails to
+// parse for a reason other than errNotEntry (which always just means "skip,
+// not an entry"); returning the error aborts the walk (IterEntries'
+// contract), while recording it and returning nil keeps going
+// (IterEntriesTolerant's contract) -- the traversal itself is identical
+// between the two, only the parse-failure policy differs.
+func walkEntries(ctx context.Context, store string, onParseErr func(path string, err error) error) ([]*Entry, error) {
 	// Absolute-ise the store root before joining, so the BodyPath on every
 	// entry -- and therefore every body_path the indexer records -- describes
 	// the file independently of the cwd this walk ran from. Default store
@@ -625,13 +685,115 @@ func walkEntries(store string, onParseErr func(path string, err error) error) ([
 			return nil, err
 		}
 	}
+
+	branchEntries, err := reviewBranchEntries(ctx, store, onParseErr)
+	if err != nil {
+		return nil, err
+	}
+	out = mergeReviewBranchEntries(out, branchEntries)
+
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 
-// IterEntries walks the scope dirs and returns all entries, sorted by id.
-func IterEntries(store string) ([]*Entry, error) {
-	return walkEntries(store, func(p string, err error) error { return &MalformedEntryError{Path: p, Err: err} })
+// reviewBranchEntries parses every remember/<id> branch still open (i.e. not
+// yet merged -- ListReviewBranches' own isMergedInto filter) into an Entry,
+// stamping ReviewStatus=pending on each. Tolerates store not being a git
+// repo, or being one with no commits yet, the same way Reindex's own
+// watermark read already does (index.go) -- neither IterEntries nor Reindex
+// has ever required git, and this must not newly impose that requirement on
+// every non-git store. A branch ListReviewBranches itself couldn't resolve
+// (its own per-branch Error field) is routed through onParseErr exactly like
+// a same-shaped on-disk parse failure, so a single malformed branch can never
+// abort discovery of every other entry (crn-evw98).
+func reviewBranchEntries(ctx context.Context, store string, onParseErr func(path string, err error) error) ([]*Entry, error) {
+	// Discards the error like index.go's indexed_at_commit stamp does, not
+	// just !ok: unlike indexStale (which must tell "confirmed non-git" apart
+	// from "invocation error" to avoid under-detecting staleness, crn-t250),
+	// a store that can't invoke git at all -- missing binary included, as
+	// TestSweepGitInvocationFailureIsIncomplete simulates -- could not have
+	// created a remember/* branch either, so there is no branch to miss.
+	if _, ok, _ := git(ctx, store, "rev-parse", "HEAD"); !ok {
+		return nil, nil
+	}
+
+	branches, err := ListReviewBranches(ctx, store, time.Now())
+	if err != nil {
+		return nil, err
+	}
+
+	var out []*Entry
+	for _, b := range branches {
+		if b.Error != "" {
+			if perr := onParseErr(b.Name, errors.New(b.Error)); perr != nil {
+				return nil, perr
+			}
+			continue
+		}
+		source := b.Name + ":" + b.Path
+		raw, err := gitRun(ctx, store, "show", source)
+		if err != nil {
+			if perr := onParseErr(source, fmt.Errorf("read entry from review branch: %w", err)); perr != nil {
+				return nil, perr
+			}
+			continue
+		}
+		e, perr := parseEntryContent([]byte(raw), source)
+		if perr != nil {
+			if errors.Is(perr, errNotEntry) {
+				continue
+			}
+			if oerr := onParseErr(source, perr); oerr != nil {
+				return nil, oerr
+			}
+			continue
+		}
+		e.BodyPath = filepath.Join(store, b.Path)
+		e.ReviewStatus = ReviewStatusPending
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// mergeReviewBranchEntries folds branchEntries into diskEntries, keyed by ID:
+// a branch-sourced copy always wins over a same-ID disk copy. The two
+// overlap in exactly the recurrence/promotion case (crn-evw98): an
+// already-merged entry recurring again leaves a stale, HEAD-restored disk
+// copy AND a fresh pending-branch copy with the same ID
+// (commitToReviewWorktree's own cat-file/checkout-HEAD tail), and the branch
+// copy is the one carrying the actually-current
+// recurrence_count/promoted_bead_id -- writeBackPatchedOrBranch
+// rematerializes it there first, before CommitRecurrenceToReviewBranch/
+// CommitPromotionToReviewBranch read and commit it. A branch already merged
+// since ListReviewBranches ran can never appear in branchEntries at all
+// (isMergedInto excludes it), so no dedup against an up-to-date disk copy is
+// needed for that case.
+func mergeReviewBranchEntries(diskEntries, branchEntries []*Entry) []*Entry {
+	if len(branchEntries) == 0 {
+		return diskEntries
+	}
+	byID := make(map[string]*Entry, len(diskEntries))
+	out := make([]*Entry, 0, len(diskEntries)+len(branchEntries))
+	for _, e := range diskEntries {
+		byID[e.ID] = e
+		out = append(out, e)
+	}
+	for _, be := range branchEntries {
+		if existing, ok := byID[be.ID]; ok {
+			*existing = *be
+			continue
+		}
+		byID[be.ID] = be
+		out = append(out, be)
+	}
+	return out
+}
+
+// IterEntries walks the scope dirs and returns all entries, sorted by id --
+// including entries still pending review on an open remember/<id> branch
+// (crn-evw98, see walkEntries).
+func IterEntries(ctx context.Context, store string) ([]*Entry, error) {
+	return walkEntries(ctx, store, func(p string, err error) error { return &MalformedEntryError{Path: p, Err: err} })
 }
 
 // ParseFailure records one file that failed to parse during a tolerant walk.
@@ -641,13 +803,14 @@ type ParseFailure struct {
 }
 
 // IterEntriesTolerant walks the scope dirs the same way IterEntries does,
-// but a malformed file never aborts the whole scan (FR-3/NFR-1): its path
-// and error are appended to the returned failures instead. The error return
-// is reserved for a genuine I/O failure on the store root itself (e.g. an
-// unreadable directory), never a parse error.
-func IterEntriesTolerant(store string) ([]*Entry, []ParseFailure, error) {
+// but a malformed file -- or unreadable review branch -- never aborts the
+// whole scan (FR-3/NFR-1): its path and error are appended to the returned
+// failures instead. The error return is reserved for a genuine I/O failure on
+// the store root itself (e.g. an unreadable directory) or a genuine git
+// invocation failure, never a parse error.
+func IterEntriesTolerant(ctx context.Context, store string) ([]*Entry, []ParseFailure, error) {
 	var failures []ParseFailure
-	out, err := walkEntries(store, func(p string, perr error) error {
+	out, err := walkEntries(ctx, store, func(p string, perr error) error {
 		failures = append(failures, ParseFailure{Path: p, Err: perr})
 		return nil
 	})
@@ -690,7 +853,7 @@ func Find(ctx context.Context, store, id string) (*Entry, error) {
 		return nil, err
 	}
 
-	e, err := ParseEntry(resolveBodyPath(store, bodyPath))
+	e, err := parseEntryOrReviewBranch(ctx, store, id, bodyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -744,6 +907,64 @@ func resolveBodyPath(store, bodyPath string) string {
 		return bodyPath
 	}
 	return filepath.Join(store, bodyPath)
+}
+
+// parseEntryOrReviewBranch parses the entry at bodyPath (store-relative or
+// absolute, per resolveBodyPath), falling back to id's pending remember/<id>
+// review branch content on os.IsNotExist -- see reviewBranchContent. Shared
+// by Find and EntryByID: both resolve bodyPath via the same findBodyPath
+// index lookup and hit the identical gap (crn-evw98) where the index still
+// names a body file commitToReviewWorktree has already removed from disk
+// because the entry is still pending review.
+func parseEntryOrReviewBranch(ctx context.Context, store, id, bodyPath string) (*Entry, error) {
+	resolved := resolveBodyPath(store, bodyPath)
+	e, err := ParseEntry(resolved)
+	if err == nil {
+		return e, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	relPath, rerr := storeRelPath(store, resolved)
+	if rerr != nil {
+		return nil, err // the original disk-read error is more useful than a path-resolution one
+	}
+	raw, branch, ok, berr := reviewBranchContent(ctx, store, id, relPath)
+	if berr != nil {
+		return nil, berr
+	}
+	if !ok {
+		return nil, err // no pending branch either -- the original ErrNotExist stands
+	}
+	be, perr := parseEntryContent(raw, branch+":"+relPath)
+	if perr != nil {
+		return nil, perr
+	}
+	be.BodyPath = resolved
+	be.ReviewStatus = ReviewStatusPending
+	return be, nil
+}
+
+// storeRelPath resolves p (a body path as ParseEntry would open it) to a path
+// relative to store's repo root -- the form every remember/<id> review branch
+// commit uses (commitToReviewWorktree's own filepath.Rel(store, e.BodyPath)).
+// Needed because resolveBodyPath's own output can be either absolute
+// (walkEntries' current convention) or, for an index built by an older
+// binary, still relative to whatever cwd built it (crn-o6mn). Both p and
+// store are absolute-ized first so filepath.Rel always compares like with
+// like, regardless of which convention produced p or what form the caller's
+// own store string takes.
+func storeRelPath(store, p string) (string, error) {
+	absStore, err := filepath.Abs(store)
+	if err != nil {
+		return "", err
+	}
+	absP, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Rel(absStore, absP)
 }
 
 // Visible returns entries an identity may see: every scope-tag on the entry
