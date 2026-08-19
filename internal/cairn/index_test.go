@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -723,9 +724,10 @@ func TestConcurrentFindAndReindexDoNotHardFail(t *testing.T) {
 // TestConcurrentReindexDoesNotRaceOnEntryTagsSchema is the crn-j3k4
 // regression test: entry_tags' DROP TABLE IF EXISTS + CREATE TABLE used to
 // run as two independent autocommit statements, outside any transaction and
-// before reindexTx's own tx began. Two concurrent Reindex() calls could
-// interleave those statements -- e.g. both DROPs succeed (IF EXISTS), then
-// both CREATEs race -- and the loser hit a hard "table entry_tags already
+// before the schema step's own tx began (today, reindexSchemaTx). Two
+// concurrent Reindex() calls could interleave those statements -- e.g. both
+// DROPs succeed (IF EXISTS), then both CREATEs race -- and the loser hit a
+// hard "table entry_tags already
 // exists" SQL logic error. This is a different failure mode than crn-t250's
 // SQLITE_BUSY: busy_timeout doesn't help a DDL race, only lock contention.
 //
@@ -1105,4 +1107,161 @@ CREATE TABLE entry_tags (entry_id TEXT, tag TEXT);
 	var count int
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT COUNT(*) FROM entries WHERE id = 'a'").Scan(&count))
 	assert.Equal(t, 1, count, "the self-heal reindex must have actually completed, not merely returned nil early")
+}
+
+// TestReindexChunkedUpsertSurvivesBusyRetryAcrossChunks pins crn-f0rb7.2's
+// chunked-transaction correctness: with entries spanning multiple
+// reindexChunkSize-sized transactions, a writer lock held across a chunk
+// boundary must not corrupt or drop rows -- Reindex must retry the chunk it
+// hit busy on and still land on the exact right final id set, both for the
+// contended build and for a subsequent reindex that deletes a subset
+// spanning more than one chunk. The existing-ids-diff that replaced the old
+// per-reindex TEMP TABLE is the new risk this bead introduces: it's computed
+// once up front (existingEntryIDs) rather than accumulated row-by-row
+// alongside each upsert, so this also pins that the diff still lands on the
+// right set when chunk commits are spread out by retries.
+func TestReindexChunkedUpsertSurvivesBusyRetryAcrossChunks(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+
+	const n = 2*150 + 20 // spans 3 default-sized chunks (150, 150, 20)
+	ids := make([]string, 0, n)
+	for i := range n {
+		id := fmt.Sprintf("e%04d", i)
+		ids = append(ids, id)
+		body := "+++\nid = \"" + id + "\"\ntitle = \"" + id + "\"\n+++\nbody\n"
+		require.NoError(t, os.WriteFile(filepath.Join(store, "global", id+".md"), []byte(body), 0o600))
+	}
+
+	// Seed the real schema first (same technique as
+	// TestReindexRetriesPastBusyTimeout), so the raw lock-holding INSERT
+	// below targets the actual entries shape rather than a hand-rolled
+	// stand-in, and so this first Reindex call already proves uncontended
+	// multi-chunk correctness before the contended case below.
+	count, err := Reindex(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, n, count)
+
+	idxDB, err := sql.Open("sqlite", IndexPath(store))
+	require.NoError(t, err)
+	defer func() { _ = idxDB.Close() }()
+	assertEntryIDs(t, ctx, idxDB, ids)
+
+	lockDB, err := sql.Open("sqlite", IndexPath(store)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
+	require.NoError(t, err)
+	defer func() { _ = lockDB.Close() }()
+	tx, err := lockDB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO entries (id,title,body_path) VALUES ('lock','lock','lock')`)
+	require.NoError(t, err)
+
+	// Release the lock after 6s -- longer than busy_timeout, shorter than the
+	// retry budget -- same shape as TestReindexRetriesPastBusyTimeout, but
+	// here it lands mid-store across a real multi-chunk reindex rather than a
+	// single-transaction one.
+	go func() {
+		time.Sleep(6 * time.Second)
+		_ = tx.Rollback()
+	}()
+
+	// Delete a subset spanning all three chunks (every 37th id) before this
+	// contended reindex, so the busy retry above and the cross-chunk deletion
+	// diff are both exercised in the same call.
+	var kept []string
+	for i, id := range ids {
+		if i%37 == 0 {
+			require.NoError(t, os.Remove(filepath.Join(store, "global", id+".md")))
+			continue
+		}
+		kept = append(kept, id)
+	}
+
+	count, err = Reindex(ctx, store)
+	require.NoError(t, err, "Reindex must retry a busy chunk, not hard-fail")
+	assert.Equal(t, len(kept), count)
+	assertEntryIDs(t, ctx, idxDB, kept)
+}
+
+// assertEntryIDs asserts db's entries table holds exactly want, regardless
+// of insertion/chunk order.
+func assertEntryIDs(t *testing.T, ctx context.Context, db *sql.DB, want []string) {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `SELECT id FROM entries ORDER BY id`)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var got []string
+	for rows.Next() {
+		var id string
+		require.NoError(t, rows.Scan(&id))
+		got = append(got, id)
+	}
+	require.NoError(t, rows.Err())
+	wantSorted := append([]string(nil), want...)
+	sort.Strings(wantSorted)
+	assert.Equal(t, wantSorted, got)
+}
+
+// TestReindexChunkingBoundsSingleTransactionLockHold pins crn-f0rb7.2's
+// actual goal: no single transaction inside Reindex should hold SQLite's
+// write lock for anywhere near as long as the old one-mega-transaction shape
+// did (measured p99=15.7s/max=17.1s on a 900-entry store under 24 concurrent
+// reindexers -- see TestFindRetriesPastBusyTimeout's comment). Reproducing
+// that exact 24-way stress methodology here would make this suite far slower
+// and flakier than anything else in it, so this test measures the
+// mechanically relevant quantity instead, directly from the code under test:
+// reindexStepObserved records how long each of reindexOnce's transactional
+// steps (schema, each upsert chunk, finalize) actually takes. On this
+// uncontended, single-caller run that duration is the step's lock-hold time.
+// An earlier version of this test tried to infer the same thing externally,
+// polling a second connection for SQLITE_BUSY -- but on a fast, uncontended
+// run each chunk's transaction can complete faster than the polling interval
+// resolves, undercounting distinct holds; hooking the code directly sidesteps
+// that entirely. Under the old single-mega-transaction shape there would be
+// exactly one "chunk"-equivalent step spanning the whole store; chunking must
+// instead produce several, each individually short -- the property that
+// actually determines how long a losing concurrent caller (another Reindex,
+// or Find's hit_count UPDATE) would have queued behind it.
+func TestReindexChunkingBoundsSingleTransactionLockHold(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+
+	const n = 900
+	for i := range n {
+		id := fmt.Sprintf("e%04d", i)
+		body := "+++\nid = \"" + id + "\"\ntitle = \"" + id + "\"\n+++\nbody\n"
+		require.NoError(t, os.WriteFile(filepath.Join(store, "global", id+".md"), []byte(body), 0o600))
+	}
+
+	type step struct {
+		label string
+		d     time.Duration
+	}
+	var steps []step
+	reindexStepObserved = func(label string, d time.Duration) {
+		steps = append(steps, step{label, d})
+	}
+	t.Cleanup(func() { reindexStepObserved = nil })
+
+	count, err := Reindex(ctx, store)
+	require.NoError(t, err)
+	assert.Equal(t, n, count)
+
+	var chunkSteps int
+	var maxStep time.Duration
+	for _, s := range steps {
+		if s.label == "chunk" {
+			chunkSteps++
+		}
+		if s.d > maxStep {
+			maxStep = s.d
+		}
+	}
+	t.Logf("Reindex(%d entries): %d transactional steps (%d upsert chunks), longest single step=%s", n, len(steps), chunkSteps, maxStep)
+
+	assert.GreaterOrEqual(t, chunkSteps, 3,
+		"900 entries at the default chunk size should split into several independently-committed upsert transactions, not one")
+	assert.Less(t, maxStep, 5*time.Second,
+		"no single transaction should approach the old baseline (p99=15.7s/max=17.1s on 900 entries) -- each should hold the lock for roughly reindexChunkSize/900 of the store, not the whole thing")
 }

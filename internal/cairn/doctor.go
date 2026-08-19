@@ -286,8 +286,9 @@ func indexDrift(
 }
 
 // DuplicateIDs reports every entry ID held by more than one file (FR-4).
-// reindexTx's upsert (INSERT ... ON CONFLICT(id) DO UPDATE) silently drops a
-// collision today -- this is the only place that surfaces it as a finding.
+// reindexUpsertChunkTx's upsert (INSERT ... ON CONFLICT(id) DO UPDATE)
+// silently drops a collision today -- this is the only place that surfaces
+// it as a finding.
 func DuplicateIDs(entries []*Entry) []Finding {
 	byID := make(map[string][]*Entry)
 	for _, e := range entries {
