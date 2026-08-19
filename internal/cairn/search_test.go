@@ -111,6 +111,38 @@ func TestSearchTruncatesOversizedProjection(t *testing.T) {
 	assert.LessOrEqual(t, len([]rune(res.Hits[0].Summary)), searchSummaryCap)
 }
 
+// TestSearchSummaryPreservesWordBoundaryOnReTruncation covers crn-77k30: a
+// Summary already cleanly word/ellipsis-truncated at write time
+// (NewEntry/DerivedTitleSummary, crn-q08yt) can still land in the 241-280
+// rune range -- inside summaryCap (280) but past searchSummaryCap (240).
+// Search's own re-truncation must not hard-cut that value mid-word merely
+// because it is applying a second, smaller ceiling on top of an
+// already-truncated one -- the same bug class as crn-q08yt, a different call
+// site (search.go:196 instead of remember.go/prime.go).
+func TestSearchSummaryPreservesWordBoundaryOnReTruncation(t *testing.T) {
+	dir := t.TempDir()
+	// 235 "a"s, a space, then 23 "b"s and a trailing ellipsis -- as if
+	// DerivedTitleSummary had already word-truncated a longer body down to
+	// 260 runes (within summaryCap's 280, past searchSummaryCap's 240).
+	// truncateRunes(_, 240) cuts 4 runes into the "b" word and drops the
+	// original ellipsis entirely; a word-boundary re-truncation must instead
+	// drop the whole trailing word and append its own fresh ellipsis.
+	summary := strings.Repeat("a", 235) + " " + strings.Repeat("b", 23) + "…"
+	require.Len(t, []rune(summary), 260, "fixture must sit in the 241-280 rune band this bug is scoped to")
+	writeFile(t, dir, "rig/alpha/wb1.md",
+		"+++\nid = \"wb1\"\ntitle = \"Word Boundary Regression\"\nsummary = \""+summary+"\"\ntopic_key = \"wordbound\"\n"+
+			"scope = [\"rig:alpha\"]\n+++\nbody text\n")
+
+	res, err := Search(t.Context(), dir, "wordbound", []string{"rig:alpha"}, 0)
+	require.NoError(t, err)
+	require.NotEmpty(t, res.Hits)
+
+	got := res.Hits[0].Summary
+	assert.LessOrEqual(t, len([]rune(got)), searchSummaryCap)
+	assert.Equal(t, strings.Repeat("a", 235)+"…", got,
+		"re-truncation must back up to the word boundary and append its own ellipsis, not hard-cut into the \"b\" word")
+}
+
 // TestSearchSelfHealsMissingFTSIndex covers every existing deployment's first
 // upgrade: index.sqlite is current by the git watermark ensureFresh consults,
 // so nothing would rebuild it, yet it was built by a binary that had no FTS
