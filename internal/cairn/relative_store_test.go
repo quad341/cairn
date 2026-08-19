@@ -29,7 +29,7 @@ func TestEntryTierResolvesFromARelativeStore(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "rig/alpha/r1.md", relStoreEntryA)
 
-	entries, err := IterEntries(dir)
+	entries, err := IterEntries(t.Context(), dir)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 
@@ -37,7 +37,7 @@ func TestEntryTierResolvesFromARelativeStore(t *testing.T) {
 
 	// Same store, named relatively from inside it.
 	t.Chdir(dir)
-	relEntries, err := IterEntries(".")
+	relEntries, err := IterEntries(t.Context(), ".")
 	require.NoError(t, err)
 	require.Len(t, relEntries, 1)
 	assert.Equal(t, "rig", entryTier(".", relEntries[0]),
@@ -83,7 +83,7 @@ func TestDiagnoseFindsTheSameProblemsFromARelativeStore(t *testing.T) {
 func TestEntryTierRejectsAnEntryOutsideTheStore(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "rig/alpha/r1.md", relStoreEntryA)
-	entries, err := IterEntries(dir)
+	entries, err := IterEntries(t.Context(), dir)
 	require.NoError(t, err)
 
 	assert.Equal(t, "", entryTier(filepath.Join(dir, "elsewhere"), entries[0]))

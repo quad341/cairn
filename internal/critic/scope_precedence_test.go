@@ -29,7 +29,7 @@ func TestRunScopePrecedenceScenarioCleansUpAfterItself(t *testing.T) {
 	r := RunScopePrecedenceScenario(t.Context(), store)
 	require.Equal(t, Pass, r.Verdict, "detail: %s", r.Detail)
 
-	entries, err := cairn.IterEntries(store)
+	entries, err := cairn.IterEntries(t.Context(), store)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "RunScopePrecedenceScenario must leave no entries behind in the store after a passing run")
 }

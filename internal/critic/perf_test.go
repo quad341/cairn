@@ -33,7 +33,7 @@ func TestRunPerfScenarioCleansUpAfterItself(t *testing.T) {
 	r := RunPerfScenario(t.Context(), store)
 	require.NotEqual(t, Fail, r.Verdict, "detail: %s", r.Detail)
 
-	entries, err := cairn.IterEntries(store)
+	entries, err := cairn.IterEntries(t.Context(), store)
 	require.NoError(t, err)
 	assert.Empty(t, entries, "RunPerfScenario must leave no entries behind in the store after a run")
 }
