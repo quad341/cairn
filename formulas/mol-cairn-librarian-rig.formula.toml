@@ -104,7 +104,7 @@ pass to pass; if it's instead re-cloned fresh every sweep tick, add
     NEW_ID=$(bd create \
         --title="cairn librarian: stale review branch on $BRANCH ($TIER)" \
         --stdin --type=task --priority=3 \
-        --labels=dim:review-branch,source:cairn-librarian,needs-pm --silent <<BODY
+        --labels=dim:review-branch,source:cairn-librarian,needs-pm,needs-investigation --silent <<BODY
 Review branch "$BRANCH" (entry $ENTRY_ID, tier $TIER) has been unmerged for
 ${AGE_SECONDS}s. A reminder mail was already sent to $REVIEWER on an earlier
 cairn stale-branches pass at this same commit, and it is now past the
@@ -118,13 +118,15 @@ action removes the branch from future "cairn stale-branches" output.
 BODY
     )
 
-    # Guard (crn-wqgm): assert the filed bead matches the deacon patrol's own
-    # selection query (routable label present, assignee empty, gc.routed_to
-    # empty) -- this prose and the actual --labels argument drifted apart
-    # once already; this catches a repeat instead of filing another bead
-    # nothing will ever pick up.
-    GUARD_OK=$(bd show "$NEW_ID" --json | jq -r '.[0] as $b | ((($b.labels // []) | index("needs-pm")) != null) and (($b.assignee // "") == "") and (($b.metadata["gc.routed_to"] // "") == "")')
-    [ "$GUARD_OK" = "true" ] || echo "librarian: GUARD FAILED -- $NEW_ID does not match the deacon patrol's selection query (needs-pm label / empty assignee / empty gc.routed_to) -- it will not be auto-routed" >&2
+    # Guard (crn-wqgm, extended crn-27con.4): assert the filed bead matches
+    # the deacon patrol's own selection query (routable label present,
+    # assignee empty, gc.routed_to empty) AND carries needs-investigation, so
+    # investigator's own "--label-any needs-pr-response,needs-investigation"
+    # ready query also picks it up -- this prose and the actual --labels
+    # argument drifted apart once already; this catches a repeat instead of
+    # filing another bead nothing will ever pick up.
+    GUARD_OK=$(bd show "$NEW_ID" --json | jq -r '.[0] as $b | ((($b.labels // []) | index("needs-pm")) != null) and ((($b.labels // []) | index("needs-investigation")) != null) and (($b.assignee // "") == "") and (($b.metadata["gc.routed_to"] // "") == "")')
+    [ "$GUARD_OK" = "true" ] || echo "librarian: GUARD FAILED -- $NEW_ID does not match the deacon patrol's selection query or investigator's ready query (needs-pm+needs-investigation labels / empty assignee / empty gc.routed_to) -- it will not be auto-routed" >&2
 
     echo "filed $NEW_ID for $BRANCH"
     FILED=$((FILED + 1))
