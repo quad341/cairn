@@ -332,7 +332,7 @@ func applyBackfillRecord(ctx context.Context, store string, r backfillRecord, wr
 		e.Title = r.ProposedTitle
 		e.Summary = r.ProposedSummary
 	}
-	if err = e.WriteBackBackfill(metadataProposed); err != nil {
+	if err = e.WriteBackBackfill(ctx, metadataProposed); err != nil {
 		return applyResult{ID: r.ID, Status: "failed", Detail: err.Error()}, err
 	}
 	return applyResult{ID: r.ID, Status: "applied"}, nil

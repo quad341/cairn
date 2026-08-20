@@ -179,7 +179,7 @@ func (e *Entry) WriteBackAnchor() error {
 
 // WriteBackRetrievalMetadata surgically replaces title/summary and records
 // both as authored. The body and unrelated frontmatter remain byte-identical.
-func (e *Entry) WriteBackRetrievalMetadata() error {
+func (e *Entry) WriteBackRetrievalMetadata(ctx context.Context) error {
 	if err := e.writeBackPatched(func(front string) (string, error) {
 		lines := strings.Split(front, "\n")
 		lines = patchTopLevelScalar(lines, "title", strconv.Quote(e.Title))
@@ -190,14 +190,14 @@ func (e *Entry) WriteBackRetrievalMetadata() error {
 	}); err != nil {
 		return err
 	}
-	return e.syncIndexRetrievalMetadata(context.Background(), e.Title, MetadataSourceAuthored, e.Summary, MetadataSourceAuthored)
+	return e.syncIndexRetrievalMetadata(ctx, e.Title, MetadataSourceAuthored, e.Summary, MetadataSourceAuthored)
 }
 
 // WriteBackBackfill atomically patches a legacy entry's classification and,
 // when requested, its retrieval metadata. It exists for the migration path:
 // new-entry validation intentionally rejects policy, while a migration may
 // classify an existing policy entry so a librarian can query and remove it.
-func (e *Entry) WriteBackBackfill(updateRetrievalMetadata bool) error {
+func (e *Entry) WriteBackBackfill(ctx context.Context, updateRetrievalMetadata bool) error {
 	switch e.Type {
 	case EntryTypeKnowledge, EntryTypeRemediation, EntryTypePolicy:
 	default:
@@ -222,7 +222,7 @@ func (e *Entry) WriteBackBackfill(updateRetrievalMetadata bool) error {
 	if !updateRetrievalMetadata {
 		return nil
 	}
-	return e.syncIndexRetrievalMetadata(context.Background(), e.Title, MetadataSourceAuthored, e.Summary, MetadataSourceAuthored)
+	return e.syncIndexRetrievalMetadata(ctx, e.Title, MetadataSourceAuthored, e.Summary, MetadataSourceAuthored)
 }
 
 func patchTopLevelScalar(lines []string, key, value string) []string {

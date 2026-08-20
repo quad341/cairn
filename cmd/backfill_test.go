@@ -104,7 +104,7 @@ func TestWriteBackRetrievalMetadataPreservesBody(t *testing.T) {
 	e, err := cairn.ParseEntry(path)
 	require.NoError(t, err)
 	e.Title, e.Summary = "New claim", "New retrieval summary"
-	require.NoError(t, e.WriteBackRetrievalMetadata())
+	require.NoError(t, e.WriteBackRetrievalMetadata(context.Background()))
 	got, err := cairn.ParseEntry(path)
 	require.NoError(t, err)
 	assert.Equal(t, body, got.Body)

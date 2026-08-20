@@ -561,7 +561,7 @@ func TestStatusServesStaleTitleSummaryAfterFileOnlyWriteback(t *testing.T) {
 	e, err := Find(ctx, store, "a")
 	require.NoError(t, err)
 	e.Title, e.Summary = "New title", "New summary"
-	require.NoError(t, e.WriteBackBackfill(true))
+	require.NoError(t, e.WriteBackBackfill(ctx, true))
 
 	afterHead, ok, err := git(ctx, store, "rev-parse", "HEAD")
 	require.NoError(t, err)
