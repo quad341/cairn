@@ -994,6 +994,7 @@ func FindCorrection(ctx context.Context, store, id string) (*Entry, error) {
 		`SELECT id FROM entries WHERE corrects = ? ORDER BY created_at DESC LIMIT 1`, id,
 	).Scan(&correctorID)
 	if errors.Is(err, sql.ErrNoRows) {
+		//nolint:nilnil // (nil,nil) = "no correction"; callers check corrector != nil before use
 		return nil, nil
 	}
 	if err != nil {
