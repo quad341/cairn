@@ -2039,3 +2039,56 @@ func TestRememberForceWithNoMatchBehavesLikeOrdinaryCreate(t *testing.T) {
 	e := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
 	assert.Empty(t, e.OverriddenDuplicateOf, "--force with no actual duplicate match must behave like an ordinary create -- nothing to override")
 }
+
+// TestRememberCorrectsSetsFieldAndPrintsLine is crn-evw98.3: --corrects
+// names another entry this one explicitly corrects/supersedes. Unlike
+// --force's OverriddenDuplicateOf (an inferred same-topic_key match),
+// --corrects is an explicit author declaration and works across unrelated
+// topics.
+func TestRememberCorrectsSetsFieldAndPrintsLine(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	t.Setenv("CAIRN_IDENTITY", "agent:test")
+
+	captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "topic-old", "--scope", "agent:test", "the old, now-wrong claim")
+		require.NoError(t, err)
+	})
+	first := requireSingleEntry(t, filepath.Join(store, "agent", "test"))
+
+	secondOut := captureStdout(t, func() {
+		err := runRememberAgainstStore(t, store, "--topic", "topic-new", "--scope", "agent:test", "--corrects", first.ID, "the corrected claim")
+		require.NoError(t, err)
+	})
+
+	entries, err := os.ReadDir(filepath.Join(store, "agent", "test"))
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "--corrects must create a new entry alongside the one it corrects")
+
+	secondLines := strings.Split(strings.TrimSpace(secondOut), "\n")
+	require.Len(t, secondLines, 3, "a --corrects create prints the id, the corrects line, then the commit SHA")
+	assert.Equal(t, "corrects: "+first.ID, secondLines[1])
+
+	var second *cairn.Entry
+	for _, ent := range entries {
+		parsed, err := cairn.ParseEntry(filepath.Join(store, "agent", "test", ent.Name()))
+		require.NoError(t, err)
+		if parsed.ID != first.ID {
+			second = parsed
+		}
+	}
+	require.NotNil(t, second)
+	assert.Equal(t, first.ID, second.Corrects, "the new entry must record which entry it corrects")
+}
+
+// TestRememberCorrectsRefusesUnknownTargetBeforeAnyStoreWrite is
+// crn-evw98.3: --corrects naming an id that does not exist must be
+// rejected before any store write, the same "fail before writing"
+// contract TestRememberRefusesPolicyBeforeAnyStoreWrite documents for
+// policy entries.
+func TestRememberCorrectsRefusesUnknownTargetBeforeAnyStoreWrite(t *testing.T) {
+	store, err := runRemember(t, "--topic", "valid-topic", "--scope", "agent:test", "--corrects", "does-not-exist", "a body")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does-not-exist")
+	assertNoFilesWritten(t, store)
+}

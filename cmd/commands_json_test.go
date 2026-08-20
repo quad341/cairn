@@ -166,6 +166,39 @@ func TestGetJSONReportsConflicts(t *testing.T) {
 	assert.Contains(t, result.Conflicts[0].EntryIDs, "rig/hook")
 }
 
+// TestGetJSONReportsRedirectedFrom is crn-evw98.3's JSON-mode counterpart
+// to TestGetRedirectsToCorrectionWhenOriginalIsRequested: get --json on an
+// entry that another entry Corrects must return the corrector's own
+// EntryResult, with RedirectedFrom naming the originally-requested id.
+func TestGetJSONReportsRedirectedFrom(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/orig.md",
+		"+++\nid = \"orig\"\ntitle = \"Old fact\"\ntopic_key = \"topic-old\"\nscope = []\n+++\nthe old, wrong claim\n")
+	seedEntry(t, dir, "global/fix.md",
+		"+++\nid = \"fix\"\ntitle = \"Corrected fact\"\ntopic_key = \"topic-new\"\ncorrects = \"orig\"\nscope = []\n+++\nthe corrected claim\n")
+
+	out, err := execRootJSON(t, "get", "orig", "--json", "--store", dir)
+	require.NoError(t, err)
+
+	var result EntryResult
+	require.NoError(t, json.Unmarshal([]byte(out), &result))
+	assert.Equal(t, "fix", result.ID, "the corrector's own id must be reported, not the superseded entry's")
+	assert.Equal(t, "Corrected fact", result.Title)
+	assert.Equal(t, "orig", result.RedirectedFrom, "RedirectedFrom must name the originally-requested id")
+}
+
+// TestGetJSONOmitsRedirectedFromWhenNoCorrectionExists is the JSON-mode
+// negative case: RedirectedFrom must be absent (omitempty) when no
+// redirect occurred, not present-but-empty.
+func TestGetJSONOmitsRedirectedFromWhenNoCorrectionExists(t *testing.T) {
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md", "+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n+++\nbody\n")
+
+	out, err := execRootJSON(t, "get", "g/a", "--json", "--store", dir)
+	require.NoError(t, err)
+	assert.NotContains(t, out, "redirected_from")
+}
+
 func TestGetJSONRejectsBadIdentityTag(t *testing.T) {
 	dir := t.TempDir()
 	seedEntry(t, dir, "global/a.md", "+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n+++\nbody\n")
