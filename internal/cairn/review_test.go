@@ -148,7 +148,7 @@ func TestListReviewMergeBranchesExcludesAlreadyMergedBranch(t *testing.T) {
 	branches, err := ListReviewMergeBranches(t.Context(), store)
 	require.NoError(t, err)
 
-	var names []string
+	names := make([]string, 0, len(branches))
 	for _, b := range branches {
 		names = append(names, b.Name)
 	}
