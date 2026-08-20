@@ -85,6 +85,29 @@ func TestRootRefusesWhenNoStoreConfigured(t *testing.T) {
 	assert.Contains(t, err.Error(), "no cairn store configured")
 }
 
+// TestRootSilencesUsageOnError reproduces crn-rott9's reported symptom: a
+// RunE/PersistentPreRunE error (here, the no-store-configured error above)
+// must surface as just the error text, not buried under Cobra's default
+// full usage/help dump -- which pushes the real message off the top of a
+// `| tail -8`'d terminal.
+func TestRootSilencesUsageOnError(t *testing.T) {
+	resetRootFlagsForTest(t)
+	orig := storeFlag
+	storeFlag = ""
+	defer func() { storeFlag = orig }()
+	t.Setenv("CAIRN_STORE", "")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	rootCmd.SetArgs([]string{"status"})
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+
+	err := rootCmd.Execute()
+	require.Error(t, err)
+	assert.NotContains(t, buf.String(), "Usage:")
+}
+
 func TestRootExemptsVersionFromStoreGate(t *testing.T) {
 	resetRootFlagsForTest(t)
 	orig := storeFlag

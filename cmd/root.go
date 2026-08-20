@@ -158,6 +158,13 @@ var rootCmd = &cobra.Command{
 	Use:   "cairn",
 	Short: "A scoped, freshness-tracked knowledge cache for AI agent fleets",
 	Long:  longDescription(),
+	// SilenceUsage stops Cobra dumping the full usage/help block on every
+	// RunE/PersistentPreRunE error. Cobra's ExecuteC checks this field on
+	// both the root and the leaf command found; setting it here covers every
+	// subcommand without needing the per-command opt-in format.go/
+	// remember_batch.go otherwise use. Without it, the real error line sits
+	// at the top of a multi-line dump that a `| tail -8` cuts off.
+	SilenceUsage: true,
 	// PersistentPreRunE runs for every subcommand invocation (it fires with
 	// cmd set to the leaf command actually being executed, not rootCmd
 	// itself), wiring an obslog.Logger into the command's context before any
