@@ -526,6 +526,62 @@ func TestEnsureFreshNoopOnNonGitStore(t *testing.T) {
 	assert.Equal(t, 0, calls, "non-git store has no HEAD to drift from; an already-built index must not be reindexed")
 }
 
+// TestStatusServesStaleTitleSummaryAfterFileOnlyWriteback pins crn-rott9.3: the
+// title/summary reindex-freshness asymmetry flagged by crn-rott9's design doc
+// (fix 4). WriteBackBackfill (like its sibling WriteBackRetrievalMetadata) goes
+// through writeBackPatched, which is pure filesystem I/O -- os.ReadFile plus
+// os.WriteFile, no git operation at all -- so patching an entry's title/summary
+// this way never advances the store's checked-out HEAD. ensureFresh's
+// staleness check (indexStale) compares only the index's stored watermark
+// against HEAD, so it has no way to notice this edit: the watermark still
+// matches HEAD, the index is judged fresh, and no reindex ever runs on its
+// own.
+//
+// Find (recall/get) is unaffected by this -- it re-reads the body file
+// directly off disk on every call, regardless of index freshness. But Status
+// (prime/list) reads title/summary from the SQL index columns alone, so today
+// it keeps serving the pre-edit values until something calls Reindex
+// explicitly.
+func TestStatusServesStaleTitleSummaryAfterFileOnlyWriteback(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	body := "+++\nid = \"a\"\ntitle = \"Old title\"\nsummary = \"Old summary\"\ntype = \"knowledge\"\n+++\nbody\n"
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"), []byte(body), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	beforeHead, ok, err := git(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	e, err := Find(ctx, store, "a")
+	require.NoError(t, err)
+	e.Title, e.Summary = "New title", "New summary"
+	require.NoError(t, e.WriteBackBackfill(true))
+
+	afterHead, ok, err := git(ctx, store, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, beforeHead, afterHead,
+		"WriteBackBackfill is a pure filesystem patch and must not itself advance HEAD -- this is the trigger the bug depends on")
+
+	visible, err := Status(ctx, store)
+	require.NoError(t, err)
+	require.Len(t, visible, 1)
+	assert.Equal(t, "New title", visible[0].Title,
+		"prime/list (Status) must reflect a title/summary writeback without requiring an explicit cairn reindex")
+	assert.Equal(t, "New summary", visible[0].Summary)
+
+	fresh, err := Find(ctx, store, "a")
+	require.NoError(t, err)
+	assert.Equal(t, "New title", fresh.Title,
+		"recall/get (Find) already re-reads the body fresh off disk regardless of index freshness -- no regression expected here")
+}
+
 func TestEnsureFreshWithLogsIndexDriftWhenStale(t *testing.T) {
 	store := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
