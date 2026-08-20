@@ -480,7 +480,46 @@ func TestRememberBatchGroupsMailByDistinctResolvedReviewer(t *testing.T) {
 		require.Len(t, c, 7, "gc mail send <reviewer> -s <subject> -m <body>")
 		recipients[i] = c[2]
 	}
-	assert.ElementsMatch(t, []string{"test-rig/architect", "test-rig/builder"}, recipients)
+	// "web/architect", not "test-rig/architect": since crn-rott9.1, rig:web
+	// resolves its reviewer from the entry's own declared rig value ("web"),
+	// not from writeStubGC's pinned $GC_RIG ("test-rig"). role:builder is
+	// unaffected -- role tier still resolves via $GC_RIG + "/" + value.
+	assert.ElementsMatch(t, []string{"web/architect", "test-rig/builder"}, recipients)
+}
+
+// TestRememberBatchReviewerResolutionFailureCommitsNothing is crn-rott9.1's
+// regression guard for commitForBatchReview: resolveReviewer must run BEFORE
+// CommitToReviewBranch, so a resolution failure leaves no remember/<id>
+// branch for that line at all. role: is used to force the failure since
+// rig: no longer depends on $GC_RIG post-crn-rott9.1.
+func TestRememberBatchReviewerResolutionFailureCommitsNothing(t *testing.T) {
+	resetRememberFlags(t)
+	resetBatchFlag(t)
+	t.Cleanup(func() {
+		resetRememberFlags(t)
+		resetBatchFlag(t)
+	})
+
+	manifest := writeBatchManifest(
+		t,
+		batchManifestLine(t, map[string]any{"body": "unresolvable entry", "scope": []string{"role:reviewer"}, "topic": "resolve-fail"}),
+	)
+	store := t.TempDir()
+	gitInit(t, store)
+	stubGCWithRig("")(t)
+
+	var runErr error
+	stdout := captureStdout(t, func() {
+		rootCmd.SetArgs([]string{"remember", "--store", store, "--batch-file", manifest})
+		rootCmd.SetOut(&bytes.Buffer{})
+		rootCmd.SetErr(&bytes.Buffer{})
+		runErr = rootCmd.Execute()
+	})
+	require.Error(t, runErr, "a batch containing an unresolvable-reviewer line must exit non-zero")
+	assert.Contains(t, stdout, "GC_RIG", "the per-line failure must be reported in the plain-text summary")
+
+	branches := gitOutput(t, store, "branch", "--list", "remember/*")
+	assert.Empty(t, strings.TrimSpace(branches), "an unresolvable reviewer must leave no remember/<id> review branch at all")
 }
 
 // TestRememberBatchRejectsManifestOverSizeCap pins the 5000-line cap's

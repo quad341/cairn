@@ -234,12 +234,15 @@ func stubGCFail(t *testing.T) {
 
 // stubGCWithRig mirrors stubGC (a stub gc binary that always succeeds), but
 // pins GC_RIG to rig instead of writeStubGC's fixed "test-rig" -- letting a
-// test control rig/role-tier default-reviewer resolution directly, including
+// test control role-tier default-reviewer resolution directly, including
 // simulating $GC_RIG being unset (rig == "") to make resolveReviewer's
-// rig-tier branch fail deterministically. A caller cannot get this effect by
-// just calling t.Setenv("GC_RIG", ...) around a runStaleBranches/runRemember
-// call that stubs with plain stubGC: writeStubGC's own GC_RIG pin runs
-// inside that call (stub(t) fires before rootCmd.Execute()) and always wins.
+// role-tier branch fail deterministically. (Rig-tier resolution no longer
+// depends on $GC_RIG at all as of crn-rott9.1 -- it resolves from the
+// entry's own declared rig value instead -- so only role: scope can still be
+// used to force this failure.) A caller cannot get this effect by just
+// calling t.Setenv("GC_RIG", ...) around a runStaleBranches/runRemember call
+// that stubs with plain stubGC: writeStubGC's own GC_RIG pin runs inside
+// that call (stub(t) fires before rootCmd.Execute()) and always wins.
 func stubGCWithRig(rig string) func(*testing.T) {
 	return func(t *testing.T) {
 		t.Helper()
@@ -1169,6 +1172,27 @@ func TestRememberCLIRoundTripAllFieldsRoleTier(t *testing.T) {
 	assert.NoError(t, err, "created_at must be an RFC3339 timestamp (crn-3476/crn-zcxq FR-5)")
 }
 
+// TestRememberSharedTierReviewerResolutionFailureCommitsNothing is
+// crn-rott9.1's regression guard for requestReview: resolveReviewer must run
+// BEFORE CommitToReviewBranch, so a resolution failure leaves no
+// remember/<id> review branch at all -- true fail-closed, not
+// committed-but-unnotified as it was before this fix. role: is used to force
+// the failure since rig: no longer depends on $GC_RIG post-crn-rott9.1 (see
+// TestRememberSharedTierRigScopeVisibleAfterReviewMerge).
+func TestRememberSharedTierReviewerResolutionFailureCommitsNothing(t *testing.T) {
+	var store string
+	var runErr error
+	stdout := captureStdout(t, func() {
+		store, runErr = runRememberWithGC(t, stubGCWithRig(""), "--topic", "valid-topic", "--scope", "role:reviewer", "a body")
+	})
+	require.Error(t, runErr, "an unresolvable reviewer must fail the command")
+	assert.Contains(t, runErr.Error(), "GC_RIG")
+	assert.Empty(t, strings.TrimSpace(stdout), "resolution must fail before any review-branch line is printed")
+
+	branches := gitOutput(t, store, "branch", "--list", "remember/*")
+	assert.Empty(t, strings.TrimSpace(branches), "an unresolvable reviewer must leave no remember/<id> review branch at all")
+}
+
 // TestRememberSharedTierRigScopeVisibleAfterReviewMerge is the full rig:
 // scope lifecycle no existing test exercised end to end before crn-0tsu
 // FR-6: every other shared-tier test stops at "the review branch exists" or
@@ -1182,10 +1206,11 @@ func TestRememberCLIRoundTripAllFieldsRoleTier(t *testing.T) {
 func TestRememberSharedTierRigScopeVisibleAfterReviewMerge(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
-	// Pinned explicitly (not just relied on as writeStubGC's side effect):
-	// this round trip's correctness claim is specifically about $GC_RIG
-	// flowing through to the reviewer address, so the test states that
-	// dependency itself rather than borrowing it from the stub helper.
+	// Pinned explicitly to a value DIFFERENT from the entry's own declared
+	// rig ("web"), not just relied on as writeStubGC's side effect: since
+	// crn-rott9.1, a rig:-scope entry's default reviewer resolves from its
+	// own declared rig value, not $GC_RIG, and this deliberate mismatch is
+	// what proves $GC_RIG is correctly ignored here.
 	t.Setenv("GC_RIG", "test-rig")
 
 	captureFile := filepath.Join(t.TempDir(), "gc-invocation")
@@ -1199,7 +1224,7 @@ func TestRememberSharedTierRigScopeVisibleAfterReviewMerge(t *testing.T) {
 
 	args := readStubGCArgs(t, captureFile)
 	require.Len(t, args, 7, "gc mail send <reviewer> -s <subject> -m <body>")
-	assert.Equal(t, "test-rig/architect", args[2], "a rig:-scope entry's default reviewer must be $GC_RIG/architect")
+	assert.Equal(t, "web/architect", args[2], "a rig:-scope entry's default reviewer must be <entry's own rig>/architect, ignoring $GC_RIG entirely")
 
 	require.NoError(t, runReviewCmd(t, "review", "merge", branch, "--store", store, "--topic-key", "rig-roundtrip"))
 

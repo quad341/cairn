@@ -90,6 +90,35 @@ func TestPromoteMarkSharedTierProposesReviewBranchAndDoesNotCommitDirectly(t *te
 	assert.Contains(t, lines[0], branch)
 }
 
+// TestPromoteMarkReviewerResolutionFailureCommitsNothing is crn-rott9.1's
+// regression guard for requestPromotionReview: resolveReviewer must run
+// BEFORE CommitPromotionToReviewBranch, so a resolution failure leaves no
+// remember/<id> branch at all -- true fail-closed, not
+// committed-but-unnotified. role: is used to force the failure since rig: no
+// longer depends on $GC_RIG post-crn-rott9.1.
+func TestPromoteMarkReviewerResolutionFailureCommitsNothing(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	e := seedCommittedEntry(t, store, []string{"role:reviewer"})
+	headBefore := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
+
+	resetPromoteMarkFlags(t)
+	t.Cleanup(func() { resetPromoteMarkFlags(t) })
+	stubGCWithRig("")(t)
+	rootCmd.SetArgs([]string{"promote-mark", "--store", store, e.ID, "--bead", "crn-abcd"})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	err := rootCmd.Execute()
+	require.Error(t, err, "an unresolvable reviewer must fail promote-mark")
+	assert.Contains(t, err.Error(), "GC_RIG")
+
+	headAfter := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
+	assert.Equal(t, headBefore, headAfter, "an unresolvable reviewer must leave the store's HEAD untouched")
+
+	branches := gitOutput(t, store, "branch", "--list", "remember/*")
+	assert.Empty(t, strings.TrimSpace(branches), "an unresolvable reviewer must leave no remember/<id> review branch at all")
+}
+
 func TestPromoteMarkUnknownIDReturnsClearError(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
