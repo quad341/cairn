@@ -228,6 +228,38 @@ func TestLibrarianStaleReviewBranchRecoveryStepHasNeedsInvestigationLabelAndGuar
 	}
 }
 
+// crn-4j0pa: "cairn stale-branches" reports status=error findings (a reviewer
+// lookup failure, or ListReviewBranches itself erroring on that branch) with
+// the same shape as escalate findings except .reviewer is always empty and
+// .error carries the failure text (cmd/branches.go's evaluateBranch never
+// sets both). Before this fix the step's jq filter selected only
+// status=="escalate", so error findings -- arguably the ones most in need of
+// a human's attention, since cairn itself couldn't even evaluate the branch
+// -- were silently dropped every cycle instead of filed.
+func TestLibrarianStaleReviewBranchRecoveryStepHandlesErrorStatus(t *testing.T) {
+	f := decodeFormula(t, "mol-cairn-librarian.formula.toml")
+	s, ok := stepByID(f, "stale-review-branch-recovery")
+	if !ok {
+		t.Fatal(`mol-cairn-librarian.formula.toml: no "stale-review-branch-recovery" step found`)
+	}
+
+	if !strings.Contains(s.Description, `select(.status == "escalate" or .status == "error")`) {
+		t.Error(`stale-review-branch-recovery: jq filter must widen to select(.status == "escalate" or .status == "error"), or error-status findings are silently dropped and never filed (crn-4j0pa)`)
+	}
+	if !strings.Contains(s.Description, `jq -r '.error // empty'`) {
+		t.Error(`stale-review-branch-recovery: must extract the finding's .error field (error findings have no .reviewer), or the filed bead's body cannot explain what cairn stale-branches itself failed on (crn-4j0pa)`)
+	}
+
+	notifyIdx := strings.Index(s.Description, `A reminder mail was already sent to`)
+	guardIdx := strings.Index(s.Description, `if [ -n "$REVIEWER" ]`)
+	if notifyIdx == -1 {
+		t.Fatal(`stale-review-branch-recovery: "A reminder mail was already sent to" sentence not found`)
+	}
+	if guardIdx == -1 || guardIdx > notifyIdx {
+		t.Error(`stale-review-branch-recovery: the "A reminder mail was already sent to $REVIEWER" sentence must be guarded behind a non-null-reviewer check (if [ -n "$REVIEWER" ]) placed before it, or error findings (no .reviewer) render "sent to " -- the crn-w4c6-shaped defect this must not reintroduce (crn-4j0pa)`)
+	}
+}
+
 // cairn cull-evict itself is not safely repeatable for the same entry --
 // EvictToReviewBranch hard-errors once a proposal is already pending, since
 // its review branch name is deterministic ("cull/" + entry ID; see
