@@ -114,6 +114,48 @@ func TestListReviewBranchesErrorsOnPrivateTierBranch(t *testing.T) {
 	assert.Contains(t, err.Error(), "private agent/ tier")
 }
 
+// TestListReviewMergeBranchesExcludesAlreadyMergedBranch covers crn-12ubp:
+// ListReviewMergeBranches lists refs/heads/remember/* by bare existence with
+// no merge-status check, unlike its sibling ListReviewBranches (branches.go),
+// which already skips a branch once isMergedInto reports it merged. A branch
+// merged by some path other than MergeReviewBranch (or left behind by a
+// delete failure after a successful merge) must not be reported as pending
+// forever -- that's the "merged entries nag forever" half of the bug.
+func TestListReviewMergeBranchesExcludesAlreadyMergedBranch(t *testing.T) {
+	store := reviewStore(t)
+	mergedBranch, _ := fixtureBranch(t, store, "merged-topic", nil, "a note already merged")
+	pendingBranch, _ := fixtureBranch(t, store, "pending-topic", nil, "a note still pending")
+
+	def, err := DefaultBranch(t.Context(), store)
+	require.NoError(t, err)
+
+	// Merge directly with git, bypassing MergeReviewBranch, to reproduce a
+	// branch that is merged but was never deleted -- e.g. a merge landed
+	// outside 'cairn review merge', or the delete step failed after a
+	// successful merge. Clear the untracked draft copy first, the same way
+	// mergeCuratedBranch does, or the merge itself refuses to run.
+	relPath, err := changedEntryFile(t.Context(), store, def, mergedBranch)
+	require.NoError(t, err)
+	_, err = gitRun(t.Context(), store, "clean", "-f", "-q", "--", relPath)
+	require.NoError(t, err)
+	_, err = gitRun(t.Context(), store, "merge", "--no-ff", mergedBranch, "-m", "merge without deleting")
+	require.NoError(t, err)
+
+	branchList, err := gitRun(t.Context(), store, "branch", "--list", mergedBranch)
+	require.NoError(t, err)
+	require.NotEmpty(t, strings.TrimSpace(branchList), "test setup: merged branch must still exist to reproduce the bug")
+
+	branches, err := ListReviewMergeBranches(t.Context(), store)
+	require.NoError(t, err)
+
+	var names []string
+	for _, b := range branches {
+		names = append(names, b.Name)
+	}
+	assert.NotContains(t, names, mergedBranch, "a branch already merged into %s must not be listed as pending", def)
+	assert.Contains(t, names, pendingBranch, "an unmerged branch must still be listed as pending")
+}
+
 func TestTierFromEntryPath(t *testing.T) {
 	cases := []struct {
 		name      string
