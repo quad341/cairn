@@ -59,6 +59,13 @@ func ListReviewMergeBranches(ctx context.Context, store string) ([]ReviewMergeBr
 		if name == "" {
 			continue
 		}
+		merged, err := isMergedInto(ctx, store, name, def)
+		if err != nil {
+			return nil, fmt.Errorf("check merge status of %q: %w", name, err)
+		}
+		if merged {
+			continue // already merged into def -- not awaiting review, regardless of whether the branch was deleted
+		}
 		relPath, err := changedEntryFile(ctx, store, def, name)
 		if err != nil {
 			return nil, err
