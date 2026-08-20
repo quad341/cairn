@@ -339,15 +339,16 @@ func TestGetRedirectsToCorrectionWhenOriginalIsRequested(t *testing.T) {
 
 	out, err := execRoot("get", "orig", "--store", dir)
 	require.NoError(t, err)
-	assert.Contains(t, out, "redirected_from: orig", "get must note that the requested id was redirected")
+	firstLine := strings.SplitN(out, "\n", 2)[0]
+	assert.Equal(t, "NOTE: orig redirected to fix", firstLine, "plain text must lead with a NOTE line naming both the requested and serving ids")
 	assert.Contains(t, out, "Corrected fact", "the corrector's title must be served, not the superseded entry's")
 	assert.Contains(t, out, "the corrected claim", "the corrector's body must be served, not the superseded entry's")
 	assert.NotContains(t, out, "the old, wrong claim", "the superseded entry's own body must not be served")
 }
 
 // TestGetDoesNotRedirectWhenNoCorrectionExists is the redirect's negative
-// case: an entry nobody corrects must be served as-is, with no
-// redirected_from line.
+// case: an entry nobody corrects must be served as-is, with no leading
+// NOTE line.
 func TestGetDoesNotRedirectWhenNoCorrectionExists(t *testing.T) {
 	require.NoError(t, resetIdentityFlag())
 	t.Cleanup(func() { _ = resetIdentityFlag() })
@@ -357,7 +358,7 @@ func TestGetDoesNotRedirectWhenNoCorrectionExists(t *testing.T) {
 
 	out, err := execRoot("get", "g/a", "--store", dir)
 	require.NoError(t, err)
-	assert.NotContains(t, out, "redirected_from")
+	assert.NotContains(t, out, "NOTE:")
 }
 
 // resetRunIDFlag clears rootCmd's --run-id flag around a test, mirroring

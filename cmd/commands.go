@@ -257,10 +257,10 @@ var getCmd = &cobra.Command{
 		if len(e.Scope) > 0 {
 			scope = strings.Join(e.Scope, " ")
 		}
-		fmt.Printf("%s: %s\n", e.ID, e.Title)
 		if redirectedFrom != "" {
-			fmt.Printf("redirected_from: %s\n", redirectedFrom)
+			fmt.Printf("NOTE: %s redirected to %s\n", redirectedFrom, e.ID)
 		}
+		fmt.Printf("%s: %s\n", e.ID, e.Title)
 		fmt.Printf("topic: %s  scope: %s\n", topic, scope)
 		fmt.Printf("freshness: %s — %s\n", st, detail)
 		fmt.Printf("type: %s  kind: %s  auto_actionable: %t\n", e.Type, kind, e.AutoActionable)
