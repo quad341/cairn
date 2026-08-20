@@ -323,6 +323,43 @@ func TestGetReportsContentConflict(t *testing.T) {
 	assert.Contains(t, out, "g/hook-b")
 }
 
+// TestGetRedirectsToCorrectionWhenOriginalIsRequested is crn-evw98.3: a
+// `get` on an entry that another entry explicitly Corrects must serve the
+// corrector's own content -- not silently return the superseded claim --
+// and note the redirect so a caller can see it happened.
+func TestGetRedirectsToCorrectionWhenOriginalIsRequested(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/orig.md",
+		"+++\nid = \"orig\"\ntitle = \"Old fact\"\ntopic_key = \"topic-old\"\nscope = []\n+++\nthe old, wrong claim\n")
+	seedEntry(t, dir, "global/fix.md",
+		"+++\nid = \"fix\"\ntitle = \"Corrected fact\"\ntopic_key = \"topic-new\"\ncorrects = \"orig\"\nscope = []\n+++\nthe corrected claim\n")
+
+	out, err := execRoot("get", "orig", "--store", dir)
+	require.NoError(t, err)
+	assert.Contains(t, out, "redirected_from: orig", "get must note that the requested id was redirected")
+	assert.Contains(t, out, "Corrected fact", "the corrector's title must be served, not the superseded entry's")
+	assert.Contains(t, out, "the corrected claim", "the corrector's body must be served, not the superseded entry's")
+	assert.NotContains(t, out, "the old, wrong claim", "the superseded entry's own body must not be served")
+}
+
+// TestGetDoesNotRedirectWhenNoCorrectionExists is the redirect's negative
+// case: an entry nobody corrects must be served as-is, with no
+// redirected_from line.
+func TestGetDoesNotRedirectWhenNoCorrectionExists(t *testing.T) {
+	require.NoError(t, resetIdentityFlag())
+	t.Cleanup(func() { _ = resetIdentityFlag() })
+
+	dir := t.TempDir()
+	seedEntry(t, dir, "global/a.md", "+++\nid = \"g/a\"\ntitle = \"A\"\nscope = []\n+++\nbody\n")
+
+	out, err := execRoot("get", "g/a", "--store", dir)
+	require.NoError(t, err)
+	assert.NotContains(t, out, "redirected_from")
+}
+
 // resetRunIDFlag clears rootCmd's --run-id flag around a test, mirroring
 // resetIdentityFlag's rationale: rootCmd is a package-level singleton, so a
 // prior test's --run-id value and Changed bit otherwise leak into whichever

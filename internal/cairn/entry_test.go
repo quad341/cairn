@@ -1369,6 +1369,83 @@ func TestFindAfterSequentialCreateOnNonGitStore(t *testing.T) {
 	require.NoError(t, err, "second Find must succeed even though the store's index predates this entry")
 }
 
+// TestEntryCorrectsRoundTripsThroughTOML is crn-evw98.3. Corrects is an
+// explicit, author-declared cross-topic link ("this entry corrects that
+// one"), distinct from OverriddenDuplicateOf's inferred same-topic_key
+// match. It must round-trip through the TOML frontmatter the same way
+// OverriddenDuplicateOf already does.
+func TestEntryCorrectsRoundTripsThroughTOML(t *testing.T) {
+	dir := t.TempDir()
+	e, err := NewEntry(NewEntryParams{Type: EntryTypeKnowledge, TopicKey: "topic-a", Body: "corrected body", CreatedBy: "tester"})
+	require.NoError(t, err)
+	e.Corrects = "orig-id"
+	require.NoError(t, e.Create(dir))
+
+	reparsed, err := ParseEntry(e.BodyPath)
+	require.NoError(t, err)
+	assert.Equal(t, "orig-id", reparsed.Corrects, "Corrects must round-trip through the TOML frontmatter like OverriddenDuplicateOf does")
+}
+
+// TestFindCorrectionReturnsNilWhenUncorrected is crn-evw98.3: an entry with
+// no corrector must report no correction rather than erroring.
+func TestFindCorrectionReturnsNilWhenUncorrected(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
+
+	corrector, err := FindCorrection(ctx, store, "a")
+	require.NoError(t, err)
+	assert.Nil(t, corrector, "an entry nobody corrects must report no correction")
+}
+
+// TestFindCorrectionFollowsExplicitCorrectsLinkRegardlessOfTopicKey is
+// crn-evw98.3's core contract: unlike OverriddenDuplicateOf (same
+// topic_key only), Corrects must be followed across topic_key boundaries
+// since it is an explicit author declaration, not an inferred match.
+func TestFindCorrectionFollowsExplicitCorrectsLinkRegardlessOfTopicKey(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/orig.md", "+++\nid = \"orig\"\ntitle = \"Old fact\"\ntopic_key = \"topic-old\"\n+++\nthe old, wrong claim\n")
+	writeFile(t, store, "global/fix.md", "+++\nid = \"fix\"\ntitle = \"Corrected fact\"\ntopic_key = \"topic-new\"\ncorrects = \"orig\"\n+++\nthe corrected claim\n")
+
+	corrector, err := FindCorrection(ctx, store, "orig")
+	require.NoError(t, err)
+	require.NotNil(t, corrector, "orig is named by fix's Corrects field -- FindCorrection must surface it even though the two entries do not share a topic_key")
+	assert.Equal(t, "fix", corrector.ID)
+}
+
+// TestFindCorrectionPicksMostRecentWhenMultipleEntriesCorrectTheSameID is
+// crn-evw98.3: if more than one entry claims to correct the same id, the
+// most recently created correction must win.
+func TestFindCorrectionPicksMostRecentWhenMultipleEntriesCorrectTheSameID(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/orig.md", "+++\nid = \"orig\"\ntitle = \"Old fact\"\n+++\nold\n")
+	writeFile(t, store, "global/fix1.md", "+++\nid = \"fix1\"\ntitle = \"First fix\"\ncorrects = \"orig\"\ncreated_at = \"2026-01-01T00:00:00Z\"\n+++\nfirst correction\n")
+	writeFile(t, store, "global/fix2.md", "+++\nid = \"fix2\"\ntitle = \"Second fix\"\ncorrects = \"orig\"\ncreated_at = \"2026-06-01T00:00:00Z\"\n+++\nsecond, more current correction\n")
+
+	corrector, err := FindCorrection(ctx, store, "orig")
+	require.NoError(t, err)
+	require.NotNil(t, corrector)
+	assert.Equal(t, "fix2", corrector.ID, "the most recently created correction must win when more than one entry claims to correct the same id")
+}
+
+// TestFindCorrectionDoesNotFollowChains is crn-evw98.3's documented scope
+// boundary: FindCorrection is single-hop only and must not chase a
+// corrects-of-a-corrects chain transitively.
+func TestFindCorrectionDoesNotFollowChains(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	writeFile(t, store, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\na\n")
+	writeFile(t, store, "global/b.md", "+++\nid = \"b\"\ntitle = \"B\"\ncorrects = \"a\"\n+++\nb\n")
+	writeFile(t, store, "global/c.md", "+++\nid = \"c\"\ntitle = \"C\"\ncorrects = \"b\"\n+++\nc\n")
+
+	corrector, err := FindCorrection(ctx, store, "a")
+	require.NoError(t, err)
+	require.NotNil(t, corrector)
+	assert.Equal(t, "b", corrector.ID, "FindCorrection is single-hop by design (crn-evw98.3 scope) -- it must not chase corrects chains transitively")
+}
+
 func TestVisibleNeverReadsBodiesAfterIndexBuilt(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "global/g.md", globalEntry)
