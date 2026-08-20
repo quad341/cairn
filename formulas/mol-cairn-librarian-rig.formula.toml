@@ -90,7 +90,8 @@ pass to pass; if it's instead re-cloned fresh every sweep tick, add
     ENTRY_ID=$(printf '%s' "$finding" | jq -r '.entry_id')
     TIER=$(printf '%s' "$finding" | jq -r '.tier')
     AGE_SECONDS=$(printf '%s' "$finding" | jq -r '.age_seconds')
-    REVIEWER=$(printf '%s' "$finding" | jq -r '.reviewer')
+    REVIEWER=$(printf '%s' "$finding" | jq -r '.reviewer // empty')
+    ERROR_TEXT=$(printf '%s' "$finding" | jq -r '.error // empty')
 
     EXISTING=$(bd list --label=dim:review-branch,source:cairn-librarian \
       --title-contains="on $BRANCH (" --json --no-pager 2>/dev/null | jq -r '.[0].id // empty')
@@ -101,20 +102,42 @@ pass to pass; if it's instead re-cloned fresh every sweep tick, add
       continue
     fi
 
+    # crn-4j0pa: an error-status finding (cairn itself failed to resolve a
+    # reviewer, or ListReviewBranches errored) never carries .reviewer --
+    # cmd/branches.go's evaluateBranch sets exactly one of the two. Guard the
+    # reviewer-was-already-notified sentence on it instead of interpolating
+    # unconditionally, or this renders "sent to " for every error finding
+    # (the crn-w4c6-shaped defect).
+    if [ -n "$REVIEWER" ]; then
+      NOTIFY_LINE="A reminder mail was already sent to $REVIEWER on an earlier
+cairn stale-branches pass at this same commit, and it is now past the
+escalate threshold with no merge and no new commit since."
+      RESOLVER="$REVIEWER (or another reviewer)"
+    else
+      NOTIFY_LINE="cairn stale-branches could not evaluate this branch normally (see error below), so no automatic reviewer reminder was possible."
+      RESOLVER="a reviewer"
+    fi
+
+    ERROR_LINE=""
+    if [ -n "$ERROR_TEXT" ]; then
+      ERROR_LINE="
+
+cairn stale-branches reported an error while evaluating this branch:
+$ERROR_TEXT"
+    fi
+
     NEW_ID=$(bd create \
         --title="cairn librarian: stale review branch on $BRANCH ($TIER)" \
         --stdin --type=task --priority=3 \
         --labels=dim:review-branch,source:cairn-librarian,needs-pm,needs-investigation --silent <<BODY
 Review branch "$BRANCH" (entry $ENTRY_ID, tier $TIER) has been unmerged for
-${AGE_SECONDS}s. A reminder mail was already sent to $REVIEWER on an earlier
-cairn stale-branches pass at this same commit, and it is now past the
-escalate threshold with no merge and no new commit since.
+${AGE_SECONDS}s. $NOTIFY_LINE$ERROR_LINE
 
 Filed by the mol-cairn-librarian stale-review-branch-recovery step
 (crn-0yv.1). This is a proposal only: it never merges the branch itself. To
-resolve, $REVIEWER (or another reviewer) should review and merge the branch
-into the store's default branch, or an author should update it -- either
-action removes the branch from future "cairn stale-branches" output.
+resolve, $RESOLVER should review and merge the branch into the store's
+default branch, or an author should update it -- either action removes the
+branch from future "cairn stale-branches" output.
 BODY
     )
 
@@ -130,7 +153,7 @@ BODY
 
     echo "filed $NEW_ID for $BRANCH"
     FILED=$((FILED + 1))
-  done < <(cairn stale-branches --store "$STORE" | jq -c '.[] | select(.status == "escalate")')
+  done < <(cairn stale-branches --store "$STORE" | jq -c '.[] | select(.status == "escalate" or .status == "error")')
 
   echo "librarian stale-branch recovery: $FILED bead(s) filed, $SKIPPED already tracked"
 '''
