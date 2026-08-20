@@ -136,6 +136,10 @@ type EntryResult struct {
 	ReviewStatus   string               `json:"review_status"`
 	Conflicts      []cairn.DedupFinding `json:"conflicts"`
 	Body           string               `json:"body"`
+	// RedirectedFrom is the originally-requested id when it was redirected
+	// to an entry that explicitly Corrects it (crn-evw98.3); empty when no
+	// redirect occurred.
+	RedirectedFrom string `json:"redirected_from,omitempty"`
 }
 
 var getCmd = &cobra.Command{
@@ -156,6 +160,20 @@ var getCmd = &cobra.Command{
 		if err != nil {
 			return emitError(cmd, err)
 		}
+
+		// A redirect is resolved before any telemetry/freshness/conflict
+		// work below, so every downstream signal (obslog outcome, payload
+		// tokens, reuse count, conflicts) reflects what was actually served
+		// -- the corrector, when one exists -- not the superseded entry
+		// that was originally requested (crn-evw98.3).
+		var redirectedFrom string
+		if corrector, cerr := cairn.FindCorrection(cmd.Context(), storePath(), e.ID); cerr != nil {
+			return emitError(cmd, cerr)
+		} else if corrector != nil {
+			redirectedFrom = e.ID
+			e = corrector
+		}
+
 		st, detail := cairn.Check(cmd.Context(), e)
 
 		outcome := "hit"
@@ -227,6 +245,7 @@ var getCmd = &cobra.Command{
 				ReviewStatus:   e.ReviewStatus,
 				Conflicts:      nonNil(conflicts),
 				Body:           e.Body,
+				RedirectedFrom: redirectedFrom,
 			})
 		}
 
@@ -237,6 +256,9 @@ var getCmd = &cobra.Command{
 		scope := "global"
 		if len(e.Scope) > 0 {
 			scope = strings.Join(e.Scope, " ")
+		}
+		if redirectedFrom != "" {
+			fmt.Printf("NOTE: %s redirected to %s\n", redirectedFrom, e.ID)
 		}
 		fmt.Printf("%s: %s\n", e.ID, e.Title)
 		fmt.Printf("topic: %s  scope: %s\n", topic, scope)
