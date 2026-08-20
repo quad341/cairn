@@ -1179,6 +1179,13 @@ func TestRememberCLIRoundTripAllFieldsRoleTier(t *testing.T) {
 // committed-but-unnotified as it was before this fix. role: is used to force
 // the failure since rig: no longer depends on $GC_RIG post-crn-rott9.1 (see
 // TestRememberSharedTierRigScopeVisibleAfterReviewMerge).
+//
+// stdout is NOT asserted empty: remember.go prints the freshly created
+// entry's ID right after e.Create() writes its loose (uncommitted) file,
+// before the private/shared tier branch is even decided -- that echo is
+// unconditional and orthogonal to this fix, which is about the git commit to
+// a review branch, not the local file write. What must be absent is any
+// trace that a review branch was committed or a reviewer was mailed.
 func TestRememberSharedTierReviewerResolutionFailureCommitsNothing(t *testing.T) {
 	var store string
 	var runErr error
@@ -1187,7 +1194,8 @@ func TestRememberSharedTierReviewerResolutionFailureCommitsNothing(t *testing.T)
 	})
 	require.Error(t, runErr, "an unresolvable reviewer must fail the command")
 	assert.Contains(t, runErr.Error(), "GC_RIG")
-	assert.Empty(t, strings.TrimSpace(stdout), "resolution must fail before any review-branch line is printed")
+	assert.NotContains(t, stdout, "review branch:", "resolution must fail before any review-branch line is printed")
+	assert.NotContains(t, stdout, "mailed reviewer:", "resolution must fail before any reviewer is reported as mailed")
 
 	branches := gitOutput(t, store, "branch", "--list", "remember/*")
 	assert.Empty(t, strings.TrimSpace(branches), "an unresolvable reviewer must leave no remember/<id> review branch at all")

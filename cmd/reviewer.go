@@ -18,9 +18,17 @@ import (
 // only invoke this for a scope that has already resolved away from the
 // private agent tier (RunE branches on cairn.IsPrivateScope before ever
 // reaching here). e's entry file already exists on disk by this point;
-// nothing here can undo that, only report a downstream failure.
+// nothing here can undo that, only report a downstream failure. The reviewer
+// is resolved BEFORE committing to the review branch (crn-rott9.1): a
+// resolution failure must leave nothing committed anywhere, not a durable
+// review-branch commit nobody was ever told about.
 func requestReview(cmd *cobra.Command, e *cairn.Entry, scope []string) error {
 	tier, value := cairn.ResolvedTier(scope)
+
+	reviewer, err := resolveReviewer(cmd, tier, value)
+	if err != nil {
+		return emitError(cmd, fmt.Errorf("resolve a reviewer to mail for entry %s: %w", e.ID, err))
+	}
 
 	branch, err := e.CommitToReviewBranch(cmd.Context(), storePath())
 	if err != nil {
@@ -30,11 +38,6 @@ func requestReview(cmd *cobra.Command, e *cairn.Entry, scope []string) error {
 		fmt.Printf("review branch: %s\n", branch)
 	}
 
-	reviewer, err := resolveReviewer(cmd, tier, value)
-	if err != nil {
-		return emitError(cmd, fmt.Errorf("entry %s committed to review branch %s, but resolving a reviewer to mail failed: %w",
-			e.ID, branch, err))
-	}
 	if err := sendReviewMail(cmd.Context(), reviewer, e, branch); err != nil {
 		return emitError(cmd, fmt.Errorf("entry %s committed to review branch %s, but mail to reviewer %q failed: %w",
 			e.ID, branch, reviewer, err))
@@ -71,15 +74,21 @@ func resolveReviewer(cmd *cobra.Command, tier, value string) (string, error) {
 // defaultReviewer computes the per-tier default reviewer: a distinct
 // recipient per tier, not one address shared across role/rig/global.
 // global's "mayor" is a permanent constant, not an interim placeholder --
-// the sole fleet-wide singleton reviewer.
+// the sole fleet-wide singleton reviewer. rig resolves from the entry's own
+// declared rig value (value), not $GC_RIG (crn-rott9.1): storage under
+// rig:<value> is unambiguous about which rig's reviewer should see it,
+// regardless of which rig the writing agent happens to be running in. role
+// is deliberately NOT changed the same way -- role-tier storage carries no
+// rig at all, so which rig's role-holder should review is genuinely
+// underspecified without $GC_RIG as a convenience default.
 func defaultReviewer(tier, value string) (string, error) {
 	switch tier {
 	case "global":
 		return "mayor", nil
 	case "rig":
-		rig := strings.TrimSpace(os.Getenv("GC_RIG"))
+		rig := strings.TrimSpace(value)
 		if rig == "" {
-			return "", errors.New("cannot compute the default rig reviewer: $GC_RIG is not set; pass --reviewer or $CAIRN_REVIEWER")
+			return "", errors.New("cannot compute the default rig reviewer: entry has no rig value in its scope tag")
 		}
 		return rig + "/architect", nil
 	case "role":
@@ -156,23 +165,25 @@ type batchReviewCandidate struct {
 	reviewer string
 }
 
-// commitForBatchReview is requestReview's batch-mode half: commit e to its
-// own review branch and resolve who should review it, but do not mail --
+// commitForBatchReview is requestReview's batch-mode half: resolve who
+// should review e and commit it to its own review branch, but do not mail --
 // batch mode groups many entries by resolved reviewer and sends one mail per
 // group afterward (requestBatchReview) instead of mailing per entry like
-// requestReview does.
+// requestReview does. The reviewer is resolved BEFORE committing
+// (crn-rott9.1), matching requestReview: a resolution failure must leave
+// this line's entry uncommitted to any branch, not a durable review-branch
+// commit its own batch group never learns about.
 func commitForBatchReview(cmd *cobra.Command, e *cairn.Entry, scope []string) (branch, reviewer string, err error) {
 	tier, value := cairn.ResolvedTier(scope)
+
+	reviewer, err = resolveReviewer(cmd, tier, value)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve a reviewer to mail for entry %s: %w", e.ID, err)
+	}
 
 	branch, err = e.CommitToReviewBranch(cmd.Context(), storePath())
 	if err != nil {
 		return "", "", fmt.Errorf("commit shared-tier entry to review branch: %w", err)
-	}
-
-	reviewer, err = resolveReviewer(cmd, tier, value)
-	if err != nil {
-		return branch, "", fmt.Errorf("entry %s committed to review branch %s, but resolving a reviewer to mail failed: %w",
-			e.ID, branch, err)
 	}
 	return branch, reviewer, nil
 }
@@ -218,9 +229,17 @@ func sendBatchReviewMail(ctx context.Context, reviewer string, group []batchRevi
 // requestCullReview proposes e's eviction on a review branch and mails the
 // tier-appropriate reviewer -- mirrors requestReview, applied to a delete
 // instead of an add. Callers must only invoke this for a scope that has
-// already resolved away from the private agent tier.
+// already resolved away from the private agent tier. The reviewer is
+// resolved BEFORE proposing the eviction branch (crn-rott9.1): a resolution
+// failure must leave nothing committed anywhere, not a durable
+// eviction-proposal commit nobody was ever told about.
 func requestCullReview(cmd *cobra.Command, e *cairn.Entry) error {
 	tier, value := cairn.ResolvedTier(e.Scope)
+
+	reviewer, err := resolveReviewer(cmd, tier, value)
+	if err != nil {
+		return fmt.Errorf("resolve a reviewer to mail for entry %s: %w", e.ID, err)
+	}
 
 	branch, err := e.EvictToReviewBranch(cmd.Context(), storePath())
 	if err != nil {
@@ -228,10 +247,6 @@ func requestCullReview(cmd *cobra.Command, e *cairn.Entry) error {
 	}
 	fmt.Printf("cull review branch: %s\n", branch)
 
-	reviewer, err := resolveReviewer(cmd, tier, value)
-	if err != nil {
-		return fmt.Errorf("entry %s proposed for eviction on branch %s, but resolving a reviewer to mail failed: %w", e.ID, branch, err)
-	}
 	if err := sendCullReviewMail(cmd.Context(), reviewer, e, branch); err != nil {
 		return fmt.Errorf("entry %s proposed for eviction on branch %s, but mail to reviewer %q failed: %w", e.ID, branch, reviewer, err)
 	}
@@ -257,11 +272,19 @@ func sendCullReviewMail(ctx context.Context, reviewer string, e *cairn.Entry, br
 // has already resolved away from the private agent tier, so DESIGN.md §7's
 // curation model applies to a promotion mark exactly as it does to any other
 // shared-tier mutation. Mirrors requestReview/requestCullReview's three-step
-// shape (commit to review branch, resolve a reviewer, mail). Callers must
+// shape (resolve a reviewer, commit to review branch, mail). Callers must
 // only invoke this for a scope that has already resolved away from the
-// private agent tier.
+// private agent tier. The reviewer is resolved BEFORE committing the
+// promotion mark (crn-rott9.1): a resolution failure must leave nothing
+// committed anywhere, not a durable review-branch commit nobody was ever
+// told about.
 func requestPromotionReview(cmd *cobra.Command, e *cairn.Entry) error {
 	tier, value := cairn.ResolvedTier(e.Scope)
+
+	reviewer, err := resolveReviewer(cmd, tier, value)
+	if err != nil {
+		return fmt.Errorf("resolve a reviewer to mail for entry %s: %w", e.ID, err)
+	}
 
 	branch, err := e.CommitPromotionToReviewBranch(cmd.Context(), storePath())
 	if err != nil {
@@ -269,10 +292,6 @@ func requestPromotionReview(cmd *cobra.Command, e *cairn.Entry) error {
 	}
 	fmt.Printf("review branch: %s\n", branch)
 
-	reviewer, err := resolveReviewer(cmd, tier, value)
-	if err != nil {
-		return fmt.Errorf("entry %s committed to review branch %s, but resolving a reviewer to mail failed: %w", e.ID, branch, err)
-	}
 	if err := sendPromotionReviewMail(cmd.Context(), reviewer, e, branch); err != nil {
 		return fmt.Errorf("entry %s committed to review branch %s, but mail to reviewer %q failed: %w", e.ID, branch, reviewer, err)
 	}
