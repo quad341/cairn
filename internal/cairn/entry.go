@@ -89,6 +89,14 @@ type Entry struct {
 
 	BodyPath string `toml:"-"`
 	Body     string `toml:"-"`
+
+	// store is the index root this Entry was resolved against, set only by
+	// Find. It exists purely so a writeBackPatched-based writeback that
+	// touches title/summary can sync the index directly (see
+	// syncIndexRetrievalMetadata) instead of leaving Status stale until the
+	// next HEAD-triggered reindex (crn-rott9.3). Empty for an Entry built via
+	// a bare ParseEntry -- those calls fall back to today's behavior.
+	store string `toml:"-"`
 }
 
 var scopeDirs = []string{"global", "rig", "role", "agent"}
@@ -172,14 +180,17 @@ func (e *Entry) WriteBackAnchor() error {
 // WriteBackRetrievalMetadata surgically replaces title/summary and records
 // both as authored. The body and unrelated frontmatter remain byte-identical.
 func (e *Entry) WriteBackRetrievalMetadata() error {
-	return e.writeBackPatched(func(front string) (string, error) {
+	if err := e.writeBackPatched(func(front string) (string, error) {
 		lines := strings.Split(front, "\n")
 		lines = patchTopLevelScalar(lines, "title", strconv.Quote(e.Title))
 		lines = patchTopLevelScalar(lines, "title_source", strconv.Quote(MetadataSourceAuthored))
 		lines = patchTopLevelScalar(lines, "summary", strconv.Quote(e.Summary))
 		lines = patchTopLevelScalar(lines, "summary_source", strconv.Quote(MetadataSourceAuthored))
 		return strings.Join(lines, "\n"), nil
-	})
+	}); err != nil {
+		return err
+	}
+	return e.syncIndexRetrievalMetadata(context.Background(), e.Title, MetadataSourceAuthored, e.Summary, MetadataSourceAuthored)
 }
 
 // WriteBackBackfill atomically patches a legacy entry's classification and,
@@ -195,7 +206,7 @@ func (e *Entry) WriteBackBackfill(updateRetrievalMetadata bool) error {
 	if e.Kind == EntryTypeRemediation && e.Type != EntryTypeRemediation {
 		return fmt.Errorf("type %q contradicts legacy kind %q", e.Type, e.Kind)
 	}
-	return e.writeBackPatched(func(front string) (string, error) {
+	if err := e.writeBackPatched(func(front string) (string, error) {
 		lines := strings.Split(front, "\n")
 		lines = patchTopLevelScalar(lines, "type", strconv.Quote(e.Type))
 		if updateRetrievalMetadata {
@@ -205,7 +216,13 @@ func (e *Entry) WriteBackBackfill(updateRetrievalMetadata bool) error {
 			lines = patchTopLevelScalar(lines, "summary_source", strconv.Quote(MetadataSourceAuthored))
 		}
 		return strings.Join(lines, "\n"), nil
-	})
+	}); err != nil {
+		return err
+	}
+	if !updateRetrievalMetadata {
+		return nil
+	}
+	return e.syncIndexRetrievalMetadata(context.Background(), e.Title, MetadataSourceAuthored, e.Summary, MetadataSourceAuthored)
 }
 
 func patchTopLevelScalar(lines []string, key, value string) []string {
@@ -293,6 +310,42 @@ func (e *Entry) writeBackPatched(patch func(front string) (string, error)) error
 	sb.WriteString("\n" + fence + "\n\n")
 	sb.WriteString(body)
 	return os.WriteFile(e.BodyPath, []byte(sb.String()), 0o600)
+}
+
+// syncIndexRetrievalMetadata directly patches the index's title/summary
+// (and their source) columns for e.ID, without a full Reindex.
+// WriteBackRetrievalMetadata and WriteBackBackfill both go through
+// writeBackPatched, which is pure filesystem I/O -- no git operation -- so
+// patching title/summary this way never advances the store's checked-out
+// HEAD. ensureFresh's staleness check compares only the index's watermark
+// against HEAD, so it has no way to notice the edit: left alone, Status
+// (prime/list) would keep serving the pre-edit title/summary from the index
+// until an unrelated reindex happened to run (crn-rott9.3). This mirrors
+// Find's own hit_count/last_recalled_at update above: state written
+// directly via SQL rather than waiting on the next full reindex.
+//
+// A no-op (nil error) when e carries no store -- an Entry built directly via
+// ParseEntry rather than Find (as in WriteBackRetrievalMetadata's own unit
+// test) has no index to sync against and falls back to today's behavior:
+// correct again after the next reindex. Likewise a no-op, after the UPDATE
+// runs, if id isn't indexed yet -- the next Find/Reindex picks it up fresh
+// from the body, same as any other not-yet-indexed entry.
+func (e *Entry) syncIndexRetrievalMetadata(ctx context.Context, title, titleSource, summary, summarySource string) error {
+	if e.store == "" {
+		return nil
+	}
+	db, err := openDB(e.store)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+	return retryOnBusy(ctx, func() error {
+		_, err := db.ExecContext(ctx,
+			`UPDATE entries SET title = ?, title_source = ?, summary = ?, summary_source = ? WHERE id = ?`,
+			title, titleSource, summary, summarySource, e.ID,
+		)
+		return err
+	})
 }
 
 // patchVerification patches verified_at (top-level) and anchor.fingerprint
@@ -694,6 +747,7 @@ func Find(ctx context.Context, store, id string) (*Entry, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.store = store
 
 	// hit_count and last_recalled_at are index-only state (crn-6az.6.1.1,
 	// crn-28ge.1.1): the freshly-parsed body's values are stale-by-construction,
