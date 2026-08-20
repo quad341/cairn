@@ -19,6 +19,7 @@ type ListingEntry struct {
 	FreshnessState  string
 	FreshnessDetail string
 	Conflict        *TopicConflict
+	ReviewStatus    string
 }
 
 // ListByTopic returns the identity-scoped visible winner(s) for an exact
@@ -76,6 +77,7 @@ func ListByTopic(ctx context.Context, store, topicKey string, identity []string)
 			FreshnessState:  state,
 			FreshnessDetail: detail,
 			Conflict:        m.Conflict,
+			ReviewStatus:    full.ReviewStatus,
 		})
 	}
 	return out, nil

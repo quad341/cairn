@@ -428,6 +428,10 @@ func patchFrontmatterFields(raw []byte, opts ReviewMergeOptions) ([]byte, error)
 	if opts.AutoActionable {
 		lines = setScalarLine(lines, "auto_actionable", "true")
 	}
+	// Unconditional, unlike every patch above: every entry MergeReviewBranch
+	// lands is, by definition, merged now -- there is no opts flag to gate
+	// this on (crn-evw98.1).
+	lines = setScalarLine(lines, "review_status", tomlQuote(ReviewStatusMerged))
 
 	return []byte(fence + strings.Join(lines, "\n") + closeAndBody), nil
 }

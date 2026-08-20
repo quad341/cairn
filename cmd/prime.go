@@ -26,11 +26,12 @@ type primeOutput struct {
 }
 
 type primeTrigger struct {
-	ID        string               `json:"id"`
-	TopicKey  *string              `json:"topic_key"`
-	Title     string               `json:"title"`
-	Freshness string               `json:"freshness"`
-	Conflict  *cairn.TopicConflict `json:"conflict"`
+	ID           string               `json:"id"`
+	TopicKey     *string              `json:"topic_key"`
+	Title        string               `json:"title"`
+	Freshness    string               `json:"freshness"`
+	Conflict     *cairn.TopicConflict `json:"conflict"`
+	ReviewStatus string               `json:"review_status"`
 }
 
 func projectPrime(result cairn.PrimeResult) primeOutput {
@@ -43,6 +44,7 @@ func projectPrime(result cairn.PrimeResult) primeOutput {
 		}
 		triggers = append(triggers, primeTrigger{
 			ID: item.ID, TopicKey: topicKey, Title: item.Title, Freshness: item.Freshness.Status, Conflict: item.Conflict,
+			ReviewStatus: item.ReviewStatus,
 		})
 	}
 	warnings := append([]string(nil), result.Warnings...)
