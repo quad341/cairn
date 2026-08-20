@@ -197,6 +197,37 @@ func TestLibrarianStepsHaveNeedsPmLabelAndGuard(t *testing.T) {
 	}
 }
 
+// crn-27con.4: dim:review-branch,source:cairn-librarian are provenance-only
+// labels -- nothing in packs/ uses either as a routing inclusion filter (the
+// only reference is an exclusion, in the labeller's own "unlabeled ready
+// work" health check, which deliberately skips beads carrying
+// source:cairn-librarian). needs-pm alone (crn-wqgm) already makes the filed
+// bead deacon-patrol-routable, but needs-investigation additionally puts it
+// directly in investigator's own pull-based ready query
+// (packs/actual/investigator/pack.toml: --label-any
+// needs-pr-response,needs-investigation), giving the filed bead two
+// independent paths into a real work queue instead of relying on deacon
+// dispatch alone. Scoped to stale-review-branch-recovery only, unlike
+// TestLibrarianStepsHaveNeedsPmLabelAndGuard's five steps -- the other four
+// are explicitly out of scope for this bead.
+func TestLibrarianStaleReviewBranchRecoveryStepHasNeedsInvestigationLabelAndGuard(t *testing.T) {
+	f := decodeFormula(t, "mol-cairn-librarian.formula.toml")
+	s, ok := stepByID(f, "stale-review-branch-recovery")
+	if !ok {
+		t.Fatal(`mol-cairn-librarian.formula.toml: no "stale-review-branch-recovery" step found`)
+	}
+
+	if !strings.Contains(s.Description, ",needs-investigation") {
+		t.Error(`stale-review-branch-recovery: --labels must include needs-investigation, or the filed bead never enters investigator's own "--label-any needs-pr-response,needs-investigation" ready query (crn-27con.4)`)
+	}
+	if !strings.Contains(s.Description, `index("needs-investigation")`) {
+		t.Error(`stale-review-branch-recovery: missing a Guard assertion that needs-investigation is present, matching the label it now requires (crn-27con.4)`)
+	}
+	if !strings.Contains(s.Description, ",needs-pm") {
+		t.Error(`stale-review-branch-recovery: must still include needs-pm -- crn-27con.4 adds needs-investigation alongside it, not in place of it`)
+	}
+}
+
 // cairn cull-evict itself is not safely repeatable for the same entry --
 // EvictToReviewBranch hard-errors once a proposal is already pending, since
 // its review branch name is deterministic ("cull/" + entry ID; see
