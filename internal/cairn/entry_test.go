@@ -83,7 +83,7 @@ func TestIterEntriesTolerantCleanStoreNoFailures(t *testing.T) {
 	writeFile(t, dir, "global/g.md", sampleEntry)
 	writeFile(t, dir, "rig/alpha/r.md", "+++\nid = \"r1\"\ntitle = \"r1\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(t.Context(), dir)
 	require.NoError(t, err)
 	assert.Empty(t, failures)
 	ids := map[string]bool{}
@@ -98,7 +98,7 @@ func TestIterEntriesTolerantCollectsParseFailures(t *testing.T) {
 	writeFile(t, dir, "global/good.md", sampleEntry)
 	badPath := writeFile(t, dir, "global/bad.md", "+++\nid = \"a\"\nno closing fence\n")
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(t.Context(), dir)
 	require.NoError(t, err, "a malformed entry must not abort the tolerant walk")
 
 	ids := map[string]bool{}
@@ -118,7 +118,7 @@ func TestIterEntriesStillAbortsOnParseFailure(t *testing.T) {
 	writeFile(t, dir, "global/good.md", sampleEntry)
 	writeFile(t, dir, "global/bad.md", "+++\nid = \"a\"\nno closing fence\n")
 
-	_, err := IterEntries(dir)
+	_, err := IterEntries(t.Context(), dir)
 	require.Error(t, err, "IterEntries' existing abort-on-first-error contract must be unchanged")
 }
 
@@ -427,12 +427,13 @@ func TestWriteBackMissingAnchorTableErrorsWithoutWriting(t *testing.T) {
 }
 
 func TestWriteBackRecurrenceCountRoundTrip(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "global/one.md", sampleEntry)
+	store := t.TempDir()
+	p := writeFile(t, store, "global/one.md", sampleEntry)
 	e, err := ParseEntry(p)
 	require.NoError(t, err)
 
 	e.RecurrenceCount = 5
-	require.NoError(t, e.WriteBackRecurrenceCount())
+	require.NoError(t, e.WriteBackRecurrenceCount(t.Context(), store))
 
 	e2, err := ParseEntry(p)
 	require.NoError(t, err)
@@ -466,7 +467,8 @@ body text
 // [anchor]-boundary-finding shape -- while every other original line
 // survives verbatim.
 func TestWriteBackRecurrenceCountFirstIncrementAppendsAndPreservesRest(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureNoRecurrence)
+	store := t.TempDir()
+	p := writeFile(t, store, "global/one.md", writeBackFixtureNoRecurrence)
 	before, err := os.ReadFile(p)
 	require.NoError(t, err)
 
@@ -475,7 +477,7 @@ func TestWriteBackRecurrenceCountFirstIncrementAppendsAndPreservesRest(t *testin
 	require.Equal(t, 0, e.RecurrenceCount, "fixture must start with no recurrence_count")
 
 	e.RecurrenceCount = 1
-	require.NoError(t, e.WriteBackRecurrenceCount())
+	require.NoError(t, e.WriteBackRecurrenceCount(t.Context(), store))
 
 	after, err := os.ReadFile(p)
 	require.NoError(t, err)
@@ -529,7 +531,8 @@ body text
 // must update in place with zero line-count delta, not grow the file or
 // reorder anything.
 func TestWriteBackRecurrenceCountSecondIncrementUpdatesInPlace(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureRecurrenceAlreadySet)
+	store := t.TempDir()
+	p := writeFile(t, store, "global/one.md", writeBackFixtureRecurrenceAlreadySet)
 	before, err := os.ReadFile(p)
 	require.NoError(t, err)
 	beforeLines := strings.Split(string(before), "\n")
@@ -539,7 +542,7 @@ func TestWriteBackRecurrenceCountSecondIncrementUpdatesInPlace(t *testing.T) {
 	require.Equal(t, 3, e.RecurrenceCount)
 
 	e.RecurrenceCount = 4
-	require.NoError(t, e.WriteBackRecurrenceCount())
+	require.NoError(t, e.WriteBackRecurrenceCount(t.Context(), store))
 
 	after, err := os.ReadFile(p)
 	require.NoError(t, err)
@@ -562,7 +565,8 @@ func TestWriteBackRecurrenceCountSecondIncrementUpdatesInPlace(t *testing.T) {
 // same hard-failure path, so it must behave identically -- an error naming
 // the entry id, and the file left exactly as it was, never a partial write.
 func TestWriteBackRecurrenceCountMissingAnchorTableErrorsWithoutWriting(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureNoAnchor)
+	store := t.TempDir()
+	p := writeFile(t, store, "global/one.md", writeBackFixtureNoAnchor)
 	before, err := os.ReadFile(p)
 	require.NoError(t, err)
 
@@ -570,7 +574,7 @@ func TestWriteBackRecurrenceCountMissingAnchorTableErrorsWithoutWriting(t *testi
 	require.NoError(t, err)
 
 	e.RecurrenceCount = 1
-	err = e.WriteBackRecurrenceCount()
+	err = e.WriteBackRecurrenceCount(t.Context(), store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), e.ID, "the error must name the entry id")
 
@@ -580,12 +584,13 @@ func TestWriteBackRecurrenceCountMissingAnchorTableErrorsWithoutWriting(t *testi
 }
 
 func TestWriteBackPromotedBeadIDRoundTrip(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "global/one.md", sampleEntry)
+	store := t.TempDir()
+	p := writeFile(t, store, "global/one.md", sampleEntry)
 	e, err := ParseEntry(p)
 	require.NoError(t, err)
 
 	e.PromotedBeadID = "crn-abcd"
-	require.NoError(t, e.WriteBackPromotedBeadID())
+	require.NoError(t, e.WriteBackPromotedBeadID(t.Context(), store))
 
 	e2, err := ParseEntry(p)
 	require.NoError(t, err)
@@ -619,7 +624,8 @@ body text
 // via the same [anchor]-boundary-finding shape -- while every other original
 // line survives verbatim.
 func TestWriteBackPromotedBeadIDFirstSetAppendsAndPreservesRest(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureNoPromotedBeadID)
+	store := t.TempDir()
+	p := writeFile(t, store, "global/one.md", writeBackFixtureNoPromotedBeadID)
 	before, err := os.ReadFile(p)
 	require.NoError(t, err)
 
@@ -628,7 +634,7 @@ func TestWriteBackPromotedBeadIDFirstSetAppendsAndPreservesRest(t *testing.T) {
 	require.Empty(t, e.PromotedBeadID, "fixture must start with no promoted_bead_id")
 
 	e.PromotedBeadID = "crn-abcd"
-	require.NoError(t, e.WriteBackPromotedBeadID())
+	require.NoError(t, e.WriteBackPromotedBeadID(t.Context(), store))
 
 	after, err := os.ReadFile(p)
 	require.NoError(t, err)
@@ -682,7 +688,8 @@ body text
 // already present must update in place with zero line-count delta, not grow
 // the file or reorder anything.
 func TestWriteBackPromotedBeadIDSecondSetUpdatesInPlace(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixturePromotedBeadIDAlreadySet)
+	store := t.TempDir()
+	p := writeFile(t, store, "global/one.md", writeBackFixturePromotedBeadIDAlreadySet)
 	before, err := os.ReadFile(p)
 	require.NoError(t, err)
 	beforeLines := strings.Split(string(before), "\n")
@@ -692,7 +699,7 @@ func TestWriteBackPromotedBeadIDSecondSetUpdatesInPlace(t *testing.T) {
 	require.Equal(t, "crn-old1", e.PromotedBeadID)
 
 	e.PromotedBeadID = "crn-new2"
-	require.NoError(t, e.WriteBackPromotedBeadID())
+	require.NoError(t, e.WriteBackPromotedBeadID(t.Context(), store))
 
 	after, err := os.ReadFile(p)
 	require.NoError(t, err)
@@ -716,7 +723,8 @@ func TestWriteBackPromotedBeadIDSecondSetUpdatesInPlace(t *testing.T) {
 // an error naming the entry id, and the file left exactly as it was, never a
 // partial write.
 func TestWriteBackPromotedBeadIDMissingAnchorTableErrorsWithoutWriting(t *testing.T) {
-	p := writeFile(t, t.TempDir(), "global/one.md", writeBackFixtureNoAnchor)
+	store := t.TempDir()
+	p := writeFile(t, store, "global/one.md", writeBackFixtureNoAnchor)
 	before, err := os.ReadFile(p)
 	require.NoError(t, err)
 
@@ -724,7 +732,7 @@ func TestWriteBackPromotedBeadIDMissingAnchorTableErrorsWithoutWriting(t *testin
 	require.NoError(t, err)
 
 	e.PromotedBeadID = "crn-abcd"
-	err = e.WriteBackPromotedBeadID()
+	err = e.WriteBackPromotedBeadID(t.Context(), store)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), e.ID, "the error must name the entry id")
 
@@ -1335,7 +1343,7 @@ func TestFindUsesIndexPointLookupNotWalk(t *testing.T) {
 	// indexing would break a walk-based lookup: IterEntries propagates any
 	// ParseEntry error that isn't errNotEntry.
 	writeFile(t, store, "global/bad.md", "+++\nid = \"bad\nno closing fence\n")
-	_, err = IterEntries(store)
+	_, err = IterEntries(ctx, store)
 	require.Error(t, err, "sanity check: the malformed sibling file must break a walk")
 
 	// Find resolves "a" via the already-built index rather than re-walking --
@@ -1384,7 +1392,7 @@ func TestVisibleNeverReadsBodiesAfterIndexBuilt(t *testing.T) {
 	// it really would break a body walk if it were, so the assertion below
 	// is a real proof rather than a vacuous one.
 	writeFile(t, dir, "global/broken.md", "+++\nid = \"broken\"\nno closing fence\n")
-	_, walkErr := IterEntries(dir)
+	_, walkErr := IterEntries(t.Context(), dir)
 	require.Error(t, walkErr, "sanity check: the malformed sibling must actually break a body walk")
 
 	vs2, err := Visible(t.Context(), dir, nil)
@@ -1408,7 +1416,7 @@ func TestStatusNeverReadsBodiesAfterIndexBuilt(t *testing.T) {
 	// it really would break a body walk if it were, so the assertion below
 	// is a real proof rather than a vacuous one.
 	writeFile(t, dir, "global/broken.md", "+++\nid = \"broken\"\nno closing fence\n")
-	_, walkErr := IterEntries(dir)
+	_, walkErr := IterEntries(t.Context(), dir)
 	require.Error(t, walkErr, "sanity check: the malformed sibling must actually break a body walk")
 
 	entries2, err := Status(t.Context(), dir)
@@ -1578,10 +1586,112 @@ func TestIterEntriesWrapsParseFailureAsMalformedEntryError(t *testing.T) {
 	dir := t.TempDir()
 	bad := writeFile(t, dir, "global/broken.md", "+++\nid = \"broken\"\nno closing fence\n")
 
-	_, err := IterEntries(dir)
+	_, err := IterEntries(t.Context(), dir)
 	require.Error(t, err)
 
 	var malformed *MalformedEntryError
 	require.True(t, errors.As(err, &malformed), "IterEntries' parse-failure error must be a *MalformedEntryError")
 	assert.Equal(t, bad, malformed.Path, "MalformedEntryError.Path must name the offending file")
+}
+
+// TestIterEntriesIncludesEntriesFromMultiplePendingReviewBranches covers
+// crn-evw98.2's exit_contract "multiple pending branches" bullet:
+// reviewBranchEntries (entry.go) must enumerate every open remember/*
+// branch, not just the first one ListReviewBranches happens to return, each
+// stamped review_status=pending (crn-evw98.1). Neither entry ever lands on
+// disk -- commitToReviewWorktree removes each one's untracked draft the
+// moment fixtureBranch's CommitToReviewBranch call commits it -- so this
+// also pins that IterEntries does not depend on the disk-walk half of
+// walkEntries to find them at all.
+func TestIterEntriesIncludesEntriesFromMultiplePendingReviewBranches(t *testing.T) {
+	store := reviewStore(t)
+	_, e1 := fixtureBranch(t, store, "topic-one", []string{"rig:web"}, "first pending note")
+	_, e2 := fixtureBranch(t, store, "topic-two", []string{"rig:web"}, "second pending note")
+
+	entries, err := IterEntries(t.Context(), store)
+	require.NoError(t, err)
+	require.Len(t, entries, 2, "both pending review branches must be enumerated, not just one")
+
+	byID := map[string]*Entry{}
+	for _, e := range entries {
+		byID[e.ID] = e
+	}
+	require.Contains(t, byID, e1.ID)
+	require.Contains(t, byID, e2.ID)
+	assert.Equal(t, ReviewStatusPending, byID[e1.ID].ReviewStatus)
+	assert.Equal(t, ReviewStatusPending, byID[e2.ID].ReviewStatus)
+}
+
+// TestIterEntriesExcludesAlreadyMergedReviewBranchFromDoubleCounting covers
+// crn-evw98.2's exit_contract "a branch whose entry was later merged (must
+// not double-count)" bullet. MergeReviewBranch deletes remember/<id> once it
+// merges it, but nothing enforces that as the only way a branch gets merged
+// -- reviewBranchEntries relies entirely on ListReviewBranches' own
+// isMergedInto exclusion (branches.go) to stay correct when a branch is
+// merged (e.g. by a plain `git merge`) yet its ref lives on. Mirrors
+// TestListReviewBranchesExcludesMergedBranches' technique: a real --no-ff
+// merge, not MergeReviewBranch, so the ref survives its own merge.
+func TestIterEntriesExcludesAlreadyMergedReviewBranchFromDoubleCounting(t *testing.T) {
+	ctx := t.Context()
+	store := reviewStore(t)
+	branch, e := fixtureBranch(t, store, "merged-topic", []string{"rig:web"}, "a note that gets merged")
+
+	_, err := gitRun(ctx, store, "merge", "--no-ff", "-m", "merge review branch", branch)
+	require.NoError(t, err)
+	_, err = gitRun(ctx, store, "rev-parse", "--verify", branch)
+	require.NoError(t, err, "precondition: the branch ref must still exist after the merge, unlike MergeReviewBranch's own cleanup")
+
+	entries, err := IterEntries(ctx, store)
+	require.NoError(t, err)
+
+	count := 0
+	for _, got := range entries {
+		if got.ID == e.ID {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "an entry whose review branch was merged (but not deleted) must be counted exactly once, not once from disk and again from the branch")
+}
+
+// TestFindEntryByIDAndWriteBackReportOriginalErrorWhenReviewBranchAbandoned
+// covers crn-evw98.2's exit_contract "a branch for an entry later
+// closed/abandoned" bullet, for all four call sites reviewBranchContent
+// backs: Find and EntryByID via parseEntryOrReviewBranch, and
+// WriteBackRecurrenceCount and WriteBackPromotedBeadID via
+// writeBackPatchedOrBranch. Deleting the review branch outright (as opposed
+// to merging it) leaves no fallback content anywhere, so every one of the
+// four must surface the same original os.IsNotExist-satisfying disk error
+// each already returns when there was never a review branch at all -- not a
+// new error shape, and specifically not ErrNotFound, since the index row
+// (seeded here via an explicit Reindex before the branch is deleted) is
+// still present; only the body content is gone.
+func TestFindEntryByIDAndWriteBackReportOriginalErrorWhenReviewBranchAbandoned(t *testing.T) {
+	ctx := t.Context()
+	store := reviewStore(t)
+	branch, e := fixtureBranch(t, store, "rejected-topic", []string{"rig:web"}, "a note that gets rejected")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err, "seed the index while the branch still exists, so the later lookups see a stale-but-present row rather than Find's own forced-reindex-and-retry changing the observed error shape")
+
+	_, err = gitRun(ctx, store, "branch", "-D", branch)
+	require.NoError(t, err)
+
+	_, err = Find(ctx, store, e.ID)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrNotFound), "the index row still exists -- this must not look like an unindexed id")
+	assert.True(t, os.IsNotExist(err), "Find must surface the original not-exist error when no branch is left to fall back to: %v", err)
+
+	_, err = EntryByID(ctx, store, e.ID)
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err), "EntryByID shares parseEntryOrReviewBranch with Find and must behave identically: %v", err)
+
+	e.RecurrenceCount = 1
+	err = e.WriteBackRecurrenceCount(ctx, store)
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err), "WriteBackRecurrenceCount must surface the original disk error, not synthesize a new one: %v", err)
+
+	e.PromotedBeadID = "crn-abcd"
+	err = e.WriteBackPromotedBeadID(ctx, store)
+	require.Error(t, err)
+	assert.True(t, os.IsNotExist(err), "WriteBackPromotedBeadID must surface the original disk error, not synthesize a new one: %v", err)
 }

@@ -174,7 +174,7 @@ func checkShadowMapSupersetSemantics(ctx context.Context, store, n string) Resul
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("seed fixtures: %v", err))
 	}
 
-	all, err := cairn.IterEntries(store)
+	all, err := cairn.IterEntries(ctx, store)
 	if err != nil {
 		return NewResult(DimensionScopePrecedence, scopePrecedenceScenarioID, Fail, fmt.Sprintf("IterEntries: %v", err))
 	}

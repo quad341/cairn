@@ -45,7 +45,7 @@ func TestScopeMismatchCleanWhenTagMatchesDir(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "rig/alpha/r.md", "+++\nid = \"r\"\ntitle = \"r\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(t.Context(), dir)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 
@@ -56,7 +56,7 @@ func TestScopeMismatchReportsWrongTag(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "rig/alpha/r.md", "+++\nid = \"r\"\ntitle = \"r\"\nscope = [\"rig:beta\"]\n+++\nx\n")
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(t.Context(), dir)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 
@@ -72,7 +72,7 @@ func TestScopeMismatchExemptsGlobalTier(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "global/g.md", "+++\nid = \"g\"\ntitle = \"g\"\nscope = [\"rig:anything\"]\n+++\nx\n")
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(t.Context(), dir)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 
@@ -174,7 +174,7 @@ func TestAgentFreshnessOnlyChecksAgentTier(t *testing.T) {
 	writeFile(t, dir, "agent/bot/a.md", "+++\nid = \"a\"\ntitle = \"a\"\nscope = [\"agent:bot\"]\n+++\nx\n")
 	writeFile(t, dir, "global/g.md", "+++\nid = \"g\"\ntitle = \"g\"\nscope = []\n+++\nx\n")
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(ctx, dir)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 
@@ -190,7 +190,7 @@ func TestIndexDriftCleanWhenIndexAlreadyFresh(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "global/a.md", "+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n")
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(ctx, dir)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 
@@ -215,7 +215,7 @@ func TestIndexDriftReportsStaleIndex(t *testing.T) {
 	writeFile(t, dir, "global/b.md", "+++\nid = \"b\"\ntitle = \"B\"\n+++\nbody\n")
 	gitCommitAll(t, dir, "add b")
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(ctx, dir)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 
@@ -411,7 +411,7 @@ func TestDiagnoseStatsCountsEntriesByTierAndReportsCleanIndex(t *testing.T) {
 	writeFile(t, dir, "rig/alpha/r2.md", "+++\nid = \"r2\"\ntitle = \"r2\"\nscope = [\"rig:alpha\"]\n+++\nx\n")
 	writeFile(t, dir, "role/investigator/o.md", "+++\nid = \"o\"\ntitle = \"o\"\nscope = [\"role:investigator\"]\n+++\nx\n")
 
-	entries, failures, err := IterEntriesTolerant(dir)
+	entries, failures, err := IterEntriesTolerant(ctx, dir)
 	require.NoError(t, err)
 	require.Empty(t, failures)
 	_, err = ReindexEntries(ctx, dir, entries)
@@ -460,9 +460,9 @@ func TestDiagnoseCallsIterEntriesTolerantAndIndexStaleExactlyOnce(t *testing.T) 
 	require.NoError(t, err)
 
 	var iterCalls, staleCalls int
-	iter := func(store string) ([]*Entry, []ParseFailure, error) {
+	iter := func(ctx context.Context, store string) ([]*Entry, []ParseFailure, error) {
 		iterCalls++
-		return IterEntriesTolerant(store)
+		return IterEntriesTolerant(ctx, store)
 	}
 	staleFn := func(ctx context.Context, store string) (bool, error) {
 		staleCalls++

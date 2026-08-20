@@ -80,7 +80,7 @@ func TestCommitPromotionToReviewBranchStampsPendingReviewStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, e.Create(store))
 	e.PromotedBeadID = "crn-abcd"
-	require.NoError(t, e.WriteBackPromotedBeadID())
+	require.NoError(t, e.WriteBackPromotedBeadID(ctx, store))
 
 	branch, err := e.CommitPromotionToReviewBranch(ctx, store)
 	require.NoError(t, err)
@@ -138,7 +138,7 @@ func TestCommitRecurrenceToReviewBranchOnAlreadyMergedEntryReflipsToPending(t *t
 	gitCommitAll(t, store, "simulate merge of "+firstBranch)
 
 	e.RecurrenceCount = 1
-	require.NoError(t, e.WriteBackRecurrenceCount())
+	require.NoError(t, e.WriteBackRecurrenceCount(ctx, store))
 
 	branch, err := e.CommitRecurrenceToReviewBranch(ctx, store)
 	require.NoError(t, err)

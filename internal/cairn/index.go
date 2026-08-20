@@ -144,7 +144,7 @@ func openDB(store string) (*sql.DB, error) {
 
 // Reindex rebuilds the index from the bodies. It returns the entry count.
 func Reindex(ctx context.Context, store string) (int, error) {
-	entries, err := IterEntries(store)
+	entries, err := IterEntries(ctx, store)
 	if err != nil {
 		return 0, err
 	}

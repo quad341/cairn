@@ -32,7 +32,7 @@ type SweepFinding struct {
 // detail with the specific untracked path(s), which Check's generic "not
 // verifiable" message can't name and which the eventual bd bead body needs.
 func Sweep(ctx context.Context, store string) ([]SweepFinding, error) {
-	entries, err := IterEntries(store)
+	entries, err := IterEntries(ctx, store)
 	if err != nil {
 		return nil, err
 	}

@@ -193,7 +193,7 @@ var getCmd = &cobra.Command{
 		for _, v := range visible {
 			visibleIDs[v.ID] = true
 		}
-		all, err := cairn.IterEntries(storePath())
+		all, err := cairn.IterEntries(cmd.Context(), storePath())
 		if err != nil {
 			return emitError(cmd, err)
 		}

@@ -50,7 +50,7 @@ var promoteMarkCmd = &cobra.Command{
 		}
 
 		e.PromotedBeadID = bead
-		if err := e.WriteBackPromotedBeadID(); err != nil {
+		if err := e.WriteBackPromotedBeadID(cmd.Context(), storePath()); err != nil {
 			return fmt.Errorf("write promoted_bead_id for %s: %w", e.ID, err)
 		}
 
