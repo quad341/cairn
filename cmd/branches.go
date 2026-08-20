@@ -88,11 +88,13 @@ type StaleBranchFinding struct {
 }
 
 // notifyState maps a review branch's name to the tip SHA it was last
-// successfully notified at. evaluateBranch consults it to require at least
-// one prior notify at the branch's *current* tip before ever reporting
-// escalate -- a fresh commit (a different SHA) is indistinguishable from a
-// never-before-seen branch, so it must be renotified before it can escalate
-// again too (crn-3l6).
+// successfully notified at. evaluateBranch consults it for two things. First,
+// to require at least one prior notify at the branch's *current* tip before
+// ever reporting escalate -- a fresh commit (a different SHA) is
+// indistinguishable from a never-before-seen branch, so it must be renotified
+// before it can escalate again too (crn-3l6). Second, to suppress a duplicate
+// reminder for a notify-bucket branch whose tip has not moved since the last
+// one: the reminder is per-tip, not per-pass (crn-pr1al).
 type notifyState map[string]string
 
 // stateFilePath resolves --state-file (flag override, else a default rooted
@@ -149,7 +151,14 @@ func saveNotifyState(path string, state notifyState) error {
 }
 
 // evaluateBranch buckets b by age and, for a notify-status branch, resolves
-// and (unless dryRun) mails its reviewer a reminder. It also resolves (but
+// and (unless dryRun) mails its reviewer a reminder. A reviewer that cannot
+// be resolved is terminal for b on this pass in *either* bucket, so it
+// reports status "error" rather than the age bucket it came from: no mail
+// goes out and no notify state is recorded, and without a recorded notify
+// the branch can never reach escalate either. Reporting the age bucket
+// instead would read downstream as "a reminder is on its way" for a branch
+// that is in fact stuck permanently and silently (crn-w4c6 fixed this for
+// escalate; crn-pr1al for notify). It also resolves (but
 // never mails) the reviewer for an escalate-status branch -- the downstream
 // bd-bead-filing step wants to name who was already reminded and didn't
 // act, not just that nobody did.
@@ -161,6 +170,12 @@ func saveNotifyState(path string, state notifyState) error {
 // reminder yet (crn-3l6, crn-0yv.1 AC2). state is mutated in place -- a
 // successful notify (whether from a raw notify bucket or a downgraded one)
 // records b's SHA, so a later pass over the same tip can escalate.
+//
+// That same record also suppresses a repeat reminder while the branch stays
+// in the notify bucket. A reminder is owed once per tip, not once per pass:
+// re-sending it on every sweep tells the reviewer nothing new, and at the
+// sweep cadence this grows without bound until the branch finally ages into
+// escalate (crn-pr1al).
 func evaluateBranch(cmd *cobra.Command, b cairn.ReviewBranch, notifyAfter, escalateAfter time.Duration,
 	dryRun bool, state notifyState,
 ) StaleBranchFinding {
@@ -188,14 +203,12 @@ func evaluateBranch(cmd *cobra.Command, b cairn.ReviewBranch, notifyAfter, escal
 	reviewer, err := resolveReviewer(cmd, b.Tier, b.Value)
 	if err != nil {
 		f.Error = fmt.Sprintf("resolve reviewer: %v", err)
-		if f.Status == "escalate" {
-			f.Status = "error"
-		}
+		f.Status = "error"
 		return f
 	}
 	f.Reviewer = reviewer
 
-	if f.Status == "notify" && !dryRun {
+	if f.Status == "notify" && !dryRun && state[b.Name] != b.SHA {
 		if err := sendStaleBranchReminder(cmd.Context(), reviewer, b); err != nil {
 			f.Error = fmt.Sprintf("send reminder: %v", err)
 			return f
