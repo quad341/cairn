@@ -82,6 +82,11 @@ type Entry struct {
 	// OverriddenDuplicateOf is set to the matched entry's ID when --force
 	// creates a new entry past a detected duplicate (crn-lzn4.1.1).
 	OverriddenDuplicateOf string `toml:"overridden_duplicate_of,omitempty"`
+	// Corrects is an explicit, author-declared id of another entry this one
+	// corrects/supersedes (crn-evw98.3). Unlike OverriddenDuplicateOf (an
+	// inferred same-topic_key match), it is set directly via --corrects and
+	// followed across topic_key boundaries by FindCorrection at read time.
+	Corrects string `toml:"corrects,omitempty"`
 
 	BodyPath string `toml:"-"`
 	Body     string `toml:"-"`
@@ -698,6 +703,36 @@ func resolveBodyPath(store, bodyPath string) string {
 		return bodyPath
 	}
 	return filepath.Join(store, bodyPath)
+}
+
+// FindCorrection returns the entry that explicitly Corrects id, or nil if
+// none does (crn-evw98.3). Unlike OverriddenDuplicateOf's same-topic_key
+// recurrence match, Corrects is an explicit author declaration followed
+// regardless of topic_key. It is single-hop by design: if b corrects a and
+// c corrects b, FindCorrection(a) returns b, not c -- chasing a chain
+// transitively is out of this bead's scope. When more than one entry
+// claims to correct the same id, the most recently created one wins.
+func FindCorrection(ctx context.Context, store, id string) (*Entry, error) {
+	if err := ensureFresh(ctx, store); err != nil {
+		return nil, err
+	}
+	db, err := openDB(store)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+
+	var correctorID string
+	err = db.QueryRowContext(ctx,
+		`SELECT id FROM entries WHERE corrects = ? ORDER BY created_at DESC LIMIT 1`, id,
+	).Scan(&correctorID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return Find(ctx, store, correctorID)
 }
 
 // Visible returns entries an identity may see: every scope-tag on the entry

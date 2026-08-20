@@ -135,6 +135,10 @@ type EntryResult struct {
 	AutoActionable bool                 `json:"auto_actionable"`
 	Conflicts      []cairn.DedupFinding `json:"conflicts"`
 	Body           string               `json:"body"`
+	// RedirectedFrom is the originally-requested id when it was redirected
+	// to an entry that explicitly Corrects it (crn-evw98.3); empty when no
+	// redirect occurred.
+	RedirectedFrom string `json:"redirected_from,omitempty"`
 }
 
 var getCmd = &cobra.Command{
@@ -155,6 +159,20 @@ var getCmd = &cobra.Command{
 		if err != nil {
 			return emitError(cmd, err)
 		}
+
+		// A redirect is resolved before any telemetry/freshness/conflict
+		// work below, so every downstream signal (obslog outcome, payload
+		// tokens, reuse count, conflicts) reflects what was actually served
+		// -- the corrector, when one exists -- not the superseded entry
+		// that was originally requested (crn-evw98.3).
+		var redirectedFrom string
+		if corrector, cerr := cairn.FindCorrection(cmd.Context(), storePath(), e.ID); cerr != nil {
+			return emitError(cmd, cerr)
+		} else if corrector != nil {
+			redirectedFrom = e.ID
+			e = corrector
+		}
+
 		st, detail := cairn.Check(cmd.Context(), e)
 
 		outcome := "hit"
@@ -225,6 +243,7 @@ var getCmd = &cobra.Command{
 				AutoActionable: e.AutoActionable,
 				Conflicts:      nonNil(conflicts),
 				Body:           e.Body,
+				RedirectedFrom: redirectedFrom,
 			})
 		}
 
@@ -237,6 +256,9 @@ var getCmd = &cobra.Command{
 			scope = strings.Join(e.Scope, " ")
 		}
 		fmt.Printf("%s: %s\n", e.ID, e.Title)
+		if redirectedFrom != "" {
+			fmt.Printf("redirected_from: %s\n", redirectedFrom)
+		}
 		fmt.Printf("topic: %s  scope: %s\n", topic, scope)
 		fmt.Printf("freshness: %s — %s\n", st, detail)
 		fmt.Printf("type: %s  kind: %s  auto_actionable: %t\n", e.Type, kind, e.AutoActionable)

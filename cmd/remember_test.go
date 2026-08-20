@@ -326,7 +326,7 @@ func withStdin(t *testing.T, body string, fn func()) {
 
 func resetRememberFlags(t *testing.T) {
 	t.Helper()
-	for _, name := range []string{"topic", "scope", "reviewer", "file", "title", "summary", "type", "anchor-repo"} {
+	for _, name := range []string{"topic", "scope", "reviewer", "file", "title", "summary", "type", "anchor-repo", "corrects"} {
 		f := rememberCmd.Flags().Lookup(name)
 		require.NotNil(t, f)
 		require.NoError(t, f.Value.Set(""))
@@ -367,14 +367,19 @@ func withKnowledgeType(args []string) []string {
 }
 
 // assertNoFilesWritten requires that a rejected remember call wrote nothing
-// under store, ignoring the .git directory that gitInit itself creates.
+// under store, ignoring the .git directory that gitInit itself creates and
+// the "index" directory (cairn.IndexPath): a rejection that validates
+// against an existing entry (e.g. --corrects) reads through cairn.Find,
+// which lazily builds the store's rebuildable SQLite index cache as a
+// side effect of any read -- gitignored infrastructure, not entry content,
+// the same category .git already gets exempted for.
 func assertNoFilesWritten(t *testing.T, store string) {
 	t.Helper()
 	entries, err := os.ReadDir(store)
 	require.NoError(t, err)
 	var written []string
 	for _, e := range entries {
-		if e.Name() != ".git" {
+		if e.Name() != ".git" && e.Name() != "index" {
 			written = append(written, e.Name())
 		}
 	}
