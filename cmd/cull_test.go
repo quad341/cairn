@@ -109,6 +109,34 @@ func TestCullEvictSharedTierProposesReviewBranchAndDoesNotDeleteDirectly(t *test
 	assert.Contains(t, lines[0], branch)
 }
 
+// TestCullEvictReviewerResolutionFailureCommitsNothing is crn-rott9.1's
+// regression guard for requestCullReview: resolveReviewer must run BEFORE
+// EvictToReviewBranch, so a resolution failure leaves no cull/<id> branch at
+// all -- true fail-closed, not proposed-but-unnotified. role: is used to
+// force the failure since rig: no longer depends on $GC_RIG post-crn-rott9.1.
+func TestCullEvictReviewerResolutionFailureCommitsNothing(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	e := seedCommittedEntry(t, store, []string{"role:reviewer"})
+	headBefore := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
+
+	resetCullEvictFlags(t)
+	t.Cleanup(func() { resetCullEvictFlags(t) })
+	stubGCWithRig("")(t)
+	rootCmd.SetArgs([]string{"cull-evict", "--store", store, e.ID})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	err := rootCmd.Execute()
+	require.Error(t, err, "an unresolvable reviewer must fail cull-evict")
+	assert.Contains(t, err.Error(), "GC_RIG")
+
+	headAfter := strings.TrimSpace(gitOutput(t, store, "rev-parse", "HEAD"))
+	assert.Equal(t, headBefore, headAfter, "an unresolvable reviewer must leave the store's HEAD untouched")
+
+	branches := gitOutput(t, store, "branch", "--list", "cull/*")
+	assert.Empty(t, strings.TrimSpace(branches), "an unresolvable reviewer must leave no cull/<id> review branch at all")
+}
+
 func TestCullEvictUnknownIDReturnsClearError(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)

@@ -206,7 +206,10 @@ func TestStaleBranchesEscalatesOnlyAfterPriorNotify(t *testing.T) {
 func TestStaleBranchesEscalateReviewerResolutionFailureReportsError(t *testing.T) {
 	store := t.TempDir()
 	gitInit(t, store)
-	e := commitReviewBranchAt(t, store, "escalate-topic", []string{"rig:web"}, time.Now().Add(-3*time.Hour))
+	// role:, not rig: -- crn-rott9.1 fixed rig tier to resolve from the
+	// entry's own declared rig value instead of $GC_RIG, so only role tier can
+	// still be forced to fail resolution via stubGCWithRig("") below.
+	e := commitReviewBranchAt(t, store, "escalate-topic", []string{"role:reviewer"}, time.Now().Add(-3*time.Hour))
 	stateFile := filepath.Join(t.TempDir(), "state.json")
 
 	first, err := runStaleBranches(t, store, stubGCWithRig("myrig"),
@@ -214,7 +217,7 @@ func TestStaleBranchesEscalateReviewerResolutionFailureReportsError(t *testing.T
 	require.NoError(t, err)
 	require.Len(t, first, 1)
 	require.Equal(t, "notify", first[0].Status, "precondition: first pass must downgrade to notify, not escalate")
-	require.Equal(t, "myrig/architect", first[0].Reviewer, "precondition: reviewer must resolve successfully on the first pass")
+	require.Equal(t, "myrig/reviewer", first[0].Reviewer, "precondition: reviewer must resolve successfully on the first pass")
 	require.True(t, first[0].Notified)
 
 	second, err := runStaleBranches(t, store, stubGCWithRig(""),

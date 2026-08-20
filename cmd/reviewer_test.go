@@ -24,15 +24,19 @@ func reviewerFlagCmd(t *testing.T, reviewerFlag string) *cobra.Command {
 }
 
 // TestDefaultReviewerPerTier covers crn-419.4 AC3's three computed defaults.
-// Only the "rig" case was previously exercised, indirectly, via the CLI
-// test's fixed --scope rig:web (crn-kbf).
+// The rig case is pinned against a *different* $GC_RIG ("myrig") than its
+// expected reviewer ("web/architect") deliberately: crn-rott9.1 fixed rig
+// tier to resolve from the entry's own declared rig value, not $GC_RIG, and
+// a rig case that happened to share the same string as $GC_RIG would not
+// prove that -- it would pass identically whether the fix resolves value or
+// falls through to the old $GC_RIG-based behavior.
 func TestDefaultReviewerPerTier(t *testing.T) {
 	t.Setenv("GC_RIG", "myrig")
 	cases := []struct {
 		tier, value, want string
 	}{
 		{"global", "", "mayor"},
-		{"rig", "web", "myrig/architect"},
+		{"rig", "web", "web/architect"},
 		{"role", "reviewer", "myrig/reviewer"},
 	}
 	for _, tc := range cases {
@@ -44,15 +48,44 @@ func TestDefaultReviewerPerTier(t *testing.T) {
 	}
 }
 
-func TestDefaultReviewerSharedTiersRequireGCRig(t *testing.T) {
-	for _, tier := range []string{"rig", "role"} {
-		t.Run(tier, func(t *testing.T) {
-			t.Setenv("GC_RIG", "")
-			_, err := defaultReviewer(tier, "web")
-			require.Error(t, err, "a rig/role default reviewer can't be computed without $GC_RIG")
-			assert.Contains(t, err.Error(), "GC_RIG")
-		})
-	}
+// TestDefaultReviewerRoleTierRequiresGCRig is
+// TestDefaultReviewerSharedTiersRequireGCRig narrowed to role alone
+// (crn-rott9.1): rig tier no longer depends on $GC_RIG at all, since it now
+// resolves the reviewer from the entry's own declared rig value -- storage
+// under rig:<value> is unambiguous about which rig's reviewer should see it,
+// unlike role tier, where the entry's own scope carries no rig at all and
+// $GC_RIG remains the only available signal for which rig's role-holder
+// should review.
+func TestDefaultReviewerRoleTierRequiresGCRig(t *testing.T) {
+	t.Setenv("GC_RIG", "")
+	_, err := defaultReviewer("role", "web")
+	require.Error(t, err, "a role default reviewer can't be computed without $GC_RIG")
+	assert.Contains(t, err.Error(), "GC_RIG")
+}
+
+// TestDefaultReviewerRigTierIgnoresGCRig is crn-rott9.1's core regression
+// guard: rig tier must resolve purely from the entry's own declared rig
+// value, so it succeeds even with $GC_RIG completely unset.
+func TestDefaultReviewerRigTierIgnoresGCRig(t *testing.T) {
+	t.Setenv("GC_RIG", "")
+	got, err := defaultReviewer("rig", "web")
+	require.NoError(t, err, "rig tier must not require $GC_RIG -- it resolves from the entry's own declared rig value")
+	assert.Equal(t, "web/architect", got)
+}
+
+// TestDefaultReviewerRigTierRequiresNonEmptyValue covers the edge crn-rott9.1
+// introduces: an empty rig value (a malformed "rig:" scope tag with nothing
+// after the colon) must still fail clearly rather than silently producing
+// "/architect", regardless of $GC_RIG. $GC_RIG is pinned non-empty here
+// (rather than left ambient) specifically to prove the failure comes from
+// the empty value, not a Try-$GC_RIG-first fallback -- this test binary may
+// itself be running inside a real gc rig with $GC_RIG already set (see
+// stubGC's own doc comment).
+func TestDefaultReviewerRigTierRequiresNonEmptyValue(t *testing.T) {
+	t.Setenv("GC_RIG", "myrig")
+	_, err := defaultReviewer("rig", "")
+	require.Error(t, err, "a rig default reviewer can't be computed without the entry's own declared rig value")
+	assert.Contains(t, err.Error(), "rig value")
 }
 
 func TestDefaultReviewerUnknownTier(t *testing.T) {
