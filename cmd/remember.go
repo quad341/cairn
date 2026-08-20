@@ -39,6 +39,8 @@ func init() {
 		"immediately compute and persist the anchor's fingerprint (soft-fails to stderr if it doesn't resolve)")
 	rememberCmd.Flags().Bool("force", false,
 		"create a new entry even if a recurrence match is found, recording which entry it overrides")
+	rememberCmd.Flags().String("corrects", "",
+		"id of another entry this one explicitly corrects/supersedes; `cairn get` on that id will redirect here regardless of topic")
 	rememberCmd.Flags().String("batch-file", "",
 		"path to a JSONL manifest of entries to remember in one call (see docs/knowledge-lifecycle.md); "+
 			"--topic/--scope/--title/--summary/--type/--anchor-repo/--anchor-path/--force become per-line manifest "+
@@ -122,6 +124,20 @@ var rememberCmd = &cobra.Command{
 		nudgeIfUnanchored(cmd, e)
 		nudgeIfDerivedMetadata(cmd, e)
 
+		corrects, _ := cmd.Flags().GetString("corrects")
+		var correctsLine string
+		if corrects != "" {
+			if _, err := cairn.Find(cmd.Context(), storePath(), corrects); err != nil {
+				if errors.Is(err, cairn.ErrNotFound) {
+					return emitError(cmd, classifiedErr(CategoryInvalidInput, corrects,
+						fmt.Errorf("--corrects target %q not found: %w", corrects, err)))
+				}
+				return emitError(cmd, err)
+			}
+			e.Corrects = corrects
+			correctsLine = fmt.Sprintf("corrects: %s", corrects)
+		}
+
 		matched, isRecurrence, err := recurrenceMatch(cmd, e)
 		if err != nil {
 			return emitError(cmd, err)
@@ -154,6 +170,9 @@ var rememberCmd = &cobra.Command{
 			fmt.Printf("%s\n", e.ID)
 			if overrideLine != "" {
 				fmt.Printf("%s\n", overrideLine)
+			}
+			if correctsLine != "" {
+				fmt.Printf("%s\n", correctsLine)
 			}
 		}
 
