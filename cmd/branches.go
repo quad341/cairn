@@ -151,7 +151,14 @@ func saveNotifyState(path string, state notifyState) error {
 }
 
 // evaluateBranch buckets b by age and, for a notify-status branch, resolves
-// and (unless dryRun) mails its reviewer a reminder. It also resolves (but
+// and (unless dryRun) mails its reviewer a reminder. A reviewer that cannot
+// be resolved is terminal for b on this pass in *either* bucket, so it
+// reports status "error" rather than the age bucket it came from: no mail
+// goes out and no notify state is recorded, and without a recorded notify
+// the branch can never reach escalate either. Reporting the age bucket
+// instead would read downstream as "a reminder is on its way" for a branch
+// that is in fact stuck permanently and silently (crn-w4c6 fixed this for
+// escalate; crn-pr1al for notify). It also resolves (but
 // never mails) the reviewer for an escalate-status branch -- the downstream
 // bd-bead-filing step wants to name who was already reminded and didn't
 // act, not just that nobody did.
@@ -196,9 +203,7 @@ func evaluateBranch(cmd *cobra.Command, b cairn.ReviewBranch, notifyAfter, escal
 	reviewer, err := resolveReviewer(cmd, b.Tier, b.Value)
 	if err != nil {
 		f.Error = fmt.Sprintf("resolve reviewer: %v", err)
-		if f.Status == "escalate" {
-			f.Status = "error"
-		}
+		f.Status = "error"
 		return f
 	}
 	f.Reviewer = reviewer

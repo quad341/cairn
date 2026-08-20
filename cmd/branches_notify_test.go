@@ -53,3 +53,36 @@ func TestStaleBranchesNotifyBucketDoesNotRemailUnchangedBranch(t *testing.T) {
 	assert.Equal(t, 1, readGCCallCount(t, countFile),
 		"an unchanged branch must not generate a second reminder mail")
 }
+
+// TestStaleBranchesNotifyReviewerResolutionFailureReportsError is the notify
+// half of what crn-w4c6 fixed for escalate only. A reviewer that cannot be
+// resolved is terminal for this branch on this pass in either bucket -- no
+// mail goes out and no notify state is recorded -- but evaluateBranch still
+// reported status "notify", which reads downstream as "a reminder is on its
+// way" when in fact nothing was sent and nothing ever will be: the branch
+// cannot reach escalate either, because escalate requires a prior recorded
+// notify at this tip. Reporting "error" is what makes that visible.
+//
+// Role tier is used deliberately: it is the tier that resolves through
+// $GC_RIG, and crn-rott9.1 leaves that so while moving rig tier onto the
+// entry's own declared rig -- so this test stays meaningful either side of
+// that change.
+func TestStaleBranchesNotifyReviewerResolutionFailureReportsError(t *testing.T) {
+	store := t.TempDir()
+	gitInit(t, store)
+	e := commitReviewBranchAt(t, store, "notify-resolve-fail", []string{"role:reviewer"}, time.Now().Add(-3*time.Hour))
+
+	findings, err := runStaleBranches(t, store, stubGCWithRig(""),
+		"--notify-after", "1h", "--escalate-after", "1000h",
+		"--state-file", filepath.Join(t.TempDir(), "state.json"))
+	require.NoError(t, err, "one branch's reviewer-resolution failure must not fail the whole command")
+	require.Len(t, findings, 1)
+
+	f := findings[0]
+	assert.Equal(t, e.ID, f.EntryID)
+	assert.Equal(t, "error", f.Status,
+		`a notify-bucket finding whose reviewer resolution fails must report status "error", not "notify" -- nothing was mailed and no notify state was recorded, so it cannot progress to escalate either`)
+	assert.Empty(t, f.Reviewer, "no reviewer was actually resolved")
+	assert.False(t, f.Notified)
+	assert.NotEmpty(t, f.Error, "the real resolveReviewer diagnostic must be surfaced")
+}
