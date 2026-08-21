@@ -98,20 +98,24 @@ func TestListReviewBranchesDerivesTierFromEntryPath(t *testing.T) {
 	assert.True(t, strings.HasPrefix(role.EntryPath, "role/reviewer/"))
 }
 
-// TestListReviewBranchesErrorsOnPrivateTierBranch documents the other side
-// of tierFromEntryPath's contract: ListReviewMergeBranches has no tier
+// TestListReviewBranchesReportsPrivateTierBranchAsError documents the other
+// side of tierFromEntryPath's contract: ListReviewMergeBranches has no tier
 // filter of its own, so a remember/* branch that (unusually) changes a file
-// under agent/ surfaces as an explicit error rather than being silently
-// skipped or reported as a fourth tier. In production cmd/remember.go never
-// routes a private-tier entry through CommitToReviewBranch, but the
-// guarantee lives here, not there.
-func TestListReviewBranchesErrorsOnPrivateTierBranch(t *testing.T) {
+// under agent/ is reported back via its own Error field rather than being
+// silently skipped or reported as a fourth tier -- and, per ga-1jk7la, that
+// one branch's problem does not abort the whole call or hide any other
+// pending branch. In production cmd/remember.go never routes a
+// private-tier entry through CommitToReviewBranch, but the guarantee lives
+// here, not there.
+func TestListReviewBranchesReportsPrivateTierBranchAsError(t *testing.T) {
 	store := reviewStore(t)
-	fixtureBranch(t, store, "private-topic", []string{"agent:bot"}, "a private note")
+	privateBranch, _ := fixtureBranch(t, store, "private-topic", []string{"agent:bot"}, "a private note")
 
-	_, err := ListReviewMergeBranches(t.Context(), store)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "private agent/ tier")
+	branches, err := ListReviewMergeBranches(t.Context(), store)
+	require.NoError(t, err)
+	require.Len(t, branches, 1)
+	assert.Equal(t, privateBranch, branches[0].Name)
+	assert.Contains(t, branches[0].Error, "private agent/ tier")
 }
 
 // TestListReviewMergeBranchesExcludesAlreadyMergedBranch covers crn-12ubp:
@@ -201,9 +205,14 @@ func TestListReviewMergeBranchesToleratesMalformedBranch(t *testing.T) {
 	assert.Equal(t, "rig", valid.Tier)
 	assert.Equal(t, "web", valid.TierValue)
 	assert.True(t, strings.HasPrefix(valid.EntryPath, "rig/web/"))
+	assert.Empty(t, valid.Error, "a valid branch must carry no error")
 
-	_, ok := byName[malformedBranch]
+	malformed, ok := byName[malformedBranch]
 	require.True(t, ok, "the malformed branch must still be reported, not silently dropped")
+	assert.Empty(t, malformed.Tier)
+	assert.Empty(t, malformed.TierValue)
+	assert.Empty(t, malformed.EntryPath)
+	assert.Contains(t, malformed.Error, "unrecognized top-level scope dir")
 }
 
 func TestTierFromEntryPath(t *testing.T) {

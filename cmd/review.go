@@ -40,6 +40,14 @@ var reviewListCmd = &cobra.Command{
 			return err
 		}
 		for _, b := range branches {
+			// A branch ListReviewMergeBranches couldn't resolve (ga-1jk7la)
+			// is reported so its owner can find and fix it, but it never
+			// gets to hide every other pending branch -- always shown,
+			// regardless of --tier, since its own tier is unknown.
+			if b.Error != "" {
+				fmt.Printf("%s\tmalformed: %s\n", b.Name, b.Error)
+				continue
+			}
 			if tier != "" && b.Tier != tier {
 				continue
 			}

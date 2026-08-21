@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -116,6 +118,35 @@ func TestReviewListFiltersByTier(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, stdout, rigBranch)
 	assert.NotContains(t, stdout, roleBranch)
+}
+
+// TestReviewListReportsMalformedBranchAndStillListsValidOnes covers
+// ga-1jk7la at the CLI layer: a remember/* branch whose changed file falls
+// outside every recognized scope dir must not make `cairn review list`
+// fail outright -- it must report that one branch as malformed and still
+// print every other pending branch normally.
+func TestReviewListReportsMalformedBranchAndStillListsValidOnes(t *testing.T) {
+	store := reviewCLIStore(t)
+	validBranch, e := seedReviewBranch(t, store, "topic-valid", []string{"rig:web"}, "body")
+
+	def := strings.TrimSpace(gitOutput(t, store, "symbolic-ref", "--short", "HEAD"))
+	const malformedBranch = "remember/bad-a1b2c3d4"
+	gitOutput(t, store, "checkout", "-q", "-b", malformedBranch)
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "cmd", "gc"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "cmd", "gc", "dispatch_control_ready_test.go"), []byte("not an entry"), 0o600))
+	gitCommitAll(t, store, "malformed entry outside any scope dir")
+	gitOutput(t, store, "checkout", "-q", def)
+
+	var err error
+	stdout := captureStdout(t, func() {
+		err = runReviewCmd(t, "review", "list", "--store", store)
+	})
+	require.NoError(t, err, "one malformed branch must not abort 'cairn review list'")
+	assert.Contains(t, stdout, validBranch)
+	assert.Contains(t, stdout, "tier=rig")
+	assert.Contains(t, stdout, e.ID)
+	assert.Contains(t, stdout, malformedBranch+"\tmalformed: ")
+	assert.Contains(t, stdout, "unrecognized top-level scope dir")
 }
 
 func TestReviewShowPrintsDiffAndEntryFields(t *testing.T) {
