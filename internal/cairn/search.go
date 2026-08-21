@@ -682,7 +682,7 @@ func buildFTSQuery(terms []string) string {
 // forcing one rebuild is what makes search work on those stores without
 // requiring an operator to run `cairn reindex` by hand.
 func ensureSearchIndex(ctx context.Context, store string) error {
-	if err := ensureFresh(ctx, store); err != nil {
+	if err := ensureFreshBestEffort(ctx, store); err != nil {
 		return err
 	}
 	present, err := searchIndexPresent(ctx, store)

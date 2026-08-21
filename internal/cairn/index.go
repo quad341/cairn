@@ -559,6 +559,19 @@ func ensureFresh(ctx context.Context, store string) error {
 	return ensureFreshWith(ctx, store, Reindex)
 }
 
+// ensureFreshBestEffort degrades gracefully: on the same bounded overrun,
+// it swallows DeadlineExceeded and returns nil, letting the caller proceed
+// against the lagging index that triggered the overrun. budget_exceeded is
+// already logged by ensureFreshWith's existing obslog.IndexDriftFields
+// (internal/obslog) -- no new telemetry needed.
+func ensureFreshBestEffort(ctx context.Context, store string) error {
+	err := ensureFreshWith(ctx, store, Reindex)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	return err
+}
+
 // selfHealReindexTimeout bounds ensureFreshWith's synchronous self-heal
 // reindex when the index merely lags HEAD (staleBehindHEAD): without it, a
 // writer holding the entries lock forces the caller through retryOnBusy's
