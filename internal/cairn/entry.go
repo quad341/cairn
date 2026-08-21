@@ -884,7 +884,7 @@ func IterEntriesTolerant(ctx context.Context, store string) ([]*Entry, []ParseFa
 // (crn-6az.6.1.3). On a hit it increments the index's hit_count and stamps
 // last_recalled_at (FR-4, FR-08); a miss has no side effect.
 func Find(ctx context.Context, store, id string) (*Entry, error) {
-	if err := ensureFresh(ctx, store); err != nil {
+	if err := ensureFreshBestEffort(ctx, store); err != nil {
 		return nil, err
 	}
 	db, err := openDB(store)
@@ -902,7 +902,12 @@ func Find(ctx context.Context, store, id string) (*Entry, error) {
 		// reindex needlessly" contract for every caller, force one reindex
 		// here before concluding id genuinely doesn't exist, so an entry
 		// created since the last reindex is never reported missing.
-		if _, rerr := Reindex(ctx, store); rerr != nil {
+		reindexCtx, cancel := context.WithTimeout(ctx, selfHealReindexTimeout)
+		defer cancel()
+		if _, rerr := Reindex(reindexCtx, store); rerr != nil {
+			if errors.Is(rerr, context.DeadlineExceeded) {
+				return nil, ErrNotFound
+			}
 			return nil, rerr
 		}
 		bodyPath, err = findBodyPath(ctx, db, id)
@@ -1034,7 +1039,7 @@ func storeRelPath(store, p string) (string, error) {
 // transitively is out of this bead's scope. When more than one entry
 // claims to correct the same id, the most recently created one wins.
 func FindCorrection(ctx context.Context, store, id string) (*Entry, error) {
-	if err := ensureFresh(ctx, store); err != nil {
+	if err := ensureFreshBestEffort(ctx, store); err != nil {
 		return nil, err
 	}
 	db, err := openDB(store)
@@ -1489,7 +1494,7 @@ func scopeSuperset(super, sub []string) bool {
 // marginal query cost) -- not a precedent for extending this list on
 // request; any future addition needs the same analysis.
 func Status(ctx context.Context, store string) ([]*Entry, error) {
-	if err := ensureFresh(ctx, store); err != nil {
+	if err := ensureFreshBestEffort(ctx, store); err != nil {
 		return nil, err
 	}
 	db, err := openDB(store)

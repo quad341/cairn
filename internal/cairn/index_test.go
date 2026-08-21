@@ -1091,6 +1091,159 @@ func TestEnsureFreshBoundsSelfHealReindexWhenStaleBehindHEAD(t *testing.T) {
 		"the bounded budget must still give the reindex a real window rather than failing near-instantly (got %s)", elapsed)
 }
 
+// TestFindReturnsLaggingIndexWhenBoundedSelfHealOverruns pins crn-pz5l9:
+// when the bounded self-heal reindex overruns for a best-effort caller,
+// Find must serve the lagging (but valid) index instead of propagating
+// DeadlineExceeded -- the usable fallback ensureFreshBestEffort exists for.
+func TestFindReturnsLaggingIndexWhenBoundedSelfHealOverruns(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	// Move HEAD past the watermark without reindexing -- the
+	// stale-behind-HEAD case ensureFreshBestEffort bounds.
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "b.md"),
+		[]byte("+++\nid = \"b\"\ntitle = \"B\"\n+++\nbody\n"), 0o600))
+	gitCommitAll(t, store, "add b")
+
+	db, err := sql.Open("sqlite", IndexPath(store)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO entries (id,title,body_path) VALUES ('lock','lock','lock')`)
+	require.NoError(t, err)
+
+	const lockHold = 15 * time.Second
+	go func() {
+		time.Sleep(lockHold)
+		_ = tx.Rollback()
+	}()
+
+	start := time.Now()
+	e, err := Find(ctx, store, "a")
+	elapsed := time.Since(start)
+
+	require.NoError(t, err, "a best-effort caller must serve the lagging index on overrun, not fail")
+	require.NotNil(t, e)
+	assert.Equal(t, "a", e.ID)
+	// No upper bound on elapsed here, unlike the sibling overrun tests: on a
+	// hit, Find's own hit_count/last_recalled_at stamp (entry.go, "Find's
+	// only write") still needs the same write lock this fixture holds, under
+	// retryOnBusy's separate and much wider budget -- so total elapsed
+	// legitimately tracks lockHold, not the ~6-11s self-heal window. That
+	// window is what's actually under test here, and it's pinned directly by
+	// TestEnsureFreshBoundsSelfHealReindexWhenStaleBehindHEAD and (without
+	// this confound, since EntryByID never reaches a write) by
+	// TestEntryByIDStillReturnsDeadlineExceededWhenBoundedSelfHealOverruns.
+	assert.GreaterOrEqualf(t, elapsed, 4*time.Second,
+		"must actually attempt the bounded reindex, not skip it (got %s)", elapsed)
+}
+
+// TestEntryByIDStillReturnsDeadlineExceededWhenBoundedSelfHealOverruns is a
+// regression guard for crn-pz5l9: EntryByID stays on strict ensureFresh --
+// the split must not soften the pre-mutation gate cull-evict, promote-mark,
+// and anchor-attach all rely on.
+func TestEntryByIDStillReturnsDeadlineExceededWhenBoundedSelfHealOverruns(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "b.md"),
+		[]byte("+++\nid = \"b\"\ntitle = \"B\"\n+++\nbody\n"), 0o600))
+	gitCommitAll(t, store, "add b")
+
+	db, err := sql.Open("sqlite", IndexPath(store)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO entries (id,title,body_path) VALUES ('lock','lock','lock')`)
+	require.NoError(t, err)
+
+	const lockHold = 15 * time.Second
+	go func() {
+		time.Sleep(lockHold)
+		_ = tx.Rollback()
+	}()
+
+	start := time.Now()
+	e, err := EntryByID(ctx, store, "a")
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "the strict mutation gate must still fail on overrun")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Nil(t, e)
+	assert.Lessf(t, elapsed, 11*time.Second,
+		"must resolve on the bounded budget (got %s)", elapsed)
+	assert.GreaterOrEqualf(t, elapsed, 4*time.Second,
+		"must actually attempt the bounded reindex (got %s)", elapsed)
+}
+
+// TestFindMissingIDBoundedUnderOverrunReturnsErrNotFound pins crn-pz5l9
+// Change 3: Find's ErrNotFound force-reindex fallback (entry.go, previously
+// unbounded) must resolve within the same ~6-11s self-heal budget and
+// report ErrNotFound, not stall for retryOnBusy's ~33s worst case.
+func TestFindMissingIDBoundedUnderOverrunReturnsErrNotFound(t *testing.T) {
+	ctx := t.Context()
+	store := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "global"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "global", "a.md"),
+		[]byte("+++\nid = \"a\"\ntitle = \"A\"\n+++\nbody\n"), 0o600))
+	gitInit(t, store)
+	gitCommitAll(t, store, "init")
+
+	_, err := Reindex(ctx, store)
+	require.NoError(t, err)
+
+	// Index matches HEAD -- unlike the two tests above, HEAD does not move
+	// again here. This isolates Find's ErrNotFound force-reindex fallback
+	// from ensureFreshBestEffort's own staleBehindHEAD bound: the outer
+	// ensureFresh check must see a fresh index and return immediately, so
+	// the only lock contention the lookup hits is inside the fallback
+	// itself.
+	db, err := sql.Open("sqlite", IndexPath(store)+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO entries (id,title,body_path) VALUES ('lock','lock','lock')`)
+	require.NoError(t, err)
+
+	const lockHold = 15 * time.Second
+	go func() {
+		time.Sleep(lockHold)
+		_ = tx.Rollback()
+	}()
+
+	start := time.Now()
+	e, err := Find(ctx, store, "nonexistent")
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotFound,
+		"an unconfirmable-within-budget miss must look like a real miss to the caller: %v", err)
+	assert.Nil(t, e)
+	assert.Lessf(t, elapsed, 11*time.Second,
+		"the force-reindex fallback must be bounded, not retryOnBusy's ~33s worst case (got %s)", elapsed)
+	assert.GreaterOrEqualf(t, elapsed, 4*time.Second,
+		"must actually attempt the bounded reindex (got %s)", elapsed)
+}
+
 // TestEnsureFreshDoesNotBoundColdStoreSelfHealReindex pins the other half of
 // crn-f0rb7: a store with no watermark row yet (a first-ever index build, not
 // a body edit that's merely raced HEAD) must NOT be subject to the new short

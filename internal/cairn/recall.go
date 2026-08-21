@@ -65,7 +65,7 @@ type entryRecallRow struct {
 // re-deriving its own and silently drifting). Like Status, it reads index
 // columns only -- no body parse, no hit_count/last_recalled_at side effect.
 func loadEntryRecallRows(ctx context.Context, store string) ([]entryRecallRow, error) {
-	if err := ensureFresh(ctx, store); err != nil {
+	if err := ensureFreshBestEffort(ctx, store); err != nil {
 		return nil, err
 	}
 	db, err := openDB(store)

@@ -45,7 +45,7 @@ func disuseReference(lastRecalledAt, createdAt string) (t time.Time, ok bool) {
 // the query below never selects verified_at or any anchor_* column, so an
 // entry's freshness state cannot leak into the disuse decision.
 func CullCandidates(ctx context.Context, store string, disuseAfter time.Duration) ([]CullCandidateFinding, error) {
-	if err := ensureFresh(ctx, store); err != nil {
+	if err := ensureFreshBestEffort(ctx, store); err != nil {
 		return nil, err
 	}
 	db, err := openDB(store)
