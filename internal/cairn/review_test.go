@@ -98,20 +98,24 @@ func TestListReviewBranchesDerivesTierFromEntryPath(t *testing.T) {
 	assert.True(t, strings.HasPrefix(role.EntryPath, "role/reviewer/"))
 }
 
-// TestListReviewBranchesErrorsOnPrivateTierBranch documents the other side
-// of tierFromEntryPath's contract: ListReviewMergeBranches has no tier
+// TestListReviewBranchesReportsPrivateTierBranchAsError documents the other
+// side of tierFromEntryPath's contract: ListReviewMergeBranches has no tier
 // filter of its own, so a remember/* branch that (unusually) changes a file
-// under agent/ surfaces as an explicit error rather than being silently
-// skipped or reported as a fourth tier. In production cmd/remember.go never
-// routes a private-tier entry through CommitToReviewBranch, but the
-// guarantee lives here, not there.
-func TestListReviewBranchesErrorsOnPrivateTierBranch(t *testing.T) {
+// under agent/ is reported back via its own Error field rather than being
+// silently skipped or reported as a fourth tier -- and, per ga-1jk7la, that
+// one branch's problem does not abort the whole call or hide any other
+// pending branch. In production cmd/remember.go never routes a
+// private-tier entry through CommitToReviewBranch, but the guarantee lives
+// here, not there.
+func TestListReviewBranchesReportsPrivateTierBranchAsError(t *testing.T) {
 	store := reviewStore(t)
-	fixtureBranch(t, store, "private-topic", []string{"agent:bot"}, "a private note")
+	privateBranch, _ := fixtureBranch(t, store, "private-topic", []string{"agent:bot"}, "a private note")
 
-	_, err := ListReviewMergeBranches(t.Context(), store)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "private agent/ tier")
+	branches, err := ListReviewMergeBranches(t.Context(), store)
+	require.NoError(t, err)
+	require.Len(t, branches, 1)
+	assert.Equal(t, privateBranch, branches[0].Name)
+	assert.Contains(t, branches[0].Error, "private agent/ tier")
 }
 
 // TestListReviewMergeBranchesExcludesAlreadyMergedBranch covers crn-12ubp:
@@ -154,6 +158,61 @@ func TestListReviewMergeBranchesExcludesAlreadyMergedBranch(t *testing.T) {
 	}
 	assert.NotContains(t, names, mergedBranch, "a branch already merged into %s must not be listed as pending", def)
 	assert.Contains(t, names, pendingBranch, "an unmerged branch must still be listed as pending")
+}
+
+// TestListReviewMergeBranchesToleratesMalformedBranch covers ga-1jk7la: a
+// single remember/* branch whose changed file sits outside every
+// recognized top-level scope dir -- a shape NewEntry/Create can never
+// produce (Create only ever writes under one of scopeDirs), but one that
+// has turned up in a real store as an out-of-band or historical branch --
+// must not blank out visibility into every other pending branch. Before
+// this fix, tierFromEntryPath's error on that one branch propagated
+// straight out of ListReviewMergeBranches as a hard top-level error, so a
+// reviewer got nothing back for the whole store, not just the malformed
+// entry.
+func TestListReviewMergeBranchesToleratesMalformedBranch(t *testing.T) {
+	store := reviewStore(t)
+	validBranch, _ := fixtureBranch(t, store, "valid-topic", []string{"rig:web"}, "a valid note")
+
+	def, err := DefaultBranch(t.Context(), store)
+	require.NoError(t, err)
+
+	// Construct a remember/* branch that changes a file outside every
+	// recognized top-level scope dir -- mirroring the real-world repro's
+	// own "cmd/..." path -- via the same raw-git recipe
+	// TestChangedEntryFileErrorsWhenBranchTouchesMoreThanOneFile uses,
+	// since NewEntry/Create validates paths and could never produce this
+	// shape through the normal remember flow.
+	const malformedBranch = "remember/bad-a1b2c3d4"
+	_, err = gitRun(t.Context(), store, "checkout", "-q", "-b", malformedBranch)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(store, "cmd", "gc"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(store, "cmd", "gc", "dispatch_control_ready_test.go"), []byte("not an entry"), 0o600))
+	gitCommitAll(t, store, "malformed entry outside any scope dir")
+	_, err = gitRun(t.Context(), store, "checkout", "-q", def)
+	require.NoError(t, err)
+
+	branches, err := ListReviewMergeBranches(t.Context(), store)
+	require.NoError(t, err, "one malformed branch must not abort the whole list")
+	require.Len(t, branches, 2)
+
+	byName := make(map[string]ReviewMergeBranch, len(branches))
+	for _, b := range branches {
+		byName[b.Name] = b
+	}
+
+	valid := byName[validBranch]
+	assert.Equal(t, "rig", valid.Tier)
+	assert.Equal(t, "web", valid.TierValue)
+	assert.True(t, strings.HasPrefix(valid.EntryPath, "rig/web/"))
+	assert.Empty(t, valid.Error, "a valid branch must carry no error")
+
+	malformed, ok := byName[malformedBranch]
+	require.True(t, ok, "the malformed branch must still be reported, not silently dropped")
+	assert.Empty(t, malformed.Tier)
+	assert.Empty(t, malformed.TierValue)
+	assert.Empty(t, malformed.EntryPath)
+	assert.Contains(t, malformed.Error, "unrecognized top-level scope dir")
 }
 
 func TestTierFromEntryPath(t *testing.T) {

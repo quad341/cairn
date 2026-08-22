@@ -26,6 +26,14 @@ type ReviewMergeBranch struct {
 	Tier      string // "global" | "rig" | "role" -- never "agent" (crn-xw3 FR-8: agent/ is private and never reaches a review branch)
 	TierValue string // e.g. "web" for a rig:web entry; "" for global
 	EntryPath string // the changed entry file's path, relative to store
+
+	// Error is set, and Tier/TierValue/EntryPath left zero, when this
+	// branch's own merge status or changed-file tier could not be resolved
+	// -- one malformed or unusual branch must not blank out visibility into
+	// every other one (ga-1jk7la), mirroring branches.go's
+	// ReviewBranch.Error: the same reporting-not-erroring stance for the
+	// same remember/* ref namespace.
+	Error string
 }
 
 // DefaultBranch resolves the store's currently checked-out branch -- the
@@ -43,6 +51,14 @@ func DefaultBranch(ctx context.Context, store string) (string, error) {
 // derives its tier from the single entry file it changes -- never from the
 // branch name -- per crn-xw3 AF1: the branch is only ever named after the
 // entry's random id (reviewBranchName), which carries no tier information.
+//
+// A branch whose own merge status or tier cannot be resolved is reported
+// via its ReviewMergeBranch.Error field, not a returned error: one
+// malformed or unusual branch (e.g. one whose changed file falls outside
+// every recognized scope dir) must not blank out every other pending
+// branch for every reviewer/tier/identity (ga-1jk7la). The returned error
+// stays reserved for a failure that makes the whole listing impossible --
+// resolving the default branch, or the for-each-ref call itself.
 func ListReviewMergeBranches(ctx context.Context, store string) ([]ReviewMergeBranch, error) {
 	def, err := DefaultBranch(ctx, store)
 	if err != nil {
@@ -61,18 +77,21 @@ func ListReviewMergeBranches(ctx context.Context, store string) ([]ReviewMergeBr
 		}
 		merged, err := isMergedInto(ctx, store, name, def)
 		if err != nil {
-			return nil, fmt.Errorf("check merge status of %q: %w", name, err)
+			branches = append(branches, ReviewMergeBranch{Name: name, Error: fmt.Sprintf("check merge status of %q: %v", name, err)})
+			continue
 		}
 		if merged {
 			continue // already merged into def -- not awaiting review, regardless of whether the branch was deleted
 		}
 		relPath, err := changedEntryFile(ctx, store, def, name)
 		if err != nil {
-			return nil, err
+			branches = append(branches, ReviewMergeBranch{Name: name, Error: err.Error()})
+			continue
 		}
 		tier, value, err := tierFromEntryPath(relPath)
 		if err != nil {
-			return nil, fmt.Errorf("branch %q: %w", name, err)
+			branches = append(branches, ReviewMergeBranch{Name: name, Error: fmt.Sprintf("branch %q: %v", name, err)})
+			continue
 		}
 		branches = append(branches, ReviewMergeBranch{Name: name, Tier: tier, TierValue: value, EntryPath: relPath})
 	}
