@@ -22,7 +22,11 @@ type primeOutput struct {
 	UnknownCount int                `json:"unknown_count"`
 	Triggers     []primeTrigger     `json:"triggers"`
 	TopicCounts  []cairn.TopicCount `json:"topic_counts"`
-	Warnings     []string           `json:"warnings"`
+	// TopicCountsTruncated reports topic keys the byte budget kept out of
+	// TopicCounts (crn-s3749). Non-zero means topic_counts is PARTIAL --
+	// total_visible and the freshness counts still cover everything.
+	TopicCountsTruncated int      `json:"topic_counts_truncated"`
+	Warnings             []string `json:"warnings"`
 }
 
 type primeTrigger struct {
@@ -54,7 +58,8 @@ func projectPrime(result cairn.PrimeResult) primeOutput {
 	return primeOutput{
 		Instruction: primeInstruction, TotalVisible: result.TotalVisible,
 		FreshCount: result.FreshCount, StaleCount: result.StaleCount, UnknownCount: result.UnknownCount,
-		Triggers: triggers, TopicCounts: nonNil(result.TopicCounts), Warnings: nonNil(warnings),
+		Triggers: triggers, TopicCounts: nonNil(result.TopicCounts),
+		TopicCountsTruncated: result.TopicCountsTruncated, Warnings: nonNil(warnings),
 	}
 }
 
