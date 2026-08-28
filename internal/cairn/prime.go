@@ -115,25 +115,7 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 		}
 	}
 
-	ordered := make([]*Entry, len(visible))
-	copy(ordered, visible)
-	explorationBand := explorationBandIDs(ordered, explorationSlots)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		a, b := ordered[i], ordered[j]
-		if aBand, bBand := explorationBandRank(a, explorationBand), explorationBandRank(b, explorationBand); aBand != bBand {
-			return aBand < bBand
-		}
-		if a.HitCount != b.HitCount {
-			return a.HitCount > b.HitCount
-		}
-		if a.CreatedAt != b.CreatedAt {
-			// CreatedAt is stamped with time.RFC3339 (see remember.go);
-			// lexicographic order matches chronological order for that
-			// format, so no time parsing is needed here.
-			return a.CreatedAt > b.CreatedAt
-		}
-		return a.ID < b.ID
-	})
+	ordered := orderByPriority(visible)
 
 	result := PrimeResult{
 		Store:        store,
@@ -144,12 +126,7 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 	}
 
 	budget := &freshnessBudget{remaining: maxFreshnessChecksPerPrime}
-	// The index reserve is carved OUT of budgetBytes before itemizing, not
-	// added on top of it -- otherwise items could spend the whole budget and
-	// the reserve would push the total over. Items still get first claim on
-	// everything above the reserve, and anything they leave unspent flows back
-	// to the index below.
-	itemBudget := budgetBytes - budgetBytes/indexReserveDivisor
+	itemBudget := itemBudgetFor(budgetBytes)
 	usedBytes := 0
 	truncating := false
 	for _, e := range ordered {
@@ -198,27 +175,70 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 	result.ChecksCapped = budget.capped
 	result.TruncatedCount = result.TotalVisible - len(result.Items)
 
-	// The index enumeration gets whatever the items did not spend, plus a
-	// reserved floor so a store with many entries cannot starve the topic map
-	// to nothing -- the same spirit as the "always itemize at least one entry"
-	// guard above. Items keep first claim because they are the ranked,
-	// high-salience payload; the index is for routing.
-	allTopics := topicCounts(visible)
-	// Whatever items did not spend, clamped at zero: the always-itemize-one
-	// guard above can push usedBytes past itemBudget on a tiny budget, and the
-	// index must not then be handed a negative allowance.
-	indexAllowance := budgetBytes - usedBytes
-	if indexAllowance < 0 {
-		indexAllowance = 0
-	}
-	result.TopicCounts, result.TopicCountsTruncated = boundTopicCounts(allTopics, indexAllowance)
-	if result.TopicCountsTruncated > 0 {
-		result.Warnings = append(result.Warnings, fmt.Sprintf(
-			"topic index truncated by the byte budget: %d of %d topic keys not listed (aggregate counts still cover all %d entries)",
-			result.TopicCountsTruncated, len(allTopics), result.TotalVisible))
-	}
+	applyIndexBudget(&result, visible, budgetBytes-usedBytes)
 
 	return result, nil
+}
+
+// applyIndexBudget fills in the topic index from whatever the items left
+// unspent, and records what the cap dropped. Items keep first claim because
+// they are the ranked, high-salience payload; the index is for routing.
+//
+// Split out of Prime rather than inlined so Prime stays under the cyclomatic
+// complexity limit, and so the "report what you dropped" half sits next to the
+// truncation that makes it necessary.
+func applyIndexBudget(result *PrimeResult, visible []*Entry, allowance int) {
+	// Clamp at zero: the always-itemize-one guard in Prime can push usedBytes
+	// past itemBudget on a tiny budget, and the index must not then be handed
+	// a negative allowance.
+	if allowance < 0 {
+		allowance = 0
+	}
+	allTopics := topicCounts(visible)
+	result.TopicCounts, result.TopicCountsTruncated = boundTopicCounts(allTopics, allowance)
+	if result.TopicCountsTruncated == 0 {
+		return
+	}
+	result.Warnings = append(result.Warnings, fmt.Sprintf(
+		"topic index truncated by the byte budget: %d of %d topic keys not listed (aggregate counts still cover all %d entries)",
+		result.TopicCountsTruncated, len(allTopics), result.TotalVisible))
+}
+
+// orderByPriority returns visible in the order Items should be itemized: the
+// exploration band first, then most-hit, then newest, then ID as a deterministic
+// tiebreak. Split out of Prime to keep it inside the funlen limit; the ordering
+// is load-bearing because byte-budget truncation walks this slice in order and
+// stops at the first entry that does not fit.
+func orderByPriority(visible []*Entry) []*Entry {
+	ordered := make([]*Entry, len(visible))
+	copy(ordered, visible)
+	explorationBand := explorationBandIDs(ordered, explorationSlots)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if aBand, bBand := explorationBandRank(a, explorationBand), explorationBandRank(b, explorationBand); aBand != bBand {
+			return aBand < bBand
+		}
+		if a.HitCount != b.HitCount {
+			return a.HitCount > b.HitCount
+		}
+		if a.CreatedAt != b.CreatedAt {
+			// CreatedAt is stamped with time.RFC3339 (see remember.go);
+			// lexicographic order matches chronological order for that
+			// format, so no time parsing is needed here.
+			return a.CreatedAt > b.CreatedAt
+		}
+		return a.ID < b.ID
+	})
+	return ordered
+}
+
+// itemBudgetFor carves the index reserve OUT of budgetBytes before itemizing,
+// rather than adding it on top -- otherwise Items could spend the whole budget
+// and the reserve would push the total over, which is crn-s3749 in a different
+// place. Items keep first claim on everything above the reserve, and anything
+// they leave unspent flows back to the index (see applyIndexBudget).
+func itemBudgetFor(budgetBytes int) int {
+	return budgetBytes - budgetBytes/indexReserveDivisor
 }
 
 // indexReserveDivisor sets the share of budgetBytes withheld from Items so the

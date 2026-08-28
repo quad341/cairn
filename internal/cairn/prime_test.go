@@ -503,13 +503,17 @@ func topicCountsByteCost(tcs []TopicCount) int {
 	return total
 }
 
-// seedTopics writes n entries each carrying its own distinct topic_key, which
+// seededTopics is how many single-topic entries seedTopics writes: enough that
+// the index view dominates the payload the way it does on a real store.
+const seededTopics = 200
+
+// seedTopics writes seededTopics entries each carrying its own distinct topic_key, which
 // is the shape that makes TopicCounts grow: in the real store 277 of 278 topic
 // keys held exactly one entry, so the index is the key list rather than an
 // aggregation.
-func seedTopics(t *testing.T, dir string, n int) {
+func seedTopics(t *testing.T, dir string) {
 	t.Helper()
-	for i := 0; i < n; i++ {
+	for i := range seededTopics {
 		writeFile(t, dir, fmt.Sprintf("global/e%03d.md", i),
 			fmt.Sprintf("+++\nid = \"e%03d\"\ntitle = \"entry %03d\"\ntopic_key = \"topic-%03d\"\nscope = []\n+++\nx\n", i, i, i))
 	}
@@ -522,7 +526,7 @@ func seedTopics(t *testing.T, dir string, n int) {
 // 88.2% of it TopicCounts. The budget must bound the whole itemized payload.
 func TestPrimeBoundsTotalPayloadNotJustItems(t *testing.T) {
 	dir := t.TempDir()
-	seedTopics(t, dir, 200)
+	seedTopics(t, dir)
 
 	const budget = 2048
 	result, err := Prime(t.Context(), dir, nil, budget)
@@ -534,7 +538,7 @@ func TestPrimeBoundsTotalPayloadNotJustItems(t *testing.T) {
 	}
 	topicBytes := topicCountsByteCost(result.TopicCounts)
 
-	require.Equal(t, 200, result.TotalVisible,
+	require.Equal(t, seededTopics, result.TotalVisible,
 		"precondition: every seeded entry is visible, so the index view has something to bound")
 	assert.LessOrEqual(t, itemBytes+topicBytes, budget,
 		"the byte budget must bound the TOTAL itemized payload (items + topic counts), not items alone")
@@ -546,14 +550,14 @@ func TestPrimeBoundsTotalPayloadNotJustItems(t *testing.T) {
 // false-success shape the store already warns about elsewhere.
 func TestPrimeReportsOmittedTopicsRatherThanTruncatingSilently(t *testing.T) {
 	dir := t.TempDir()
-	seedTopics(t, dir, 200)
+	seedTopics(t, dir)
 
 	result, err := Prime(t.Context(), dir, nil, 2048)
 	require.NoError(t, err)
 
-	require.Less(t, len(result.TopicCounts), 200,
+	require.Less(t, len(result.TopicCounts), seededTopics,
 		"precondition: this budget must actually drop topics from the index")
-	assert.Equal(t, 200-len(result.TopicCounts), result.TopicCountsTruncated,
+	assert.Equal(t, seededTopics-len(result.TopicCounts), result.TopicCountsTruncated,
 		"every topic dropped from the index must be counted in TopicCountsTruncated")
 	assert.Contains(t, strings.Join(result.Warnings, "\n"), "topic",
 		"a truncated index must say so in Warnings, not just in a field a caller might not read")
@@ -565,17 +569,17 @@ func TestPrimeReportsOmittedTopicsRatherThanTruncatingSilently(t *testing.T) {
 // carry information a per-entry list does not, so they must survive.
 func TestPrimeIndexKeepsRealAggregationsWhenTruncating(t *testing.T) {
 	dir := t.TempDir()
-	seedTopics(t, dir, 200)
+	seedTopics(t, dir)
 	// "zzz-shared" sorts last by key and holds 3 entries. Under the old
 	// key-ascending order it would be dropped first; it must now survive.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		writeFile(t, dir, fmt.Sprintf("global/shared%d.md", i),
 			fmt.Sprintf("+++\nid = \"shared%d\"\ntitle = \"shared %d\"\ntopic_key = \"zzz-shared\"\nscope = []\n+++\nx\n", i, i))
 	}
 
 	result, err := Prime(t.Context(), dir, nil, 2048)
 	require.NoError(t, err)
-	require.Less(t, len(result.TopicCounts), 201, "precondition: the index must be truncated")
+	require.Less(t, len(result.TopicCounts), seededTopics+1, "precondition: the index must be truncated")
 
 	var shared *TopicCount
 	for i := range result.TopicCounts {
@@ -594,14 +598,14 @@ func TestPrimeIndexKeepsRealAggregationsWhenTruncating(t *testing.T) {
 // overrun into an undercount.
 func TestPrimeAggregateCountsStillCoverEverythingWhenIndexTruncates(t *testing.T) {
 	dir := t.TempDir()
-	seedTopics(t, dir, 200)
+	seedTopics(t, dir)
 
 	result, err := Prime(t.Context(), dir, nil, 2048)
 	require.NoError(t, err)
 
-	require.Less(t, len(result.TopicCounts), 200, "precondition: the index must be truncated")
-	assert.Equal(t, 200, result.TotalVisible,
+	require.Less(t, len(result.TopicCounts), seededTopics, "precondition: the index must be truncated")
+	assert.Equal(t, seededTopics, result.TotalVisible,
 		"TotalVisible must still cover the whole visible set even when the index enumeration is capped")
-	assert.Equal(t, 200, result.FreshCount+result.StaleCount+result.UnknownCount,
+	assert.Equal(t, seededTopics, result.FreshCount+result.StaleCount+result.UnknownCount,
 		"the aggregate freshness counts must still sum to the whole visible set")
 }
