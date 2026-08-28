@@ -1,6 +1,8 @@
 package cairn
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,16 +390,33 @@ func TestPrimeIndexBreakdownIndependentOfByteBudget(t *testing.T) {
 	writeFile(t, dir, "global/a1.md", "+++\nid = \"a1\"\ntitle = \"a1\"\ntopic_key = \"topic-a\"\nscope = []\n+++\nx\n")
 	writeFile(t, dir, "global/b1.md", "+++\nid = \"b1\"\ntitle = \"b1\"\ntopic_key = \"topic-b\"\nscope = []\n+++\nx\n")
 
+	// AMENDED by crn-s3749. This test used to assert the breakdown listed
+	// every topic even at budget=1. That guarantee was the bug: the
+	// enumeration was exempt from the budget, so it grew without limit (88.2%
+	// of a payload measured 2.5x over budget on the mayor's live store).
+	//
+	// What survives is the half that was always right, and is what FR-1/NFR-2
+	// actually needed: the index view's cost is independent of ENTRY CONTENT
+	// size, and its aggregate scalars still describe the whole visible set. The
+	// per-topic enumeration is now bounded like Items, and says what it dropped.
+	generous, err := Prime(t.Context(), dir, nil, testBudget)
+	require.NoError(t, err)
+	counts := map[string]int{}
+	for _, tc := range generous.TopicCounts {
+		counts[tc.TopicKey] = tc.Count
+	}
+	assert.Equal(t, 1, counts["topic-a"], "with budget to spare the breakdown must still list every topic")
+	assert.Equal(t, 1, counts["topic-b"], "with budget to spare the breakdown must still list every topic")
+	assert.Zero(t, generous.TopicCountsTruncated, "nothing should be reported dropped when everything fits")
+
 	tiny, err := Prime(t.Context(), dir, nil, 1)
 	require.NoError(t, err)
 	require.Less(t, len(tiny.Items), 2, "precondition: the tiny budget must actually truncate something")
 
-	counts := map[string]int{}
-	for _, tc := range tiny.TopicCounts {
-		counts[tc.TopicKey] = tc.Count
-	}
-	assert.Equal(t, 1, counts["topic-a"], "the topic breakdown must reflect the full visible set even when the byte budget truncates Items")
-	assert.Equal(t, 1, counts["topic-b"], "the topic breakdown must reflect the full visible set even when the byte budget truncates Items")
+	assert.Equal(t, 2, tiny.TotalVisible,
+		"the index view's SCALARS must still cover the whole visible set under any budget")
+	assert.Equal(t, 2-len(tiny.TopicCounts), tiny.TopicCountsTruncated,
+		"whatever the budget keeps out of the enumeration must be reported, not silently missing")
 }
 
 // TestPrimeTruncatesOversizedTitleAndSummaryToCap covers crn-3476 FR-3's
@@ -471,4 +490,122 @@ func TestRenderPrimeTextIncludesSummary(t *testing.T) {
 	require.NoError(t, err)
 	out := RenderPrimeText(result)
 	assert.Contains(t, out, "a distinctive summary sentence")
+}
+
+// topicCountsByteCost mirrors the production accounting for the index view so
+// these tests measure the same bytes the budget is supposed to govern.
+func topicCountsByteCost(tcs []TopicCount) int {
+	total := 0
+	for _, tc := range tcs {
+		b, _ := json.Marshal(tc)
+		total += len(b)
+	}
+	return total
+}
+
+// seededTopics is how many single-topic entries seedTopics writes: enough that
+// the index view dominates the payload the way it does on a real store.
+const seededTopics = 200
+
+// seedTopics writes seededTopics entries each carrying its own distinct topic_key, which
+// is the shape that makes TopicCounts grow: in the real store 277 of 278 topic
+// keys held exactly one entry, so the index is the key list rather than an
+// aggregation.
+func seedTopics(t *testing.T, dir string) {
+	t.Helper()
+	for i := range seededTopics {
+		writeFile(t, dir, fmt.Sprintf("global/e%03d.md", i),
+			fmt.Sprintf("+++\nid = \"e%03d\"\ntitle = \"entry %03d\"\ntopic_key = \"topic-%03d\"\nscope = []\n+++\nx\n", i, i, i))
+	}
+}
+
+// TestPrimeBoundsTotalPayloadNotJustItems is crn-s3749. budgetBytes was
+// enforced only against Items, while TopicCounts -- exempted as an "index
+// view" -- grew unbounded with the number of distinct topic keys. Measured on
+// the mayor's live store: 20,807 bytes emitted against an 8,192-byte budget,
+// 88.2% of it TopicCounts. The budget must bound the whole itemized payload.
+func TestPrimeBoundsTotalPayloadNotJustItems(t *testing.T) {
+	dir := t.TempDir()
+	seedTopics(t, dir)
+
+	const budget = 2048
+	result, err := Prime(t.Context(), dir, nil, budget)
+	require.NoError(t, err)
+
+	itemBytes := 0
+	for _, it := range result.Items {
+		itemBytes += itemByteCost(it)
+	}
+	topicBytes := topicCountsByteCost(result.TopicCounts)
+
+	require.Equal(t, seededTopics, result.TotalVisible,
+		"precondition: every seeded entry is visible, so the index view has something to bound")
+	assert.LessOrEqual(t, itemBytes+topicBytes, budget,
+		"the byte budget must bound the TOTAL itemized payload (items + topic counts), not items alone")
+}
+
+// TestPrimeReportsOmittedTopicsRatherThanTruncatingSilently pins the half that
+// makes the cap safe. A silent cap is worse than the overrun it replaces: a
+// reader cannot tell a short index from a complete one, which is the same
+// false-success shape the store already warns about elsewhere.
+func TestPrimeReportsOmittedTopicsRatherThanTruncatingSilently(t *testing.T) {
+	dir := t.TempDir()
+	seedTopics(t, dir)
+
+	result, err := Prime(t.Context(), dir, nil, 2048)
+	require.NoError(t, err)
+
+	require.Less(t, len(result.TopicCounts), seededTopics,
+		"precondition: this budget must actually drop topics from the index")
+	assert.Equal(t, seededTopics-len(result.TopicCounts), result.TopicCountsTruncated,
+		"every topic dropped from the index must be counted in TopicCountsTruncated")
+	assert.Contains(t, strings.Join(result.Warnings, "\n"), "topic",
+		"a truncated index must say so in Warnings, not just in a field a caller might not read")
+}
+
+// TestPrimeIndexKeepsRealAggregationsWhenTruncating covers the ordering the cap
+// forces us to choose. Sorted by topic_key, truncation keeps whatever sorts
+// early -- arbitrary. Topics holding more than one entry are the only rows that
+// carry information a per-entry list does not, so they must survive.
+func TestPrimeIndexKeepsRealAggregationsWhenTruncating(t *testing.T) {
+	dir := t.TempDir()
+	seedTopics(t, dir)
+	// "zzz-shared" sorts last by key and holds 3 entries. Under the old
+	// key-ascending order it would be dropped first; it must now survive.
+	for i := range 3 {
+		writeFile(t, dir, fmt.Sprintf("global/shared%d.md", i),
+			fmt.Sprintf("+++\nid = \"shared%d\"\ntitle = \"shared %d\"\ntopic_key = \"zzz-shared\"\nscope = []\n+++\nx\n", i, i))
+	}
+
+	result, err := Prime(t.Context(), dir, nil, 2048)
+	require.NoError(t, err)
+	require.Less(t, len(result.TopicCounts), seededTopics+1, "precondition: the index must be truncated")
+
+	var shared *TopicCount
+	for i := range result.TopicCounts {
+		if result.TopicCounts[i].TopicKey == "zzz-shared" {
+			shared = &result.TopicCounts[i]
+		}
+	}
+	require.NotNil(t, shared, "a multi-entry topic must survive index truncation ahead of singletons")
+	assert.Equal(t, 3, shared.Count)
+}
+
+// TestPrimeAggregateCountsStillCoverEverythingWhenIndexTruncates keeps the
+// half of crn-3476 FR-1/FR-2 that is still right. The per-topic ENUMERATION is
+// now bounded, but the scalars are O(1) bytes and must keep describing the
+// whole visible set -- otherwise bounding the index would turn an honest
+// overrun into an undercount.
+func TestPrimeAggregateCountsStillCoverEverythingWhenIndexTruncates(t *testing.T) {
+	dir := t.TempDir()
+	seedTopics(t, dir)
+
+	result, err := Prime(t.Context(), dir, nil, 2048)
+	require.NoError(t, err)
+
+	require.Less(t, len(result.TopicCounts), seededTopics, "precondition: the index must be truncated")
+	assert.Equal(t, seededTopics, result.TotalVisible,
+		"TotalVisible must still cover the whole visible set even when the index enumeration is capped")
+	assert.Equal(t, seededTopics, result.FreshCount+result.StaleCount+result.UnknownCount,
+		"the aggregate freshness counts must still sum to the whole visible set")
 }

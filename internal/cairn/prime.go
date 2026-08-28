@@ -63,23 +63,33 @@ type TopicCount struct {
 
 // PrimeResult is Prime's structured output: a budget-bounded,
 // deterministically ordered slice of the caller's visible entries, plus an
-// index view -- TotalVisible, TopicCounts, and the aggregate freshness
-// counts -- that always covers the entire visible set regardless of what
-// the byte budget let through into Items (crn-0vqk FR-2, FR-3; crn-3476
-// FR-1, FR-2).
+// index view -- TotalVisible and the aggregate freshness counts -- that
+// always covers the entire visible set regardless of what the byte budget
+// let through into Items (crn-0vqk FR-2, FR-3; crn-3476 FR-1, FR-2).
+//
+// TopicCounts is the one part of that index view which is NOT unconditional:
+// it is an enumeration, so its size grows with the number of distinct topic
+// keys, and crn-s3749 measured it at 88.2% of a payload running 2.5x over
+// budget. It is now bounded like Items, with TopicCountsTruncated reporting
+// what the cap dropped. The scalars stay unconditional because they are O(1)
+// bytes -- bounding those would turn an honest overrun into an undercount.
 type PrimeResult struct {
-	Store          string          `json:"store"`
-	Identity       []string        `json:"identity"`
-	Items          []PrimeItem     `json:"items"`
-	TotalVisible   int             `json:"total_visible"`
-	TopicCounts    []TopicCount    `json:"topic_counts"`
-	TruncatedCount int             `json:"truncated_count"`
-	FreshCount     int             `json:"fresh_count"`
-	StaleCount     int             `json:"stale_count"`
-	UnknownCount   int             `json:"unknown_count"`
-	ChecksCapped   bool            `json:"checks_capped"`
-	Warnings       []string        `json:"warnings"`
-	Conflicts      []TopicConflict `json:"conflicts,omitempty"`
+	Store        string       `json:"store"`
+	Identity     []string     `json:"identity"`
+	Items        []PrimeItem  `json:"items"`
+	TotalVisible int          `json:"total_visible"`
+	TopicCounts  []TopicCount `json:"topic_counts"`
+	// TopicCountsTruncated is how many topic keys the byte budget kept out of
+	// TopicCounts. Non-zero means the index enumeration is PARTIAL; the
+	// aggregate scalars above still describe the whole visible set.
+	TopicCountsTruncated int             `json:"topic_counts_truncated"`
+	TruncatedCount       int             `json:"truncated_count"`
+	FreshCount           int             `json:"fresh_count"`
+	StaleCount           int             `json:"stale_count"`
+	UnknownCount         int             `json:"unknown_count"`
+	ChecksCapped         bool            `json:"checks_capped"`
+	Warnings             []string        `json:"warnings"`
+	Conflicts            []TopicConflict `json:"conflicts,omitempty"`
 }
 
 // Prime computes an agent's always-in-context payload: a budget-bounded,
@@ -105,36 +115,18 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 		}
 	}
 
-	ordered := make([]*Entry, len(visible))
-	copy(ordered, visible)
-	explorationBand := explorationBandIDs(ordered, explorationSlots)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		a, b := ordered[i], ordered[j]
-		if aBand, bBand := explorationBandRank(a, explorationBand), explorationBandRank(b, explorationBand); aBand != bBand {
-			return aBand < bBand
-		}
-		if a.HitCount != b.HitCount {
-			return a.HitCount > b.HitCount
-		}
-		if a.CreatedAt != b.CreatedAt {
-			// CreatedAt is stamped with time.RFC3339 (see remember.go);
-			// lexicographic order matches chronological order for that
-			// format, so no time parsing is needed here.
-			return a.CreatedAt > b.CreatedAt
-		}
-		return a.ID < b.ID
-	})
+	ordered := orderByPriority(visible)
 
 	result := PrimeResult{
 		Store:        store,
 		Identity:     identity,
 		TotalVisible: len(ordered),
-		TopicCounts:  topicCounts(visible),
 		Warnings:     scopeMismatchWarnings(all, visible, identity),
 		Conflicts:    resolution.Conflicts,
 	}
 
 	budget := &freshnessBudget{remaining: maxFreshnessChecksPerPrime}
+	itemBudget := itemBudgetFor(budgetBytes)
 	usedBytes := 0
 	truncating := false
 	for _, e := range ordered {
@@ -173,7 +165,7 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 		// len==0 guard) so a budget too small for even one item doesn't
 		// leave a caller with zero items despite a nonzero visible count.
 		cost := itemByteCost(item)
-		if usedBytes+cost > budgetBytes && len(result.Items) > 0 {
+		if usedBytes+cost > itemBudget && len(result.Items) > 0 {
 			truncating = true
 			continue
 		}
@@ -183,7 +175,107 @@ func Prime(ctx context.Context, store string, identity []string, budgetBytes int
 	result.ChecksCapped = budget.capped
 	result.TruncatedCount = result.TotalVisible - len(result.Items)
 
+	applyIndexBudget(&result, visible, budgetBytes-usedBytes)
+
 	return result, nil
+}
+
+// applyIndexBudget fills in the topic index from whatever the items left
+// unspent, and records what the cap dropped. Items keep first claim because
+// they are the ranked, high-salience payload; the index is for routing.
+//
+// Split out of Prime rather than inlined so Prime stays under the cyclomatic
+// complexity limit, and so the "report what you dropped" half sits next to the
+// truncation that makes it necessary.
+func applyIndexBudget(result *PrimeResult, visible []*Entry, allowance int) {
+	// Clamp at zero: the always-itemize-one guard in Prime can push usedBytes
+	// past itemBudget on a tiny budget, and the index must not then be handed
+	// a negative allowance.
+	if allowance < 0 {
+		allowance = 0
+	}
+	allTopics := topicCounts(visible)
+	result.TopicCounts, result.TopicCountsTruncated = boundTopicCounts(allTopics, allowance)
+	if result.TopicCountsTruncated == 0 {
+		return
+	}
+	result.Warnings = append(result.Warnings, fmt.Sprintf(
+		"topic index truncated by the byte budget: %d of %d topic keys not listed (aggregate counts still cover all %d entries)",
+		result.TopicCountsTruncated, len(allTopics), result.TotalVisible))
+}
+
+// orderByPriority returns visible in the order Items should be itemized: the
+// exploration band first, then most-hit, then newest, then ID as a deterministic
+// tiebreak. Split out of Prime to keep it inside the funlen limit; the ordering
+// is load-bearing because byte-budget truncation walks this slice in order and
+// stops at the first entry that does not fit.
+func orderByPriority(visible []*Entry) []*Entry {
+	ordered := make([]*Entry, len(visible))
+	copy(ordered, visible)
+	explorationBand := explorationBandIDs(ordered, explorationSlots)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		a, b := ordered[i], ordered[j]
+		if aBand, bBand := explorationBandRank(a, explorationBand), explorationBandRank(b, explorationBand); aBand != bBand {
+			return aBand < bBand
+		}
+		if a.HitCount != b.HitCount {
+			return a.HitCount > b.HitCount
+		}
+		if a.CreatedAt != b.CreatedAt {
+			// CreatedAt is stamped with time.RFC3339 (see remember.go);
+			// lexicographic order matches chronological order for that
+			// format, so no time parsing is needed here.
+			return a.CreatedAt > b.CreatedAt
+		}
+		return a.ID < b.ID
+	})
+	return ordered
+}
+
+// itemBudgetFor carves the index reserve OUT of budgetBytes before itemizing,
+// rather than adding it on top -- otherwise Items could spend the whole budget
+// and the reserve would push the total over, which is crn-s3749 in a different
+// place. Items keep first claim on everything above the reserve, and anything
+// they leave unspent flows back to the index (see applyIndexBudget).
+func itemBudgetFor(budgetBytes int) int {
+	return budgetBytes - budgetBytes/indexReserveDivisor
+}
+
+// indexReserveDivisor sets the share of budgetBytes withheld from Items so the
+// topic index cannot be starved to nothing by a store with many entries.
+const indexReserveDivisor = 4
+
+// boundTopicCounts caps the topic enumeration at allowance bytes, returning the
+// kept rows and the number dropped.
+//
+// Ordering is count-descending: a topic holding more than one entry is the only
+// row carrying information the per-entry Items list does not already have, so
+// those must survive a cap that singletons do not. Ties break on topic_key so
+// output stays deterministic.
+func boundTopicCounts(all []TopicCount, allowance int) ([]TopicCount, int) {
+	ranked := append([]TopicCount(nil), all...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].Count != ranked[j].Count {
+			return ranked[i].Count > ranked[j].Count
+		}
+		return ranked[i].TopicKey < ranked[j].TopicKey
+	})
+
+	used, kept := 0, 0
+	for _, tc := range ranked {
+		b, _ := json.Marshal(tc)
+		if used+len(b) > allowance {
+			break
+		}
+		used += len(b)
+		kept++
+	}
+	out := ranked[:kept]
+	// Deterministic, human-scannable output: rank decides WHICH rows survive,
+	// topic_key decides what order they print in -- matching the key-sorted
+	// contract callers had before this cap existed.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].TopicKey < out[j].TopicKey })
+	return out, len(all) - kept
 }
 
 // topicCounts reduces entries to a per-topic_key breakdown for Prime's index
